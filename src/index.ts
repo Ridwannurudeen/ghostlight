@@ -1,8 +1,15 @@
 import { isServer } from '@dcl/sdk/network'
-import { startClient } from './client/spike'
-import { setupUi } from './client/ui'
+import { startClientFlow } from './client/flow'
+import { startClientSetup } from './client/setup'
+import { uiComponent } from './client/ui'
 import { startServer } from './server/server'
 
 export function main() {
-  isServer() ? startServer() : startClient({ onPlatformKnown: setupUi })
+  if (isServer()) {
+    startServer()
+    return
+  }
+
+  startClientSetup(uiComponent)
+  startClientFlow()
 }
