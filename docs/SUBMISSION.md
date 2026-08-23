@@ -11,8 +11,24 @@ This section is for submission preparation; the paste-ready project copy begins 
   Performance and Optimization; Creativity and Originality; Retention and Discovery Value; and Overall
   Execution.
 - Ties prioritize Mobile-First Experience, Retention and Discovery Value, and Overall Execution.
-- The runtime invite target is `ghostcharades.dcl.eth`; the owner must buy and configure that NAME before the
+- The candidate is configured for `ghostcharades.dcl.eth`; the owner must prove control of that NAME before the
   World link is final.
+
+## Hard release gates - do not deploy or submit
+
+- Confirm ownership of `ghostcharades.dcl.eth`; verify the exact release candidate retains
+  `worldConfiguration.name: "ghostcharades.dcl.eth"`, `authoritativeMultiplayer: true`, and no `fixedAdapter` or
+  `placesConfig.optOut`.
+- Publish the repository first. Replace the repository/licence preparation note below with working absolute public
+  HTTPS URLs to the repository and `LICENSE`; relative links are prohibited in the submitted copy.
+- In production, use genuine accounts to create at least three distinct current-theme charades less than 14 days
+  old and at least one genuine Answer-Back duet. Never synthesize a visitor, guess, reply, performance, or board.
+- After a real server sleep, use a fresh named account to prove the production store rehydrates and serves the real
+  charades and duet instead of a House-only venue. Record the authors, themes, UTC ages, and duet status.
+- Check the deployed pool daily through judging and renew genuine current-theme content before the 14-day serving
+  window expires. House is the honest failure floor, not a release-ready seed.
+- Complete every unchecked item in `docs/DEVICE-CHECKLIST.md` on the exact deployed commit before final media or
+  submission approval.
 
 ## DoraHacks submission copy
 
@@ -36,7 +52,8 @@ loop playable before real performances exist and is excluded from player statist
 Tonight's Show changes by UTC day across six themes and prioritizes matching charades without blocking the
 queue when a theme has no eligible performance. Answer-Back Duets let a decoder perform a second take on the
 same phrase; future visitors watch both avatars alternate. When two or more players are present, the shared
-charade becomes a first-correct live race.
+charade becomes a first-correct live race. Performances remain in the selectable pool for 14 days, so the release
+checklist requires genuine current-theme content to be renewed throughout judging.
 
 ### How it was designed and optimized for mobile
 
@@ -44,13 +61,17 @@ Every game action is an on-screen button with a minimum 96 px touch target. The 
 client's interactable safe area on a fixed 1600 × 720 virtual canvas. Ghost Charades hides the client's native
 action buttons because the scene does not use them, keeps the movement joystick available, and never requires a
 tap on a 3D object. Answers, verdicts, progress, and errors use explicit text; sound and stage colour reinforce
-the result instead of carrying it alone.
+the result instead of carrying it alone. No screen exposes more than five game buttons: authoring separates phrase,
+five-emote selection, and confirmation, while live reactions replace secondary actions when opened.
 
-The generated theater kit contains 15 GLBs totalling 6,324 triangles and five material names. Automated asset
-checks enforce per-model and whole-scene triangle limits, texture dimensions, sound duration and size limits,
-the absence of Draco, and the total asset budget. Runtime avatar clones are capped at eight and recent audience
-members spawn at no more than three per second. The scene uses emissive material changes and tweens instead of
-particles or dynamic lights.
+The generated asset library contains 15 GLBs totalling 6,324 unique triangles and five material names. The live
+theater instantiates 11,664 authored triangles across two declared parcels, below their combined 20,000-triangle
+budget. Automated checks derive the exact `createTheater()` instance counts, enforce the parcel budget, texture
+dimensions, gapless room-tone metadata and boundary quality, sound size limits, the absence of Draco, and the total
+asset budget. Runtime avatar clones are capped at eight and recent audience members spawn at no more than three per
+second. Reward props retain only the 16 nearest titled visitors plus one reusable stage slot; even the conservative
+all-trophy peak is 16,492 authored triangles and 79 app-created entities. The scene uses emissive material changes
+and tweens instead of particles or dynamic lights.
 
 ### How it encourages social interaction
 
@@ -73,9 +94,9 @@ hardest real charade becomes Ghost of the Night. The server persists performance
 scores, stamps, titles, and return reports make each visit a continuation rather than a reset.
 
 Players can replay a performance before guessing, make their own version after the reveal, or answer back to
-the same phrase. After posting, Copy Invite copies a direct Decentraland World link with “Can you decode my
-ghost?” so the social object being shared is the player's own performance, not a generic leaderboard. No
-engagement, visitor, guess, or board entry is fabricated.
+the same phrase. After posting, Copy Invite copies `Join me for Ghost Charades:` plus the Decentraland World
+URL. The server still selects the friend's eligible performance; the invite does not claim to target the inviter's
+charade. No engagement, visitor, guess, or board entry is fabricated.
 
 ### The mechanic in five lines
 
@@ -92,8 +113,8 @@ engagement, visitor, guess, or board entry is fabricated.
 ### Links
 
 - World: `<WORLD LINK>`
-- Repository: [Ghost Charades source repository](../)
-- License: [MIT](../LICENSE)
+- Repository and licence: intentionally omitted from this draft until publication. Before submission, replace
+  this note with absolute public HTTPS links to the repository and its `LICENSE`; do not use relative links.
 
 ### Team
 
@@ -107,7 +128,7 @@ House label visible; do not stage engagement counts.
 1. Opening Night: foyer camera, Tonight's Show marquee, generated doors, and the mobile movement control visible.
 2. Decode: a real player's ghost mid-emote beside the three large answer cards, with no control overlap.
 3. Reveal: the push-in camera at the hit or miss verdict, including answer text, lighting shift, and result card.
-4. Authoring: a dealt phrase with exactly three ordered emotes selected and Preview/Post controls visible.
+4. Authoring: the confirmation phase after exactly three ordered emotes, with Preview/Post controls visible.
 5. Answer-Back Duet: both real player avatars on stage while their three-emote sequences alternate.
 6. Retention: the recent-performer playbill and boards, with a verified title/reward prop or daily stamp visible
    only if it was earned in the captured run.

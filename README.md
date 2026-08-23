@@ -24,7 +24,8 @@ is excluded from player statistics, boards, and progression.
 4. The eight-second reveal locks the answers, pushes the camera toward the stage, changes the theater lighting,
    reveals the verdict, cues the audience, and reports the aggregate result.
 5. Answer back with a new performance of the same phrase, or make a new charade from the fixed phrase deck.
-6. Preview and post the ordered three-emote performance, inspect today's boards, or copy an invite for a friend.
+6. Preview and post the ordered three-emote performance, inspect today's boards, or copy a general World invite
+   for a friend. The server selects eligible content after arrival; the link does not target one charade.
 7. Return later to see how many people tried the performance, how many decoded it, and whether anyone answered
    back.
 
@@ -36,7 +37,8 @@ winner. The winner moves directly into the author flow; solo visitors continue t
 The server rotates one of six themes at UTC midnight: Everyday Escapades, Big Feelings, Kitchen Capers,
 Decentraland Life, Pop Spectacles, and Awkward Moments. Each theme owns 20 of the 120 built-in phrases. Charade
 selection prefers the current theme and falls back to any eligible player performance without requiring a
-redeploy.
+redeploy. The selectable pool covers the most recent 14 UTC days; genuine current-theme content must be renewed
+before it ages out during a release or judging window.
 
 The current theme drives the foyer marquee and UI accent. For a signed-in player, three real-player decodes plus
 one authored charade on the same UTC day awards one saved daily completion stamp. The playbill shows the six most
@@ -75,10 +77,10 @@ the server.
 | Start decoding | Walk into the house or stage area, then tap `DECODE A GHOST`. The action remains disabled in the foyer. |
 | Guess | Tap one of three 96 px answer buttons. Required UI stays inside Decentraland's interactable screen inset. |
 | Watch again | Tap `REPLAY` to restart the current solo performance or duet. |
-| Make a charade | Tap `MAKE YOUR OWN`, take a dealt phrase, optionally shuffle twice, choose three of five emotes in order, preview, then post. |
+| Make a charade | Tap `MAKE YOUR OWN`, accept or shuffle the dealt phrase, continue to five-emote selection, then choose three in order. The third choice advances to a separate Preview/Post confirmation. |
 | Answer back | After an eligible reveal, tap `ANSWER BACK`, choose three emotes for the same phrase, preview, then send the reply. |
-| React in a live round | `LAUGH`, `CONFUSED`, and `GENIUS` trigger a local player emote and a remote audience reaction. |
-| Invite | `COPY INVITE` copies the World jump URL configured in `src/shared/config.ts`. |
+| React in a live round | Open `REACTIONS`; its three choices replace the secondary actions while open, and trigger a local player emote plus a remote audience reaction. |
+| Invite | `COPY INVITE` copies a general World invitation configured in `src/shared/config.ts`; it does not route to a specific charade. |
 
 Desktop preview uses the normal Decentraland movement controls and the same on-screen game UI.
 
@@ -112,6 +114,10 @@ The presentation layer uses generated GLBs and emissive material changes rather 
 The avatar pool is capped at eight slots: one stage performer, six audience positions, and one preview/replier;
 Ghost of the Night reuses an audience slot.
 
+Visible title rewards are separately bounded to the 16 nearest titled live players, refreshed once per second,
+plus one reusable stage-author slot. The conservative all-trophy reveal peak is 79 app-created entities and 16,492
+authored triangles, within the two declared parcels' 400-entity and 20,000-triangle budgets.
+
 ## Generated assets
 
 All shipped models, sounds, and UI textures are generated in-repository and committed, so normal installation does
@@ -130,8 +136,10 @@ Blender 5.1.2; Python 3.12.10; NumPy 2.4.6; SciPy 1.18.0; Pillow 12.2.0; and FFm
 `PATH` for sound generation.
 
 `test/asset-budget.test.ts` parses the committed outputs and enforces the mobile budgets: no model above 3,000
-triangles, no more than 40,000 total triangles, no Draco, power-of-two UI textures no larger than 1024 px, mono
-44.1 kHz audio, less than 2 MB of sound, and less than 25 MB under `assets/`.
+triangles, exact `createTheater()` instance counts, 11,664 instantiated theater triangles within two parcels'
+20,000-triangle budget, no Draco, power-of-two UI textures no larger than 1024 px, gapless metadata and a
+non-outlier decoded seam for the room-tone loop, measured encoded peaks, less than 2 MB of sound, and less than
+25 MB under `assets/`.
 
 ## Run from scratch
 
@@ -155,8 +163,10 @@ network retries, and generated-asset limits. Real-device validation remains a se
 [`docs/DEVICE-CHECKLIST.md`](docs/DEVICE-CHECKLIST.md) for cold start, safe areas, sound latency, camera behavior,
 solo persistence, two-client rounds, and measured performance.
 
-The code targets `ghostcharades.dcl.eth`, but `scene.json` does not yet configure a World name. Deployment and NAME
-ownership are owner-gated, so this repository does not claim a live deployment.
+`scene.json` configures the candidate for `ghostcharades.dcl.eth`. Deployment remains blocked until the owner
+proves control of that NAME, completes the device checklist, publishes absolute public repository/licence URLs,
+and verifies that production Storage rehydrates at least three genuine recent current-theme performances and a
+real Answer-Back duet after server sleep. This repository does not claim a live deployment.
 
 Guest progress remains in server memory rather than player-scoped Storage. A guest-authored charade can still enter
 the shared scene pool, but durable personal title and return progress requires a signed-in Decentraland profile.

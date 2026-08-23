@@ -42,7 +42,7 @@ strength with one person in the room. When two or more are present it becomes a 
 | 45–60 s | Tap an answer. Audience reacts (clap / shrug). Reveal: Maya's phrase, "7 of 11 got it", your decoder score. **Next ghost** / **Make your own**. | Maya will see your guess on her return. |
 | 1–2 min | Two or three more charades (each 20–30 s). | Every one is a different real person. |
 | 2–3 min | **Make your own**: dealt a phrase (Shuffle ×2 allowed), pick three emotes from five big buttons in order, **Preview** (your own avatar performs it), **Post**. "Your ghost is on stage for the next stranger." | Your performance persists for others. |
-| 3–4 min | **Invite** button copies a link ("Can you decode my ghost?"). Leaderboard: top decoders today, hardest ghosts. | Reason to share. |
+| 3–4 min | **Invite** copies a general World link. Leaderboard: top decoders today, hardest ghosts. | Reason to share. |
 | next visit | "Since you left: 4 people tried to decode you — 1 got it." | Reason to return. |
 
 **With 2+ present:** everyone in the house sees the same charade as a *round*; the first correct guess
@@ -67,7 +67,7 @@ pressing player's avatar, visible to all.
 Decentraland SDK 7, TypeScript, ECS. `@dcl/sdk@auth-server` + `@dcl/js-runtime@auth-server`
 (the Multiplayer Server branch; a commit-suffixed pre-release tag — **pin the resolved version in
 `package-lock.json` and do not upgrade after 28 Aug**). `scene.json`: `"authoritativeMultiplayer": true`,
-`worldConfiguration.name = <NAME>.dcl.eth`, **never** `fixedAdapter: "offline:offline"`,
+`worldConfiguration.name = ghostcharades.dcl.eth`, **never** `fixedAdapter: "offline:offline"`,
 `placesConfig.optOut` unset.
 
 ```
@@ -153,9 +153,9 @@ no TTL.
   isMobile() ? 'interactable' : 'device' })`, explicit virtual screen `1600×720` on mobile.
 - Screens: Waking · Decode (banner + 3 answers + Replay) · Reveal · Author (phrase + Shuffle, 5 emote
   buttons, Preview, Post) · Boards · Invite. Each screen: one sentence, big buttons, nothing bottom-right.
-- Invite: `copyToClipboard({ text: 'Can you decode my ghost? https://decentraland.org/jump/?realm=<NAME>.dcl.eth' })`.
+- Invite: copy a general World invitation for `https://decentraland.org/jump/?realm=ghostcharades.dcl.eth`.
   Whether that https link opens the mobile app is **unverified** — day-1 test on the Android; fallback
-  `decentraland://?realm=<NAME>.dcl.eth`.
+  `decentraland://?realm=ghostcharades.dcl.eth`.
 
 ### 5.7 Cold start and readiness
 The server shuts down ~2 min after the last player leaves and cold-starts in ~15 s; messages sent before
@@ -225,6 +225,6 @@ house charade (labelled) · invite link · submission package.
 
 ## 11. Submission package (built 31 Aug, locked 2 Sep)
 DoraHacks BUIDL: hook sentence, the three required explanations (mobile, social, return/invite), one
-measured number ("> 90 % on High on <device>"), World link, portrait screenshots, 2–3 min phone-recorded
+measured number (greater than 90% on High on the recorded device), World link, portrait screenshots, 2–3 min phone-recorded
 video (solo decode, author, then two phones racing). README: concept, controls, architecture, run-from-
 scratch, MIT license, roadmap. Owner approves the text and clicks submit.

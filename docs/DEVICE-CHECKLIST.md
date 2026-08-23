@@ -4,6 +4,26 @@ Run this checklist in the released Decentraland mobile clients on the exact depl
 preview and automated tests do not count as device evidence. Any unchecked item is a release blocker unless the
 run note names the failure and the owner explicitly accepts it.
 
+## Hard pre-deploy gates
+
+Do not deploy, record final media, or submit until every item in this section is checked. The House ghost is an
+honest fallback, not acceptable release content, and no visitor, guess, reply, performance, or board entry may be
+fabricated to satisfy these gates.
+
+- [ ] Confirm the owner controls `ghostcharades.dcl.eth`, and confirm the release candidate's `scene.json` has
+      `worldConfiguration.name` set to that exact name, `authoritativeMultiplayer: true`, and neither
+      `fixedAdapter` nor `placesConfig.optOut`.
+- [ ] Publish the source repository, then record working absolute public HTTPS URLs for both the repository and
+      its `LICENSE`. Do not paste a relative repository or licence link into the submission form.
+- [ ] In the deployed production World, create at least three genuine human-authored charades from distinct
+      accounts other than the fresh judge account. All three must be less than 14 days old and match the current
+      UTC theme. Create at least one genuine Answer-Back duet; a House ghost does not count.
+- [ ] Let the authoritative server instance sleep, re-enter from a fresh named account, and prove production
+      Storage rehydrates the three real current-theme charades and the real duet. The fresh account must receive
+      real-player content rather than only House content.
+- [ ] Record each seeded performance's author, phrase/theme, UTC creation time, and duet status. Check this ledger
+      daily through judging and renew genuine content before it reaches the 14-day serving boundary.
+
 ## Evidence for every run
 
 - [ ] Record the tested commit, World/realm, UTC date and time, network, account roles, device model, OS version,
@@ -20,7 +40,8 @@ run note names the failure and the owner explicitly accepts it.
 - [ ] Run the control-safe pass on a currently supported iPhone with the current Decentraland iOS client.
 - [ ] Prepare two distinct named accounts, one fresh named account, and one guest. Put both phones in the same
       realm before testing shared rounds or remote props.
-- [ ] Prepare at least three eligible real-player charades. House content cannot satisfy progression checks.
+- [ ] Use the verified production content from the hard pre-deploy gate. House content cannot satisfy progression
+      or release-readiness checks.
 - [ ] For Scene Stealer and Ghostlight Legend prop checks, use persisted test accounts one qualifying action below
       the documented threshold; do not alter production state during the run.
 
@@ -33,6 +54,8 @@ run note names the failure and the owner explicitly accepts it.
       or post confirmation appears. Repeated taps cannot advance the flow.
 - [ ] The first opening/decode transition occurs only after the ready state, and reconnecting from a dropped
       connection returns to the prior safe screen without duplicating a post or guess.
+- [ ] Re-enter with a named account that has pending genuine tries, solves, or replies. The Since You Left report
+      remains visible until acknowledged even if the first charade arrives, then dismissal enters the buffered decode.
 - [ ] Pair the recording with the automated cold-start assertion. A phone recording can prove the observable gate,
       but cannot prove the exact outbound message list before `ready`.
 
@@ -52,6 +75,9 @@ the same commit.
       halves twitch together and settle to their prior open position.
 - [ ] The primary route shows the generated foyer, doors, marquee, poster frames, seats, proscenium, curtains,
       stage, chandelier, footlights, spotlight, and pedestal with no primitive theater geometry in view.
+- [ ] Across ten fresh entries, every randomized spawn lands inside the clear foyer area rather than outside the
+      venue or inside a model. Answer controls cannot submit until the player reaches the physical decode area and
+      become unavailable again after walking away.
 - [ ] Walk the foyer, theater entrance, front row, and stage edge. There is no collision trap or camera snap.
 
 Evidence: one full opening recording, one skipped opening recording, and wide screenshots from the foyer, house,
@@ -60,7 +86,7 @@ and stage.
 ## Marquee and UTC theme flip
 
 - [ ] Hold each phone at normal arm's length, without zooming. From the foyer route, read the complete
-      “TONIGHT'S SHOW: <theme>” within three seconds; no word is clipped, hidden by the camera, or lost against the
+      “TONIGHT'S SHOW: {theme}” within three seconds; no word is clipped, hidden by the camera, or lost against the
       marquee on either device.
 - [ ] Confirm the marquee, UI border/ribbon accent, and house-light accent agree for the current theme.
 - [ ] For the midnight test, enter with both phones before 00:00 UTC and keep one phone connected so the server
@@ -68,6 +94,9 @@ and stage.
 - [ ] The re-entering phone advances exactly one step in the rotation: Everyday Escapades → Big Feelings → Kitchen
       Capers → Decentraland Life → Pop Spectacles → Awkward Moments → Everyday Escapades. Its marquee and accents
       update together.
+- [ ] Without reconnecting, the phone that stayed online also receives the new theme, reset daily progress and
+      boards, and the current or cleared Ghost of the Night. No yesterday label, rank, stamp progress, or pedestal
+      survives the rollover.
 
 Evidence: natural-scale foyer photos from Android and iOS, plus before/after-midnight recordings showing the UTC
 clock, unchanged commit, and both theme labels.
@@ -81,16 +110,25 @@ clock, unchanged commit, and both theme labels.
 - [ ] At about 1.2 s, the current performer pose freezes and the camera pushes in.
 - [ ] At about 2.0 s, the sting plays, wrong answers fade, and the spotlight becomes white.
 - [ ] At about 2.6 s, a correct guess shows green light, hit sound, floating “YOU GOT IT,” and audience claps; an
-      incorrect guess shows red light, miss sound, “<AUTHOR> MEANT: <PHRASE>,” and audience shrugs.
+      incorrect guess shows red light, miss sound, “{AUTHOR} MEANT: {PHRASE},” and audience shrugs.
 - [ ] At about 4.0 s, the performer waves; correct plays applause and incorrect plays gasp.
 - [ ] At about 6.0 s, aggregate stats and title progress appear. At about 7.5 s, stage camera, house lights, performer
       playback, room-tone volume, faded cards, and floating text reset cleanly.
+- [ ] When stats replace the answer cards, the single exit row remains fully visible. MAKE YOUR OWN and any eligible
+      ANSWER BACK action keep their complete 96 px targets; no lower action is clipped or hidden behind another row.
 - [ ] NEXT GHOST during a running reveal skips to the same clean end state once. No late timer changes the next
       ghost's camera, lights, UI, or sound.
+- [ ] While a guess is awaiting its authoritative result, MAKE YOUR OWN cannot open authoring. A delayed round
+      winner can enter its intended author flow without making BACK reopen an inert reveal.
+- [ ] On a throttled connection, delay the authoritative result past the normal verdict time. Verdict, bow, stats,
+      and cleanup remain visibly spaced after arrival instead of collapsing into one frame. Then drop both the
+      original guess and retry responses: timeout restores camera, performer, lights, curtains, and room tone.
 - [ ] From a 60 fps recording with audio, measure guess-tap to first tick/drumroll onset over five attempts. Pass
       when the worst observed latency is at most 250 ms and no cue is dropped or doubled.
 - [ ] With the screen covered, a second tester identifies hit versus miss from sound alone in at least five of six
       mixed trials. Curtain, unlock, and stamp cues are distinct from both outcomes.
+- [ ] Leave room tone playing for at least 30 seconds with headphones. No click, pause, level jump, or doubled edge
+      is audible at either loop boundary.
 
 Evidence: a timestamp sheet for all ten runs, the worst latency measurement, one correct clip, one incorrect clip,
 one interrupted clip, and the covered-screen result.
@@ -99,6 +137,8 @@ one interrupted clip, and the covered-screen result.
 
 - [ ] Authoring deals a phrase, allows no more than two shuffles, offers five distinct emotes, preserves the selected
       order as 1–2–3, previews the named player's current look, and enables POST only after three selections.
+- [ ] From both regular and Answer-Back authoring, tap BACK before preview. The exact prior solo performer or duet
+      and its earned stage reward return; no performer disappears and no stale preview remains.
 - [ ] On a fresh named account, the first successful post shows the Understudy unlock card and unlock sound. The
       second phone sees the top hat attached to that account, not to itself.
 - [ ] Repeat the remote observation for Scene Stealer (mask on head) and Ghostlight Legend (trophy in right hand)
@@ -125,8 +165,9 @@ Evidence: one boards screenshot containing a named portrait and guest placeholde
 
 ## Answer-Back duet and full share loop
 
-- [ ] Account A posts a charade and opens COPY INVITE. Account B follows the invite, decodes A's charade, and sees
-      ANSWER BACK only after the reveal; A, the House ghost, and an already-replied charade cannot reply to themselves.
+- [ ] Account A posts a charade and opens COPY INVITE. Account B follows the general World invite, then continues
+      until the server serves A's charade. B sees ANSWER BACK only after the reveal; A, the House ghost, and an
+      already-replied charade cannot reply to themselves.
 - [ ] In answer-back authoring, the phrase stays fixed, SAME PHRASE is disabled as a shuffle, three emotes keep their
       chosen order, preview uses B's look, and SEND REPLY produces the answer-back confirmation.
 - [ ] Re-enter as A after B replies. “Since you left” includes the answered-back count exactly once.
@@ -155,6 +196,8 @@ Evidence: side-by-side video of both races and one reaction from each phone.
 - [ ] The movement joystick remains usable and every native action/gamepad button is hidden on Android and iOS.
 - [ ] In foyer, decode, reveal, author, posted, boards, invite, and notice overlays, no required control intersects the
       notch/Dynamic Island, home indicator, interactable inset, or bottom-right joystick area.
+- [ ] No screen exposes more than five game buttons at once. Author selection advances to confirmation after the
+      third emote, and opening the REACTIONS menu replaces the other secondary controls instead of stacking a row.
 - [ ] Every action target is comfortably thumb-selectable, every answer is legible without zoom, and rapid taps do
       not activate an adjacent control.
 - [ ] Camera transitions do not steal touch input or leave either client locked to the foyer, stage, or reveal camera.
@@ -164,8 +207,8 @@ recording. Retain the iOS set for the mobile curation/featuring packet.
 
 ## Invite copy and open
 
-- [ ] COPY INVITE changes the UI to the copied confirmation and places exactly
-      `Can you decode my ghost? https://decentraland.org/jump/?realm=ghostcharades.dcl.eth` on the clipboard.
+- [ ] The posted screen's first COPY INVITE tap changes the UI to the copied confirmation and places exactly
+      `Join me for Ghost Charades: https://decentraland.org/jump/?realm=ghostcharades.dcl.eth` on the clipboard.
 - [ ] Paste into a neutral notes field to verify the text, then tap the HTTPS link from a real messaging app on both
       Android and iOS. It opens the installed Decentraland client at `ghostcharades.dcl.eth`.
 - [ ] If HTTPS fails to deep-link, record the OS/app behavior and separately test
@@ -191,5 +234,6 @@ re-entry clip.
 
 The physical-device run validates behavior, timing, readability, controls, cross-client visibility, and measured
 performance. The automated suite must separately prove the exact pre-`ready` outbound message list, the eight-slot
-`AvatarShape` ceiling under simultaneous replier/pedestal allocation, asset triangle/material/size budgets, UTC
-selection logic, and persistence writes. A release needs both forms of evidence from the same commit.
+`AvatarShape` ceiling under simultaneous replier/pedestal allocation, the 16-player reward cap plus stage slot,
+the 79-entity/16,492-triangle conservative peak, asset triangle/material/size budgets, UTC selection logic, and
+persistence writes. A release needs both forms of evidence from the same commit.

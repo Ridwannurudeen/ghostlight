@@ -113,7 +113,7 @@ state cleanly.
 ### T4 — Sound + cold open (B) · Day 2–3
 `sound.ts` registry (one entity per clip, `play(name)`, ambience loop started after the platform is known,
 ducking ambience during the reveal). `opening.ts`: on first entry per session, a 10-second scripted intro —
-foyer cam → marquee "TONIGHT'S SHOW: <theme>" (TextShape) → doors open (tween) → stage cam → performer
+foyer cam → marquee "TONIGHT'S SHOW: {theme}" (TextShape) → doors open (tween) → stage cam → performer
 enters → one line of UI copy ("Guess what they're saying") → the decode screen. Skippable by tap. Never
 shown twice in a session. Gate: five fresh testers start the first guess without coaching (owner-run).
 

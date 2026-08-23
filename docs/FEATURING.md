@@ -16,8 +16,9 @@ theater react through an eight-second reveal. Then take the stage: choose a phra
 arrange three emotes, preview the performance on your avatar ghost, and post it for a later visitor. Signed-in
 players can return to see how many people tried and understood their performance, play the daily themed
 Tonight's Show, earn participation titles, or add an Answer-Back performance that later plays as an
-alternating two-avatar duet. A copy-invite action gives friends a direct World link to decode your ghost. The
-single House Ghost fallback is clearly labeled and excluded from player statistics and boards.
+alternating two-avatar duet. A copy-invite action gives friends a general World link; eligible content is selected
+by the server after arrival, so the link does not claim to target the inviter's performance. The single House Ghost
+fallback is clearly labeled and excluded from player statistics and boards.
 
 **Novel mechanic for mobile players**
 
@@ -30,7 +31,8 @@ voice, or free-form input.
 Every required custom game action is in a left-side playbill panel rendered inside the SDK's interactable safe
 area, with touch targets at least 96 px tall and no required control in the bottom-right joystick area. Native
 mobile action buttons are hidden while the movement joystick remains available; decoding and authoring
-require no gesture or tap on a 3D object.
+require no gesture or tap on a 3D object. No screen exposes more than five game buttons; authoring is phased and
+the reaction tray replaces secondary actions while open.
 
 **Real-device gameplay video — the most important piece**
 

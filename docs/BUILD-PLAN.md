@@ -157,7 +157,7 @@ The spike files (`src/client/spike.ts`, the current `src/server/server.ts`, `src
   once after 5 s; `since` shown once per session.
 - `ui.tsx`: screens per spec §5.6 — one sentence each, buttons ≥ 96 px tall, answer buttons stacked and
   full-width on mobile, nothing bottom-right, `Replay`, `Shuffle` (×2), `Preview`, `Post`, `Copy invite`
-  (`copyToClipboard({ text: 'Can you decode my ghost? ' + INVITE_URL })`), boards, house label when
+  (a general World invitation using `INVITE_URL`), boards, house label when
   `isHouse`.
 - `reactions.ts`: three reaction buttons (laugh / confused / genius) → `triggerEmote` locally + `react`.
 - Acceptance: build green; flow unit-tested as a pure reducer where practical. Commit.
