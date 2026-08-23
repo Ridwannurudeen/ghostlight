@@ -389,13 +389,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     }
 
     const correct = data.answerIndex === correctIndex
-    if (roundIsActive) {
-      const roundResult = rounds.guess(key, charade.id, correct)
-      if (!roundResult.accepted) {
-        await sendError(address, 'round-already-guessed')
-        return
-      }
-    }
+    if (roundIsActive) rounds.guess(key, charade.id, correct)
 
     if (!charade.isHouse) {
       stats.seen.push(charade.id)

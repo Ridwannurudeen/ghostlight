@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { PROTOCOL_VERSION } from '../src/shared/config'
-import { DECK } from '../src/shared/deck'
+import { DECK, HOUSE_CHARADE } from '../src/shared/deck'
 import { createServerProtocol, type ProtocolSend, type ServerProtocolOptions } from '../src/server/server'
 import { GhostCharadesState } from '../src/server/state'
 import { PLAYER_STATS_KEY, createStorageRepository } from '../src/server/storage'
@@ -533,6 +533,39 @@ describe('live protocol', () => {
     ])
     expect(messagesOfType(sent, 'reveal')).toHaveLength(2)
     expect(protocol.rounds.current?.winner).toEqual({ address: 'alice', name: 'Alice' })
+  })
+
+  it('reveals repeated house guesses when overlapping rounds re-serve the same house charade', async () => {
+    const snapshotLook = async (address: string) => makeLook(address, address)
+    const { sent, protocol } = await createHarness({ snapshotLook })
+    await protocol.handleEnter('alice')
+    await protocol.handleEnter('bob')
+    sent.length = 0
+
+    await protocol.handleNextCharade({ exclude: [] }, 'alice')
+    await protocol.handleNextCharade({ exclude: [] }, 'bob')
+    const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade')[0])
+    const phrase = DECK.find((candidate) => candidate.id === HOUSE_CHARADE.phraseId)!
+    const correctIndex = served.answers.indexOf(phrase.text)
+    const wrongIndex = (correctIndex + 1) % served.answers.length
+
+    await protocol.handleRoundGuess(
+      { charadeId: served.id, answerIndex: correctIndex, requestId: 'alice-first' },
+      'alice'
+    )
+    await protocol.handleNextCharade({ exclude: [served.id] }, 'alice')
+    await protocol.handleRoundGuess({ charadeId: served.id, answerIndex: wrongIndex, requestId: 'bob-first' }, 'bob')
+    await protocol.handleNextCharade({ exclude: [served.id] }, 'bob')
+    sent.length = 0
+
+    await protocol.handleRoundGuess({ charadeId: served.id, answerIndex: wrongIndex, requestId: 'bob-second' }, 'bob')
+    await protocol.handleRoundGuess(
+      { charadeId: served.id, answerIndex: correctIndex, requestId: 'alice-second' },
+      'alice'
+    )
+
+    expect(messagesOfType(sent, 'reveal')).toHaveLength(2)
+    expect(messagesOfType(sent, 'error')).toEqual([])
   })
 
   it('starts a fresh round after every present player guesses wrong', async () => {
