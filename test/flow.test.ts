@@ -355,6 +355,20 @@ describe('audience and rounds', () => {
     expect(messagesOfType(sent, 'nextCharade')).toHaveLength(1)
   })
 
+  it('fetches a newly announced round after the pending guess returns an error', () => {
+    const { runtime, sent } = createFlowHarness()
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    runtime.receive({ type: 'charade', data: makeDecodeCharade('old') })
+    runtime.guess(0)
+    sent.length = 0
+
+    runtime.receive({ type: 'roundStart', data: { charadeId: 'live' } })
+    runtime.receive({ type: 'error', data: { code: 'temporary-failure' } })
+
+    expect(runtime.getState()).toMatchObject({ screen: 'decode', charade: { id: 'old' }, roundCharadeId: 'live' })
+    expect(messagesOfType(sent, 'nextCharade')).toHaveLength(1)
+  })
+
   it('clears round context when that charade is revealed', () => {
     const { runtime } = createFlowHarness()
     runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })

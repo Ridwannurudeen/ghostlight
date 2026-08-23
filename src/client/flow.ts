@@ -330,7 +330,8 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
     case 'error':
       return {
         ...state,
-        roundCharadeId: state.screen === 'decode' ? '' : state.roundCharadeId,
+        roundCharadeId:
+          state.screen === 'decode' && state.roundCharadeId === state.charade?.id ? '' : state.roundCharadeId,
         errorCode: action.code,
         pending: []
       }
@@ -528,9 +529,15 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         }
         break
       case 'error':
+        const resumeDeferredRound =
+          state.screen === 'decode' &&
+          !!state.roundCharadeId &&
+          state.charade?.id !== state.roundCharadeId &&
+          state.pending.some((request) => request.kind === 'guess' || request.kind === 'roundGuess')
         if (state.screen === 'decode') roundMismatchRefetchAttempted = false
         requests.clear()
         dispatch({ type: 'error', code: message.data.code })
+        if (resumeDeferredRound) requestRoundCharadeIfNeeded()
         break
     }
   }
