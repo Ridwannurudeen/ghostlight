@@ -456,12 +456,14 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           now: now()
         })
         if (instanceChanged || lastHelloInstance !== message.data.instanceId) sendHello(true)
+        requestRoundCharadeIfNeeded()
         break
       }
       case 'pong':
         const wasReady = state.ready
         dispatch({ type: 'pong', now: now() })
         if (!wasReady) sendHello(true)
+        requestRoundCharadeIfNeeded()
         break
       case 'charade': {
         if (message.data.emotes.length !== 3 || message.data.answers.length !== 3) {
@@ -507,10 +509,9 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         dispatch({ type: 'boards', boards: message.data })
         break
       case 'roundStart': {
-        const needsRoundCharade = state.charade?.id !== message.data.charadeId
         if (state.roundCharadeId !== message.data.charadeId) roundMismatchRefetchAttempted = false
         dispatch({ type: 'roundStart', charadeId: message.data.charadeId })
-        if (needsRoundCharade && state.screen === 'decode') requestNextCharade()
+        requestRoundCharadeIfNeeded()
         break
       }
       case 'roundWinner': {
@@ -591,6 +592,18 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
       requestId
     )
     return true
+  }
+
+  function requestRoundCharadeIfNeeded() {
+    const guessPending = state.pending.some((request) => request.kind === 'guess' || request.kind === 'roundGuess')
+    if (
+      state.screen === 'decode' &&
+      state.roundCharadeId &&
+      state.charade?.id !== state.roundCharadeId &&
+      !guessPending
+    ) {
+      requestNextCharade()
+    }
   }
 
   function guess(answerIndex: number) {

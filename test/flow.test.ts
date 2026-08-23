@@ -223,6 +223,23 @@ describe('heartbeats and request retries', () => {
     expect(runtime.getState()).toMatchObject({ ready: true, screen: 'decode', charade: { id: 'charade-1' } })
   })
 
+  it('fetches a round announced during heartbeat recovery after decode resumes', () => {
+    const { runtime, sent } = createFlowHarness()
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    runtime.receive({ type: 'charade', data: makeDecodeCharade('old') })
+    runtime.dispatch({ type: 'heartbeatTimeout' })
+    sent.length = 0
+
+    runtime.receive({ type: 'roundStart', data: { charadeId: 'live' } })
+    expect(messagesOfType(sent, 'nextCharade')).toHaveLength(0)
+    runtime.receive({ type: 'pong', data: { seq: 1 } })
+
+    expect(runtime.getState()).toMatchObject({ screen: 'decode', roundCharadeId: 'live' })
+    expect(messagesOfType(sent, 'nextCharade')).toHaveLength(1)
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    expect(messagesOfType(sent, 'nextCharade')).toHaveLength(1)
+  })
+
   it('sends one identical retry after five seconds and times out after the next five', () => {
     const { runtime, sent, advance } = createFlowHarness()
     runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
@@ -309,6 +326,33 @@ describe('audience and rounds', () => {
     expect(runtime.getState()).toMatchObject({ screen: 'decode', charade: { id: 'plain-2' } })
     expect(runtime.guess(0)).toBe(true)
     expect(messagesOfType(sent, 'guess')).toHaveLength(1)
+  })
+
+  it('waits for a pending guess before fetching a newly announced round', () => {
+    const { runtime, sent } = createFlowHarness()
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    runtime.receive({ type: 'charade', data: makeDecodeCharade('old') })
+    runtime.guess(0)
+    sent.length = 0
+
+    runtime.receive({ type: 'roundStart', data: { charadeId: 'live' } })
+
+    expect(runtime.getState()).toMatchObject({ screen: 'decode', charade: { id: 'old' }, roundCharadeId: 'live' })
+    expect(messagesOfType(sent, 'nextCharade')).toHaveLength(0)
+
+    runtime.receive({
+      type: 'reveal',
+      data: {
+        charadeId: 'old',
+        correct: false,
+        phrase: 'Answer one',
+        stats: { total: 1, correct: 0 },
+        yourScore: 0
+      }
+    })
+    expect(runtime.getState()).toMatchObject({ screen: 'reveal', charade: { id: 'old' } })
+    expect(runtime.requestNextCharade()).toBe(true)
+    expect(messagesOfType(sent, 'nextCharade')).toHaveLength(1)
   })
 
   it('clears round context when that charade is revealed', () => {
