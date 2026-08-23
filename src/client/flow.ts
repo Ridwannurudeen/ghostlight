@@ -506,10 +506,9 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         break
       case 'roundStart': {
         const needsRoundCharade = state.charade?.id !== message.data.charadeId
-        const preserveScreen = state.screen === 'author' || state.screen === 'posted'
         if (state.roundCharadeId !== message.data.charadeId) roundMismatchRefetchAttempted = false
         dispatch({ type: 'roundStart', charadeId: message.data.charadeId })
-        if (needsRoundCharade && !preserveScreen) requestNextCharade()
+        if (needsRoundCharade && state.screen === 'decode') requestNextCharade()
         break
       }
       case 'roundWinner': {

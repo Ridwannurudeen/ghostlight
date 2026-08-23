@@ -326,18 +326,44 @@ describe('audience and rounds', () => {
     expect(runtime.getState()).toMatchObject({ screen: 'reveal', roundCharadeId: '' })
   })
 
-  it.each(['author', 'posted'] as const)('keeps the %s screen when a round starts', (screen) => {
-    const { runtime, sent } = createFlowHarness()
-    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
-    runtime.beginAuthoring()
-    if (screen === 'posted') runtime.receive({ type: 'posted', data: { charadeId: 'authored' } })
-    sent.length = 0
+  it.each(['foyer', 'since', 'reveal', 'author', 'posted', 'boards', 'invite'] as const)(
+    'keeps the %s screen when a round starts',
+    (screen) => {
+      const { runtime, sent } = createFlowHarness()
+      runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+      if (screen === 'since') {
+        runtime.receive({ type: 'since', data: { triedYou: 2, gotYou: 1, rank: 4 } })
+      } else if (screen === 'reveal') {
+        runtime.receive({ type: 'charade', data: makeDecodeCharade('old') })
+        runtime.receive({
+          type: 'reveal',
+          data: {
+            charadeId: 'old',
+            correct: false,
+            phrase: 'Answer one',
+            stats: { total: 1, correct: 0 },
+            yourScore: 0
+          }
+        })
+      } else if (screen === 'author' || screen === 'posted') {
+        runtime.beginAuthoring()
+        if (screen === 'posted') runtime.receive({ type: 'posted', data: { charadeId: 'authored' } })
+      } else if (screen === 'boards') {
+        runtime.showBoards()
+      } else if (screen === 'invite') {
+        runtime.showInvite()
+      }
+      sent.length = 0
 
-    runtime.receive({ type: 'roundStart', data: { charadeId: 'live' } })
+      runtime.receive({ type: 'roundStart', data: { charadeId: 'live' } })
 
-    expect(runtime.getState()).toMatchObject({ screen, roundCharadeId: 'live' })
-    expect(messagesOfType(sent, 'nextCharade')).toHaveLength(0)
-  })
+      expect(runtime.getState()).toMatchObject({ screen, roundCharadeId: 'live' })
+      if (screen === 'since') {
+        expect(runtime.getState()).toMatchObject({ since: { triedYou: 2, gotYou: 1, rank: 4 }, sinceShown: false })
+      }
+      expect(messagesOfType(sent, 'nextCharade')).toHaveLength(0)
+    }
+  )
 
   it('drops stale decode and round state when a new server instance is ready', () => {
     const { runtime } = createFlowHarness()
