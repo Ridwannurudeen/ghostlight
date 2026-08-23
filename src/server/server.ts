@@ -151,8 +151,8 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       await sendTo(address, 'audience', { looks: [] })
       return
     }
-    for (let offset = 0; offset < audience.length; offset += 2) {
-      await sendTo(address, 'audience', { looks: audience.slice(offset, offset + 2) })
+    for (const look of audience) {
+      await sendTo(address, 'audience', { looks: [look] })
     }
   }
 

@@ -256,16 +256,18 @@ describe('audience and rounds', () => {
   it('merges audience chunks case-insensitively, caps six, and resets only for a new server instance', () => {
     const { runtime } = createFlowHarness()
     runtime.receive({ type: 'ready', data: { instanceId: 'one', serverTime: FIXED_NOW } })
-    runtime.receive({
-      type: 'audience',
-      data: { looks: [makeLook('A', 'A'), makeLook('B', 'Old B')] }
-    })
-    runtime.receive({
-      type: 'audience',
-      data: {
-        looks: [makeLook('b', 'New B'), makeLook('C'), makeLook('D'), makeLook('E'), makeLook('F'), makeLook('G')]
-      }
-    })
+    for (const look of [
+      makeLook('A', 'A'),
+      makeLook('B', 'Old B'),
+      makeLook('b', 'New B'),
+      makeLook('C'),
+      makeLook('D'),
+      makeLook('E'),
+      makeLook('F'),
+      makeLook('G')
+    ]) {
+      runtime.receive({ type: 'audience', data: { looks: [look] } })
+    }
 
     expect(runtime.getState().audience.map((look) => look.name)).toEqual(['New B', 'C', 'D', 'E', 'F', 'G'])
     runtime.receive({ type: 'ready', data: { instanceId: 'one', serverTime: FIXED_NOW } })

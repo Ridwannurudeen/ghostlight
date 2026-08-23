@@ -141,7 +141,7 @@ describe('server readiness and welcome', () => {
     expect(state.recentVisitors[0]).toMatchObject({ address: '0xPlayer', name: 'Ready now' })
   })
 
-  it('uses the authoritative snapshot, sends returning since once, and chunks six audience looks by two', async () => {
+  it('uses the authoritative snapshot, sends returning since once, and chunks audience looks one at a time', async () => {
     const authoritative = {
       ...makeLook('0xPlayer', 'Server Name'),
       wearables: Array.from({ length: 12 }, (_, index) => `wearable-${index}`)
@@ -150,7 +150,9 @@ describe('server readiness and welcome', () => {
     const { state, sent, checkpoint, protocol } = await createHarness({ snapshotLook })
     state.recentVisitors = Array.from({ length: 6 }, (_, index) => ({
       ...makeLook(`visitor-${index}`),
-      wearables: Array.from({ length: 12 }, (_value, wearable) => `visitor-${index}-${wearable}`),
+      wearables: Array.from({ length: 20 }, (_value, wearable) =>
+        `urn:decentraland:matic:collections-v2:visitor-${index}-${wearable}`.padEnd(95, 'x')
+      ),
       lastSeenAt: index
     }))
     state.boards = {
@@ -171,11 +173,13 @@ describe('server readiness and welcome', () => {
     expect(stats.pending).toEqual({ triedYou: 0, gotYou: 0 })
     expect(messagesOfType(sent, 'since').map((message) => message.data)).toEqual([{ triedYou: 3, gotYou: 1, rank: 1 }])
     const audience = messagesOfType(sent, 'audience')
-    expect(audience).toHaveLength(3)
-    expect(audience.every((message) => dataOf<{ looks: unknown[] }>(message).looks.length === 2)).toBe(true)
-    expect(audience.flatMap((message) => dataOf<{ looks: ReturnType<typeof makeLook>[] }>(message).looks)).toHaveLength(
-      6
+    expect(audience).toHaveLength(6)
+    expect(audience.every((message) => dataOf<{ looks: unknown[] }>(message).looks.length === 1)).toBe(true)
+    const audienceLooks = audience.flatMap(
+      (message) => dataOf<{ looks: ReturnType<typeof makeLook>[] }>(message).looks
     )
+    expect(audienceLooks).toHaveLength(6)
+    expect(audienceLooks.every((look) => look.wearables.length === 20)).toBe(true)
     expect(sent.every((message) => message.to?.[0] === '0xPlayer')).toBe(true)
     expect(checkpoint).toHaveBeenCalledOnce()
   })
