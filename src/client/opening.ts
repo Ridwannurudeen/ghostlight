@@ -104,6 +104,11 @@ export function createOpeningController(effects: OpeningEffects, session = creat
       runDueBeats()
       return true
     },
+    cancel() {
+      if (!running) return false
+      running = false
+      return true
+    },
     isRunning() {
       return running
     },

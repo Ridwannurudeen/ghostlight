@@ -45,28 +45,48 @@ export class FakeStorage implements StoragePort {
   readonly playerGets: Array<{ address: string; key: string }> = []
   readonly getErrors = new Set<string>()
   readonly playerGetErrors = new Set<string>()
+  readonly getValuesErrors = new Set<string>()
+  readonly playerGetValuesErrors = new Set<string>()
 
   sceneWriteOutcomes: WriteOutcome[] = []
   playerWriteOutcomes: WriteOutcome[] = []
   writeGate: Promise<void> | null = null
+  readGate: Promise<void> | null = null
   activeWrites = 0
   maxActiveWrites = 0
+  activeHostCalls = 0
+  maxActiveHostCalls = 0
 
   readonly player = {
-    get: async (address: string, key: string) => {
-      this.playerGets.push({ address, key })
-      if (this.playerGetErrors.has(`${address}:${key}`)) throw new Error('player get failed')
-      return this.players.get(address)?.get(key) ?? null
-    },
+    get: async (address: string, key: string) =>
+      this.performRead(async () => {
+        this.playerGets.push({ address, key })
+        if (this.playerGetErrors.has(`${address}:${key}`)) throw new Error('player get failed')
+        return this.players.get(address)?.get(key) ?? null
+      }),
+    getValues: async (address: string, options?: { prefix?: string; limit?: number; offset?: number }) =>
+      this.performRead(async () => {
+        if (this.playerGetValuesErrors.has(address)) throw new Error('player get values failed')
+        return this.valuesResult(this.players.get(address) ?? new Map(), options)
+      }),
     set: async (address: string, key: string, value: unknown) => {
       return this.performWrite({ scope: 'player', address, key, value }, this.playerWriteOutcomes)
     }
   }
 
   async get(key: string) {
-    this.sceneGets.push(key)
-    if (this.getErrors.has(key)) throw new Error('scene get failed')
-    return this.scene.get(key) ?? null
+    return this.performRead(async () => {
+      this.sceneGets.push(key)
+      if (this.getErrors.has(key)) throw new Error('scene get failed')
+      return this.scene.get(key) ?? null
+    })
+  }
+
+  async getValues(options?: { prefix?: string; limit?: number; offset?: number }) {
+    return this.performRead(async () => {
+      if (this.getValuesErrors.has(options?.prefix ?? '')) throw new Error('scene get values failed')
+      return this.valuesResult(this.scene, options)
+    })
   }
 
   async set(key: string, value: unknown) {
@@ -115,6 +135,27 @@ export class FakeStorage implements StoragePort {
     } finally {
       this.activeWrites -= 1
     }
+  }
+
+  private async performRead<T>(read: () => Promise<T>) {
+    this.activeHostCalls += 1
+    this.maxActiveHostCalls = Math.max(this.maxActiveHostCalls, this.activeHostCalls)
+    try {
+      if (this.readGate) await this.readGate
+      return await read()
+    } finally {
+      this.activeHostCalls -= 1
+    }
+  }
+
+  private valuesResult(values: Map<string, unknown>, options?: { prefix?: string; limit?: number; offset?: number }) {
+    const offset = options?.offset ?? 0
+    const matching = [...values.entries()].filter(([key]) => !options?.prefix || key.startsWith(options.prefix))
+    const data = matching.slice(offset, offset + (options?.limit ?? matching.length)).map(([key, value]) => ({
+      key,
+      value
+    }))
+    return { data, pagination: { offset, total: matching.length } }
   }
 }
 
@@ -175,6 +216,7 @@ export function makeStats(overrides: Partial<PlayerStats> = {}): PlayerStats {
     correct: 0,
     seen: [],
     authored: [],
+    authoredCount: 0,
     lastSeenAt: FIXED_NOW,
     pending: { triedYou: 0, gotYou: 0, replies: 0 },
     daily: { day: '2026-08-23', decoded: 0, authored: 0, stamped: false },

@@ -57,6 +57,7 @@ export type PlayerStats = {
   correct: number
   seen: string[]
   authored: string[]
+  authoredCount: number
   lastSeenAt: number
   pending: {
     triedYou: number

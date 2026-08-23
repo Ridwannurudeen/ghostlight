@@ -44,8 +44,8 @@ vi.mock('../src/client/theater', () => ({
 
 vi.mock('../src/client/sound', () => sound)
 
-import { engine } from '@dcl/sdk/ecs'
-import { startClientSetup } from '../src/client/setup'
+import { MainCamera, Transform, engine } from '@dcl/sdk/ecs'
+import { releaseTheaterCamera, startClientSetup, switchTheaterCamera } from '../src/client/setup'
 
 describe('client setup', () => {
   it('initializes sound and starts ambience only after platform detection', () => {
@@ -60,5 +60,12 @@ describe('client setup', () => {
 
     expect(sound.initializeSounds).toHaveBeenCalledTimes(1)
     expect(sound.startRoomTone).toHaveBeenCalledTimes(1)
+
+    switchTheaterCamera('stage')
+    vi.mocked(Transform.getOrNull).mockReturnValue({ position: { x: 0, y: 0, z: 0 } } as never)
+    releaseTheaterCamera()
+    expect(MainCamera.createOrReplace).toHaveBeenLastCalledWith(engine.CameraEntity, {
+      virtualCameraEntity: undefined
+    })
   })
 })

@@ -17,6 +17,7 @@ import {
   boardsKey,
   charadeKey,
   createStorageRepository,
+  decoderAggregateKey,
   indexKey
 } from '../src/server/storage'
 import { FIXED_NOW, FakeStorage, emptyBoards, makeCharade, makeLook, makeReply, makeStats } from './test-helpers'
@@ -78,12 +79,12 @@ describe('state migrations', () => {
     expect(migrateCharade({ ...charade, reply: { ...reply, name: 'Different name' } })?.reply).toBeUndefined()
   })
 
-  it('migrates and bounds player stats while defaulting garbage', () => {
+  it('migrates exact seen accounting beyond the former 200-id cap while defaulting garbage', () => {
     const seen = Array.from({ length: 205 }, (_, index) => `seen-${index}`)
     expect(migratePlayerStats({ ...makeStats({ seen }), v: 0 }, 'Fresh name', FIXED_NOW)).toMatchObject({
       v: STORAGE_SCHEMA_VERSION,
       name: 'Player',
-      seen: seen.slice(-200)
+      seen
     })
 
     expect(migratePlayerStats({ v: 'bad' }, 'Fresh name', FIXED_NOW)).toEqual(makeStats({ name: 'Fresh name' }))
@@ -126,6 +127,27 @@ describe('state migrations', () => {
     expect(migrated.authored).toEqual(['player-charade'])
     expect(migrated.title).toBe('Understudy')
   })
+
+  it('keeps an exact authored count while bounding the stored idempotency history', () => {
+    const authored = Array.from({ length: 205 }, (_, index) => `authored-${index}`)
+    const migrated = migratePlayerStats(makeStats({ authored, authoredCount: 0 }), 'Player', FIXED_NOW)
+
+    expect(migrated.authored).toEqual(authored.slice(-200))
+    expect(migrated.authoredCount).toBe(205)
+    expect(migrated.title).toBe('Scene Stealer')
+  })
+
+  it('saturates wire counters and rejects unsafe or fractional timestamps', () => {
+    const migrated = migratePlayerStats(
+      makeStats({ decoded: Number.MAX_SAFE_INTEGER, correct: Number.MAX_SAFE_INTEGER }),
+      'Player',
+      FIXED_NOW
+    )
+    expect(migrated.decoded).toBe(2_147_483_647)
+    expect(migrated.correct).toBe(2_147_483_647)
+    expect(migrateCharade({ ...makeCharade('fractional'), createdAt: 1.5 })).toBeNull()
+    expect(migrateCharade({ ...makeCharade('unsafe'), createdAt: Number.MAX_VALUE })).toBeNull()
+  })
 })
 
 describe('title progression', () => {
@@ -160,14 +182,12 @@ describe('state hydration', () => {
     const yesterday = dayKey(FIXED_NOW - 24 * 60 * 60 * 1000)
     const todayCharade = makeCharade('today')
     const yesterdayCharade = makeCharade('yesterday', { createdAt: FIXED_NOW - 24 * 60 * 60 * 1000 })
-    storage.putJSON(indexKey(today), ['today', 'bad', 'stored-house', 'today'])
+    storage.putJSON(indexKey(today), ['today', 'stored-house', 'today'])
     storage.putJSON(indexKey(yesterday), ['yesterday'])
     storage.putJSON(charadeKey('today'), todayCharade)
     storage.putJSON(charadeKey('yesterday'), { ...yesterdayCharade, v: 0 })
-    storage.scene.set(charadeKey('bad'), '{')
     storage.putJSON(charadeKey('stored-house'), { ...HOUSE_CHARADE, id: 'stored-house' })
     storage.putJSON(RECENT_VISITORS_KEY, 'not-an-array')
-    storage.scene.set(boardsKey(today), '{')
 
     await state.hydrate()
 
@@ -181,6 +201,16 @@ describe('state hydration', () => {
     expect(state.recentVisitors).toEqual([])
     expect(state.boards).toEqual(emptyBoards())
     expect(storage.sceneGets.filter((key) => key === charadeKey('today'))).toHaveLength(1)
+  })
+
+  it('fails hydration closed when an indexed value cannot be read safely', async () => {
+    const { storage, state } = setup()
+    const today = dayKey(FIXED_NOW)
+    storage.putJSON(indexKey(today), ['corrupt'])
+    storage.scene.set(charadeKey('corrupt'), '{')
+
+    await expect(state.hydrate()).rejects.toMatchObject({ keys: [charadeKey('corrupt')] })
+    expect(state.getPool()).toEqual([])
   })
 
   it('tolerates missing and throwing storage reads', async () => {
@@ -326,6 +356,43 @@ describe('state mutations', () => {
     expect(changingState.boards.decoders).toEqual([{ address: 'bob', name: 'Bob', correct: 0, total: 1 }])
   })
 
+  it('prunes charades outside the live fourteen-day window during rollover', () => {
+    const { state } = setup()
+    state.upsertCharade(makeCharade('expired', { createdAt: FIXED_NOW - 14 * 86_400_000 }))
+    state.upsertCharade(makeCharade('retained', { createdAt: FIXED_NOW - 13 * 86_400_000 }))
+
+    state.rollover(FIXED_NOW)
+
+    expect(state.getPool().map((charade) => charade.id)).toEqual(['retained'])
+  })
+
+  it('restores decoder aggregates below tenth place after a server restart', async () => {
+    const storage = new FakeStorage()
+    const firstRepository = createStorageRepository(storage)
+    const firstState = new GhostCharadesState(firstRepository, () => FIXED_NOW)
+    for (let player = 0; player < 11; player += 1) {
+      firstState.recordDecoder(`player-${player}`, `Player ${player}`, false)
+      for (let correct = 0; correct < player; correct += 1) {
+        firstState.recordDecoder(`player-${player}`, `Player ${player}`, true)
+      }
+    }
+    await firstRepository.flushNow()
+    expect(storage.readJSON<unknown[]>(decoderAggregateKey(dayKey(FIXED_NOW)))).toHaveLength(11)
+
+    const secondRepository = createStorageRepository(storage)
+    const secondState = new GhostCharadesState(secondRepository, () => FIXED_NOW)
+    await secondState.hydrate()
+    secondState.recordDecoder('player-0', 'Player 0', true)
+    secondState.recordDecoder('player-0', 'Player 0', true)
+
+    expect(secondState.boards.decoders).toContainEqual({
+      address: 'player-0',
+      name: 'Player 0',
+      correct: 2,
+      total: 3
+    })
+  })
+
   it('builds the playbill from the latest six real performances and selects the hardest ghost of the night', async () => {
     const { state } = setup()
     for (let index = 0; index < 7; index += 1) {
@@ -340,6 +407,7 @@ describe('state mutations', () => {
     state.upsertCharade(HOUSE_CHARADE)
     const latestStats = await state.getOrCreateStats('performer-6', 'Performer 6')
     latestStats.authored.push('show-6')
+    latestStats.authoredCount = 1
 
     const playbill = await state.getRecentPerformers()
     const ghost = await state.getGhostOfNight()
@@ -359,7 +427,7 @@ describe('state mutations', () => {
 })
 
 describe('player stats', () => {
-  it('loads once, caps and deduplicates seen ids, consumes pending counts, and persists the reset', async () => {
+  it('loads once, retains exact active-pool seen ids, consumes pending counts, and persists the reset', async () => {
     const { storage, repository, state } = setup()
     const seen = Array.from({ length: 205 }, (_, index) => `seen-${index}`)
     storage.putPlayerJSON(
@@ -367,17 +435,19 @@ describe('player stats', () => {
       PLAYER_STATS_KEY,
       makeStats({ seen, pending: { triedYou: 5, gotYou: 2, replies: 3 } })
     )
+    for (const id of seen) state.upsertCharade(makeCharade(id))
 
     const stats = await state.getOrCreateStats('player', 'Current name')
-    expect(stats.seen).toEqual(seen.slice(-200))
+    expect(stats.seen).toEqual(seen)
     expect(await state.getOrCreateStats('player', 'Renamed')).toBe(stats)
     expect(storage.playerGets).toHaveLength(1)
+    state.upsertCharade(makeCharade('seen-205'))
     stats.seen.push('seen-100', 'seen-205')
 
     expect(state.consumePending('player')).toEqual({ triedYou: 5, gotYou: 2, replies: 3 })
     expect(stats.pending).toEqual({ triedYou: 0, gotYou: 0, replies: 0 })
-    expect(stats.seen).toHaveLength(200)
-    expect(new Set(stats.seen).size).toBe(200)
+    expect(stats.seen).toHaveLength(206)
+    expect(new Set(stats.seen).size).toBe(206)
     expect(stats.seen.at(-1)).toBe('seen-205')
     await repository.flush()
 
@@ -398,6 +468,19 @@ describe('player stats', () => {
 
     expect(storage.playerGets).toEqual([])
     expect(storage.writes).toEqual([])
+  })
+
+  it('evicts the least-recent inactive stats after durable checkpoints can run', async () => {
+    const { state } = setup()
+    for (let index = 0; index < 257; index += 1) {
+      await state.getOrCreateStats(`guest-${index}`, `Guest ${index}`, false)
+    }
+
+    state.evictInactiveStats(new Set())
+
+    expect(state.playerStats.size).toBe(256)
+    expect(state.playerStats.has('guest-0')).toBe(false)
+    expect(state.playerStats.has('guest-256')).toBe(true)
   })
 
   it('awards one daily stamp at three decodes and one authored charade and restores it after server sleep', async () => {

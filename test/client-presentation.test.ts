@@ -77,6 +77,7 @@ const opening = vi.hoisted(() => ({
     return true
   }),
   tick: vi.fn(),
+  cancel: vi.fn(),
   isRunning: vi.fn(() => harness.openingRunning),
   hasPlayed: vi.fn(() => harness.openingPlayed)
 }))
@@ -89,11 +90,12 @@ vi.mock('../src/client/opening-scene', () => ({
   })
 }))
 
-const setup = vi.hoisted(() => ({ startClientSetup: vi.fn() }))
+const setup = vi.hoisted(() => ({ startClientSetup: vi.fn(), isPlayerInDecodeArea: vi.fn(() => true) }))
 vi.mock('../src/client/setup', () => setup)
 const sound = vi.hoisted(() => ({ duckForReveal: vi.fn(), play: vi.fn(), restoreAfterReveal: vi.fn() }))
 const rewards = vi.hoisted(() => ({
   clearStageRewardProp: vi.fn(),
+  refreshRewardProps: vi.fn(),
   removeRewardProp: vi.fn(),
   setRewardProp: vi.fn(),
   setStageRewardProp: vi.fn()
@@ -140,6 +142,8 @@ describe('client presentation integration', () => {
 
     Object.assign(harness.state, { ready: true, screen: 'foyer' })
     harness.listener!(harness.state)
+    const openingSystem = vi.mocked(engine.addSystem).mock.calls[0][0]
+    openingSystem(0)
     expect(opening.start).toHaveBeenCalledWith('Kitchen Capers')
     expect(flow.requestNextCharade).toHaveBeenCalledTimes(1)
 
@@ -148,6 +152,13 @@ describe('client presentation integration', () => {
     harness.listener!(harness.state)
     expect(sound.play).toHaveBeenCalledTimes(1)
     expect(sound.play).toHaveBeenCalledWith('stamp')
+
+    sound.play.mockClear()
+    Object.assign(harness.state, { screen: 'reveal', notices: [{ id: 'reveal-1', kind: 'stamp' }] })
+    harness.listener!(harness.state)
+    Object.assign(harness.state, { screen: 'posted' })
+    harness.listener!(harness.state)
+    expect(sound.play).not.toHaveBeenCalled()
 
     ghosts.clearPerformer.mockClear()
     Object.assign(harness.state, { screen: 'reveal', author: null })

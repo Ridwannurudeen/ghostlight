@@ -182,6 +182,11 @@ class FakeRoom {
     return this.getClient(address).messages
   }
 
+  dropClientMessages(address: string) {
+    const client = this.getClient(address)
+    client.cursor = client.messages.length
+  }
+
   readonly sendFromServer: ProtocolSend = async (type, data, to) => {
     this.serverMessages.push({ type, data, to })
     const recipients = to ? to.map((address) => this.clients.get(address.toLowerCase())) : [...this.clients.values()]
@@ -289,6 +294,7 @@ function createRevealHarness() {
     twitchCurtains: () => record('curtains:twitch'),
     freezePerformer: () => record('performer:freeze'),
     setCamera: (camera) => record(`camera:${camera}`),
+    releaseCamera: () => record('camera:release'),
     fadeWrongAnswers: () => record('answers:fade-wrong'),
     setSpotlightColor: (color) => record(`spotlight:${color}`),
     showFloatingVerdict: (text) => record(`floating:${text}`),
@@ -423,12 +429,17 @@ describe('full experience integration', () => {
     transportReady = true
     runtime.tick(0)
     expect(room.messagesFrom(playerAddress).map((message) => message.type)).toEqual(['hello', 'ping'])
-    const startup = room.pumpClient(playerAddress)
-    await Promise.resolve()
+    room.dropClientMessages(playerAddress)
+    for (let heartbeat = 0; heartbeat < 6; heartbeat += 1) {
+      runtime.tick(2)
+      room.dropClientMessages(playerAddress)
+    }
     expect(room.serverMessages).toEqual([])
 
     readyGate.resolve()
-    await startup
+    runtime.tick(2)
+    await room.pumpClient(playerAddress)
+    expect(room.messagesFrom(playerAddress).filter((message) => message.type === 'hello')).toHaveLength(9)
     expect(runtime.getState()).toMatchObject({ ready: true, transportReady: true, screen: 'decode' })
     expect(runtime.getState().charade?.id).toBe(target.id)
     expect(opening.isRunning()).toBe(true)
@@ -607,9 +618,9 @@ describe('full experience integration', () => {
     const activeAvatarIds = [...ecsHarness.activeAvatars.values()].map((avatar) => avatar.id).sort()
     expect(requestedAudience).toHaveLength(6)
     expect(ecsHarness.nextEntity).toBe(MAX_GHOSTS)
-    expect(ecsHarness.activeAvatars.size).toBe(MAX_GHOSTS)
+    expect(ecsHarness.activeAvatars.size).toBe(MAX_GHOSTS - 1)
     expect(activeAvatarIds).toEqual(
-      [playerAddress, replierAddress, 'hardest', ...requestedAudience.slice(0, 5).map((look) => look.address)].sort()
+      [playerAddress, replierAddress, 'hardest', ...requestedAudience.slice(0, 4).map((look) => look.address)].sort()
     )
   })
 })

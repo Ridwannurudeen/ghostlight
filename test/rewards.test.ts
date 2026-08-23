@@ -1,7 +1,7 @@
 import { AvatarAnchorPointType } from '@dcl/sdk/ecs'
 import { describe, expect, it } from 'vitest'
 import { REWARD_PROPS } from '../src/shared/config'
-import { createRewardController, type RewardPort } from '../src/client/rewards'
+import { MAX_VISIBLE_REWARD_PROPS, createRewardController, type RewardPort } from '../src/client/rewards'
 
 type TransformRecord = {
   parent: number
@@ -14,7 +14,7 @@ function createRewardHarness() {
   const attachments = new Map<number, { avatarId: string; anchorPointId: AvatarAnchorPointType }>()
   const transforms = new Map<number, TransformRecord>()
   const models = new Map<number, string>()
-  const removed: number[] = []
+  const distances = new Map<string, number>()
 
   const port: RewardPort<number> = {
     createEntity: () => ++nextEntity,
@@ -24,7 +24,7 @@ function createRewardHarness() {
     clearModel: (entity) => {
       models.delete(entity)
     },
-    removeEntityTree: (entity) => removed.push(entity)
+    distanceToPlayer: (address) => distances.get(address.toLowerCase()) ?? 0
   }
 
   return {
@@ -32,7 +32,7 @@ function createRewardHarness() {
     attachments,
     transforms,
     models,
-    removed,
+    distances,
     entityCount: () => nextEntity
   }
 }
@@ -79,7 +79,7 @@ describe('title reward props', () => {
   })
 
   it('does not leak entities across clears, restores, or repeated title updates', () => {
-    const { controller, models, removed, entityCount } = createRewardHarness()
+    const { controller, models, entityCount } = createRewardHarness()
 
     controller.set('0xAlice', '')
     expect(entityCount()).toBe(0)
@@ -98,13 +98,13 @@ describe('title reward props', () => {
     expect(models.get(2)).toBe(REWARD_PROPS.Understudy)
 
     controller.remove('0xALICE')
-    expect(removed).toEqual([1])
+    expect(models.size).toBe(0)
     controller.set('0xAlice', 'Understudy')
-    expect(entityCount()).toBe(4)
+    expect(entityCount()).toBe(2)
   })
 
   it('reuses one bounded prop slot across asynchronous stage authors', () => {
-    const { controller, attachments, models, removed, entityCount } = createRewardHarness()
+    const { controller, attachments, models, entityCount } = createRewardHarness()
 
     controller.setStage('0xAuthor-1', 'Understudy')
     for (let index = 2; index <= 20; index += 1) {
@@ -120,10 +120,25 @@ describe('title reward props', () => {
     expect(models.size).toBe(1)
 
     controller.remove('0xAuthor-20')
-    expect(removed).toEqual([3])
     expect(models.get(2)).toBe(REWARD_PROPS['Scene Stealer'])
 
     controller.clearStage()
     expect(models.has(2)).toBe(false)
+  })
+
+  it('caps live rewards and replaces the farthest player when a nearer title appears', () => {
+    const { controller, attachments, distances, entityCount } = createRewardHarness()
+    for (let index = 0; index < MAX_VISIBLE_REWARD_PROPS; index += 1) {
+      const address = `player-${index}`
+      distances.set(address, index + 1)
+      controller.set(address, 'Understudy')
+    }
+    distances.set('nearest', 0)
+    controller.set('nearest', 'Scene Stealer')
+
+    const visibleAddresses = [...attachments.values()].map(({ avatarId }) => avatarId)
+    expect(entityCount()).toBe(MAX_VISIBLE_REWARD_PROPS * 2)
+    expect(visibleAddresses).toContain('nearest')
+    expect(visibleAddresses).not.toContain(`player-${MAX_VISIBLE_REWARD_PROPS - 1}`)
   })
 })

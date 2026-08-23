@@ -44,6 +44,10 @@ export class LiveRounds {
     return this.players.size
   }
 
+  hasPlayer(address: string) {
+    return this.players.has(address.toLowerCase())
+  }
+
   get isLive() {
     return this.players.size >= 2
   }

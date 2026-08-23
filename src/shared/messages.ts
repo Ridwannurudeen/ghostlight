@@ -76,8 +76,12 @@ export const Messages = {
     address: Schemas.String,
     title: Schemas.String
   }),
-  nextCharade: Schemas.Map({ exclude: Schemas.Array(Schemas.String) }),
+  nextCharade: Schemas.Map({
+    requestId: Schemas.String,
+    exclude: Schemas.Array(Schemas.String)
+  }),
   charade: Schemas.Map({
+    requestId: Schemas.String,
     id: Schemas.String,
     authorName: Schemas.String,
     authorAddress: Schemas.String,

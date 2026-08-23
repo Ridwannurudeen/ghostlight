@@ -31,6 +31,7 @@ export type RevealEffects = {
   twitchCurtains: () => void
   freezePerformer: () => void
   setCamera: (camera: RevealCamera) => void
+  releaseCamera: () => void
   fadeWrongAnswers: () => void
   setSpotlightColor: (color: 'white') => void
   showFloatingVerdict: (text: 'YOU GOT IT') => void
@@ -55,7 +56,7 @@ export type RevealClock = {
 }
 
 function returnToCleanState(effects: RevealEffects) {
-  effects.setCamera('stage')
+  effects.releaseCamera()
   effects.setLights('house')
   effects.resetRevealVisuals()
   effects.restoreAudio()
@@ -213,9 +214,21 @@ export function createRevealController(effects: RevealEffects, clock: RevealCloc
   function resolve(nextOutcome: RevealOutcome) {
     if (status !== 'running') return false
     outcome = nextOutcome
-    const dueEntries = deferredEntries
+    if (deferredEntries.length === 0) return true
+
+    cancelTimers()
+    const runGeneration = generation
     deferredEntries = []
-    for (const entry of dueEntries) runEntry(entry)
+    const outcomeEntries = REVEAL_TIMELINE.filter((entry) => entry.at >= 2.6)
+    const firstAt = outcomeEntries[0].at
+    runEntry(outcomeEntries[0])
+    for (const entry of outcomeEntries.slice(1)) {
+      const timer = clock.setTimeout(() => {
+        if (status !== 'running' || generation !== runGeneration) return
+        runEntry(entry)
+      }, (entry.at - firstAt) * 1_000)
+      timers.push(timer)
+    }
     return true
   }
 

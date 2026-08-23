@@ -29,7 +29,7 @@ vi.mock('../src/client/ghosts', () => ({
   resumePerformer: vi.fn()
 }))
 
-vi.mock('../src/client/setup', () => ({ switchTheaterCamera: vi.fn() }))
+vi.mock('../src/client/setup', () => ({ switchTheaterCamera: vi.fn(), releaseTheaterCamera: vi.fn() }))
 
 vi.mock('../src/client/theater', () => ({
   curtains: { twitch: vi.fn() },

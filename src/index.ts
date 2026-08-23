@@ -17,10 +17,11 @@ import {
 } from './client/ghosts'
 import { createSceneOpeningController } from './client/opening-scene'
 import { createSceneRevealController } from './client/reveal-scene'
-import { startClientSetup } from './client/setup'
+import { isPlayerInDecodeArea, startClientSetup } from './client/setup'
 import { duckForReveal, play, restoreAfterReveal } from './client/sound'
 import {
   clearStageRewardProp,
+  refreshRewardProps,
   removeRewardProp,
   setRewardProp,
   setStageRewardProp
@@ -89,6 +90,7 @@ export function main() {
     replayPerformer,
     showPreview,
     clearPreview,
+    clearPerformer,
     showReward: setRewardProp,
     showStageReward: setStageRewardProp,
     clearStageReward: clearStageRewardProp,
@@ -99,7 +101,8 @@ export function main() {
     beginReveal: reveal.begin,
     resolveReveal: reveal.resolve,
     skipReveal: reveal.skipToEnd,
-    cancelReveal: reveal.cancel
+    cancelReveal: reveal.cancel,
+    cancelOpening: opening.cancel
   })
 
   let audience = clientFlow.getState().audience
@@ -115,16 +118,10 @@ export function main() {
       marquee.setText(`TONIGHT'S SHOW: ${state.themeLabel}`)
     }
 
-    if (state.ready && state.screen === 'foyer' && !opening.hasPlayed() && opening.start(state.themeLabel)) {
-      clientFlow.requestNextCharade()
-    }
-
-    if (state.screen !== 'reveal') {
-      for (const notice of state.notices) {
-        if (playedNotices.has(notice.id)) continue
-        playedNotices.add(notice.id)
-        play(notice.kind === 'stamp' ? 'stamp' : 'unlock')
-      }
+    for (const notice of state.notices) {
+      if (playedNotices.has(notice.id)) continue
+      playedNotices.add(notice.id)
+      if (state.screen !== 'reveal') play(notice.kind === 'stamp' ? 'stamp' : 'unlock')
     }
 
     if (state.audience !== audience) {
@@ -149,6 +146,28 @@ export function main() {
   onLeaveScene((address) => removeRewardProp(address))
 
   startClientSetup(uiComponent)
-  engine.addSystem((deltaSeconds) => opening.tick(deltaSeconds), undefined, 'ghost-charades::opening')
+  let rewardRefreshElapsed = 0
+  engine.addSystem(
+    (deltaSeconds) => {
+      rewardRefreshElapsed += deltaSeconds
+      if (rewardRefreshElapsed >= 1) {
+        rewardRefreshElapsed = 0
+        refreshRewardProps()
+      }
+      const state = clientFlow.getState()
+      if (
+        state.ready &&
+        state.screen === 'foyer' &&
+        !opening.hasPlayed() &&
+        isPlayerInDecodeArea() &&
+        opening.start(state.themeLabel)
+      ) {
+        clientFlow.requestNextCharade()
+      }
+      opening.tick(deltaSeconds)
+    },
+    undefined,
+    'ghost-charades::opening'
+  )
   startClientFlow()
 }

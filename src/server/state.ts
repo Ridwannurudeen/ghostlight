@@ -1,4 +1,4 @@
-import { AUDIENCE_SEATS, HYDRATION_DAYS } from '../shared/config'
+import { AUDIENCE_SEATS, HYDRATION_DAYS, WIRE_INT_MAX } from '../shared/config'
 import type { PlayerTitle } from '../shared/config'
 import { HOUSE_CHARADE } from '../shared/deck'
 import type {
@@ -18,6 +18,7 @@ import {
   RECENT_VISITORS_KEY,
   boardsKey,
   charadeKey,
+  decoderAggregateKey,
   indexKey,
   loadJSON,
   loadPlayerJSON,
@@ -41,6 +42,9 @@ const EMPTY_BOARDS: Boards = { decoders: [], hardest: [] }
 const DAY_MILLISECONDS = 24 * 60 * 60 * 1000
 const MAX_CONCURRENT_READS = 8
 const MAX_STAMPED_DAYS = 100
+const MAX_AUTHORED_IDS = 200
+const MAX_CACHED_PLAYER_STATS = 256
+const MAX_TIMESTAMP = 8_640_000_000_000_000
 const SUPPORTED_STORAGE_VERSIONS = new Set([0, 1, STORAGE_SCHEMA_VERSION])
 
 function asObject(value: unknown): Record<string, unknown> | null {
@@ -50,7 +54,15 @@ function asObject(value: unknown): Record<string, unknown> | null {
 }
 
 function asNonNegativeInt(value: unknown, fallback = 0) {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : fallback
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? Math.min(Math.floor(value), WIRE_INT_MAX)
+    : fallback
+}
+
+function asTimestamp(value: unknown, fallback: number | null = null) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= MAX_TIMESTAMP
+    ? value
+    : fallback
 }
 
 function asStringArray(value: unknown, limit?: number) {
@@ -59,7 +71,11 @@ function asStringArray(value: unknown, limit?: number) {
 }
 
 function normalizeAuthored(value: unknown) {
-  return [...new Set(asStringArray(value).filter((id) => id !== HOUSE_CHARADE.id))]
+  return [...new Set(asStringArray(value).filter((id) => id !== HOUSE_CHARADE.id))].slice(-MAX_AUTHORED_IDS)
+}
+
+function authoredCountFrom(value: unknown) {
+  return new Set(asStringArray(value).filter((id) => id !== HOUSE_CHARADE.id)).size
 }
 
 function isDayKey(value: string) {
@@ -175,8 +191,7 @@ export function migrateReply(value: unknown): CharadeReply | null {
     stored.name !== look.name ||
     emotes.length !== 3 ||
     emotes.some((emote) => emote.length > 64) ||
-    typeof stored.createdAt !== 'number' ||
-    !Number.isFinite(stored.createdAt)
+    asTimestamp(stored.createdAt) === null
   ) {
     return null
   }
@@ -185,7 +200,7 @@ export function migrateReply(value: unknown): CharadeReply | null {
     name: stored.name,
     look,
     emotes: [emotes[0], emotes[1], emotes[2]],
-    createdAt: stored.createdAt
+    createdAt: stored.createdAt as number
   }
 }
 
@@ -202,8 +217,7 @@ export function migrateCharade(value: unknown): Charade | null {
     typeof stored.phraseId !== 'string' ||
     emotes.length !== 3 ||
     emotes.some((emote) => emote.length > 64) ||
-    typeof stored.createdAt !== 'number' ||
-    !Number.isFinite(stored.createdAt) ||
+    asTimestamp(stored.createdAt) === null ||
     !guesses ||
     typeof stored.isHouse !== 'boolean'
   ) {
@@ -217,12 +231,12 @@ export function migrateCharade(value: unknown): Charade | null {
     author,
     phraseId: stored.phraseId,
     emotes: [emotes[0], emotes[1], emotes[2]],
-    createdAt: stored.createdAt,
+    createdAt: stored.createdAt as number,
     guesses: {
       total,
       correct: Math.min(asNonNegativeInt(guesses.correct), total)
     },
-    lastGuessAt: asNonNegativeInt(stored.lastGuessAt, stored.createdAt),
+    lastGuessAt: asTimestamp(stored.lastGuessAt, stored.createdAt as number)!,
     isHouse: stored.isHouse
   }
   if (stored.v === STORAGE_SCHEMA_VERSION && !stored.isHouse) {
@@ -242,6 +256,7 @@ export function migratePlayerStats(value: unknown, name: string, now: number): P
       correct: 0,
       seen: [],
       authored: [],
+      authoredCount: 0,
       lastSeenAt: now,
       pending: { triedYou: 0, gotYou: 0, replies: 0 },
       daily: emptyDaily(dayKey(now)),
@@ -256,15 +271,17 @@ export function migratePlayerStats(value: unknown, name: string, now: number): P
   const stampedDays = [...new Set(asStringArray(stored.stampedDays).filter(isDayKey))]
   if (daily.stamped && !stampedDays.includes(daily.day)) stampedDays.push(daily.day)
   const authored = normalizeAuthored(stored.authored)
+  const authoredCount = Math.max(asNonNegativeInt(stored.authoredCount), authoredCountFrom(stored.authored))
   const correct = Math.min(asNonNegativeInt(stored.correct), decoded)
   return {
     v: STORAGE_SCHEMA_VERSION,
     name: typeof stored.name === 'string' && stored.name ? stored.name : name,
     decoded,
     correct,
-    seen: asStringArray(stored.seen, 200),
+    seen: [...new Set(asStringArray(stored.seen))],
     authored,
-    lastSeenAt: asNonNegativeInt(stored.lastSeenAt, now),
+    authoredCount,
+    lastSeenAt: asTimestamp(stored.lastSeenAt, now)!,
     pending: {
       triedYou: asNonNegativeInt(pending?.triedYou),
       gotYou: asNonNegativeInt(pending?.gotYou),
@@ -272,7 +289,7 @@ export function migratePlayerStats(value: unknown, name: string, now: number): P
     },
     daily,
     stampedDays: stampedDays.slice(-MAX_STAMPED_DAYS),
-    title: computeTitle({ correct, authored: authored.length, stamps: stampedDays.length })
+    title: computeTitle({ correct, authored: authoredCount, stamps: stampedDays.length })
   }
 }
 
@@ -315,12 +332,24 @@ function migrateBoards(value: unknown): Boards {
   return { decoders: decoders.slice(0, 10), hardest: hardest.slice(0, 10) }
 }
 
+function migrateDecoderAggregate(value: unknown): Boards['decoders'] {
+  const stored = asObject(value)
+  const values = Array.isArray(stored?.decoders) ? stored.decoders : Array.isArray(value) ? value : []
+  return values.flatMap((value) => {
+    const row = asObject(value)
+    if (!row || typeof row.address !== 'string' || typeof row.name !== 'string') return []
+    const total = asNonNegativeInt(row.total)
+    return [{ address: row.address, name: row.name, correct: Math.min(asNonNegativeInt(row.correct), total), total }]
+  })
+}
+
 function migrateRecentVisitors(value: unknown): RecentVisitor[] {
   if (!Array.isArray(value)) return []
   return value.flatMap((item) => {
     const look = migrateLook(item)
     const stored = asObject(item)
-    return look && stored ? [{ ...look, lastSeenAt: asNonNegativeInt(stored.lastSeenAt) }] : []
+    const lastSeenAt = stored ? asTimestamp(stored.lastSeenAt) : null
+    return look && lastSeenAt !== null ? [{ ...look, lastSeenAt }] : []
   })
 }
 
@@ -341,6 +370,8 @@ export class GhostCharadesState {
   private readonly indexes = new Map<string, string[]>()
   private readonly dailyDecoders = new Map<string, Boards['decoders'][number]>()
   private readonly statsLoads = new Map<string, Promise<PlayerStats>>()
+  private readonly statsAccess = new Map<string, number>()
+  private accessSequence = 0
   private decoderDay: string | null = null
 
   constructor(
@@ -364,9 +395,10 @@ export class GhostCharadesState {
         dayIndex.forEach((id) => ids.add(id))
       })
     }
-    const [visitorsValue, boardsValue] = await Promise.all([
+    const [visitorsValue, boardsValue, decoderAggregateValue] = await Promise.all([
       this.storage.loadJSON<unknown>(RECENT_VISITORS_KEY, []),
-      this.storage.loadJSON<unknown>(boardsKey(today), EMPTY_BOARDS)
+      this.storage.loadJSON<unknown>(boardsKey(today), EMPTY_BOARDS),
+      this.storage.loadJSON<unknown>(decoderAggregateKey(today), null)
     ])
 
     const visitorAddresses = new Set<string>()
@@ -382,7 +414,8 @@ export class GhostCharadesState {
     this.boards = migrateBoards(boardsValue)
     this.dailyDecoders.clear()
     this.decoderDay = today
-    this.boards.decoders.forEach((row) => this.dailyDecoders.set(row.address.toLowerCase(), row))
+    const restoredDecoders = migrateDecoderAggregate(decoderAggregateValue ?? boardsValue)
+    restoredDecoders.forEach((row) => this.dailyDecoders.set(row.address.toLowerCase(), row))
 
     this.charades.clear()
     this.charades.set(HOUSE_CHARADE.id, HOUSE_CHARADE)
@@ -467,8 +500,8 @@ export class GhostCharadesState {
     const updated: Charade = {
       ...current,
       guesses: {
-        total: current.guesses.total + 1,
-        correct: current.guesses.correct + (correct ? 1 : 0)
+        total: Math.min(current.guesses.total + 1, WIRE_INT_MAX),
+        correct: Math.min(current.guesses.correct + (correct ? 1 : 0), WIRE_INT_MAX)
       },
       lastGuessAt: this.now()
     }
@@ -496,8 +529,8 @@ export class GhostCharadesState {
     this.dailyDecoders.set(key, {
       address,
       name,
-      correct: current.correct + (correct ? 1 : 0),
-      total: current.total + 1
+      correct: Math.min(current.correct + (correct ? 1 : 0), WIRE_INT_MAX),
+      total: Math.min(current.total + 1, WIRE_INT_MAX)
     })
     return this.recomputeBoards()
   }
@@ -523,7 +556,10 @@ export class GhostCharadesState {
       }))
 
     this.boards = { decoders, hardest }
-    if (markForStorage) this.storage.markDirty(boardsKey(today), this.boards)
+    if (markForStorage) {
+      this.storage.markDirty(boardsKey(today), this.boards)
+      this.storage.markDirty(decoderAggregateKey(today), [...this.dailyDecoders.values()])
+    }
     return this.boards
   }
 
@@ -535,11 +571,27 @@ export class GhostCharadesState {
     return today
   }
 
+  rollover(timestamp = this.now()) {
+    const today = dayKey(timestamp)
+    const retainedDays = new Set(
+      Array.from({ length: HYDRATION_DAYS }, (_, offset) => dayKey(timestamp - offset * DAY_MILLISECONDS))
+    )
+    for (const [day] of this.indexes) {
+      if (!retainedDays.has(day)) this.indexes.delete(day)
+    }
+    for (const [id, charade] of this.charades) {
+      if (!charade.isHouse && !retainedDays.has(dayKey(charade.createdAt))) this.charades.delete(id)
+    }
+    this.ensureDecoderDay(today)
+    return this.recomputeBoards()
+  }
+
   async getOrCreateStats(address: string, name = 'Guest', persistent = true) {
     const key = address.toLowerCase()
     const cached = this.playerStats.get(key)
     if (cached) {
       if (name && cached.name !== name) cached.name = name
+      this.statsAccess.set(key, ++this.accessSequence)
       return cached
     }
 
@@ -555,6 +607,7 @@ export class GhostCharadesState {
       const stats = migratePlayerStats(stored, name, this.now())
       stats.name = name || stats.name
       this.playerStats.set(key, stats)
+      this.statsAccess.set(key, ++this.accessSequence)
       return stats
     })()
     this.statsLoads.set(key, load)
@@ -569,18 +622,40 @@ export class GhostCharadesState {
     const key = address.toLowerCase()
     const stats = this.playerStats.get(key)
     if (!stats) return
-    stats.seen = [...new Set(stats.seen)].slice(-200)
+    stats.seen = [...new Set(stats.seen)].filter((id) => {
+      const charade = this.charades.get(id)
+      return charade !== undefined && !charade.isHouse
+    })
     stats.authored = normalizeAuthored(stats.authored)
+    stats.authoredCount = Math.max(stats.authoredCount, stats.authored.length)
     stats.stampedDays = [...new Set(stats.stampedDays)].slice(-MAX_STAMPED_DAYS)
     this.getPlayerProgress(stats)
     stats.lastSeenAt = this.now()
     if (persist) this.storage.markPlayerDirty(key, PLAYER_STATS_KEY, stats)
   }
 
+  evictInactiveStats(activeAddresses: ReadonlySet<string>) {
+    const active = new Set([...activeAddresses].map((address) => address.toLowerCase()))
+    const candidates = [...this.statsAccess.entries()]
+      .filter(([address]) => !active.has(address))
+      .sort((left, right) => left[1] - right[1])
+    while (this.playerStats.size > MAX_CACHED_PLAYER_STATS && candidates.length > 0) {
+      const [address] = candidates.shift()!
+      this.playerStats.delete(address)
+      this.statsAccess.delete(address)
+    }
+  }
+
+  evictStats(address: string) {
+    const key = address.toLowerCase()
+    this.playerStats.delete(key)
+    this.statsAccess.delete(key)
+  }
+
   getPlayerProgress(stats: PlayerStats) {
     const progress = computeProgress({
       correct: stats.correct,
-      authored: stats.authored.length,
+      authored: stats.authoredCount,
       stamps: stats.stampedDays.length
     })
     stats.title = progress.title
@@ -595,13 +670,13 @@ export class GhostCharadesState {
 
   recordDailyDecode(stats: PlayerStats) {
     const daily = this.getDaily(stats)
-    daily.decoded += 1
+    daily.decoded = Math.min(daily.decoded + 1, WIRE_INT_MAX)
     return this.awardDailyStamp(stats)
   }
 
   recordDailyAuthor(stats: PlayerStats) {
     const daily = this.getDaily(stats)
-    daily.authored += 1
+    daily.authored = Math.min(daily.authored + 1, WIRE_INT_MAX)
     return this.awardDailyStamp(stats)
   }
 

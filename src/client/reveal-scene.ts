@@ -9,7 +9,7 @@ import {
   type RevealSoundName,
   type RevealStats
 } from './reveal'
-import { switchTheaterCamera } from './setup'
+import { releaseTheaterCamera, switchTheaterCamera } from './setup'
 import { curtains, lights } from './theater'
 
 export type RevealAudioPort = {
@@ -114,6 +114,7 @@ export function createSceneRevealController(audio: RevealAudioPort, clock?: Reve
     twitchCurtains: () => curtains.twitch(),
     freezePerformer,
     setCamera: (camera) => switchTheaterCamera(camera === 'push-in' ? 'reveal' : 'stage'),
+    releaseCamera: releaseTheaterCamera,
     fadeWrongAnswers: () => {
       revealView = { ...revealView, wrongAnswersFaded: true }
     },

@@ -1,8 +1,9 @@
 import { AvatarShape, engine } from '@dcl/sdk/ecs'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   clearGhostOfNight,
   clearPerformer,
+  clearPreview,
   freezePerformer,
   playPerformerEmote,
   replayPerformer,
@@ -45,6 +46,16 @@ vi.mock('../src/client/theater', () => ({
 }))
 
 describe('audience ghosts', () => {
+  beforeEach(() => {
+    clearPerformer()
+    clearPreview()
+    clearGhostOfNight()
+    setAudience([])
+    vi.mocked(AvatarShape.createOrReplace).mockClear()
+    vi.mocked(AvatarShape.deleteFrom).mockClear()
+    vi.mocked(AvatarShape.getMutable).mockClear()
+  })
+
   it('keeps seated addresses while merged audience chunks arrive', () => {
     const alice = makeLook('0xAlice')
     const bob = makeLook('0xBob')
@@ -125,6 +136,37 @@ describe('audience ghosts', () => {
         .mock.calls.slice(-2)
         .map(([entity]) => entity)
     ).toEqual([1, 1])
+  })
+
+  it('reserves one audience avatar slot while a two-performer duet is active', () => {
+    const audience = Array.from({ length: 6 }, (_, index) => makeLook(`audience-${index}`))
+    setAudience(audience)
+    const system = vi.mocked(engine.addSystem).mock.calls[0][0]
+    for (let index = 0; index < 6; index += 1) system(1 / 3)
+    vi.mocked(AvatarShape.deleteFrom).mockClear()
+
+    showDuet(
+      { look: makeLook('0xAuthor'), emotes: ['wave', 'clap', 'dab'] },
+      { look: makeLook('0xReply'), emotes: ['shrug', 'kiss', 'headexplode'] }
+    )
+
+    expect(AvatarShape.deleteFrom).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not tear down an active duet when author-preview cleanup has nothing to clear', () => {
+    const system = vi.mocked(engine.addSystem).mock.calls[0][0]
+    showDuet(
+      { look: makeLook('0xAuthor'), emotes: ['wave', 'clap', 'dab'] },
+      { look: makeLook('0xReply'), emotes: ['shrug', 'kiss', 'headexplode'] }
+    )
+    vi.mocked(AvatarShape.deleteFrom).mockClear()
+    vi.mocked(AvatarShape.getMutable).mockClear()
+
+    clearPreview()
+    for (let index = 0; index < 3; index += 1) system(2.5)
+
+    expect(AvatarShape.deleteFrom).not.toHaveBeenCalled()
+    expect(vi.mocked(AvatarShape.getMutable).mock.calls.map(([entity]) => entity)).toContain(8)
   })
 
   it('cancels duet playback and hides the stale reply on performer clear paths', () => {

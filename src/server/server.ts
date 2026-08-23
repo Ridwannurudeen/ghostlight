@@ -1,18 +1,18 @@
 import { AvatarBase, AvatarEquippedData, PlayerIdentityData, engine } from '@dcl/sdk/ecs'
 import { onEnterScene, onLeaveScene } from '@dcl/sdk/src/players'
-import { AUTHOR_COOLDOWN_SECONDS, PROTOCOL_VERSION, themeForTimestamp } from '../shared/config'
+import { AUTHOR_COOLDOWN_SECONDS, PROTOCOL_VERSION, WIRE_INT_MAX, themeForTimestamp } from '../shared/config'
 import { DECK, EMOTE_VOCABULARY, HOUSE_CHARADE } from '../shared/deck'
 import { Messages, room } from '../shared/messages'
 import { chooseCharadeFor, pickDecoys, shuffleSeeded } from '../shared/pick'
 import type { Charade, Look, PlayerProgress } from '../shared/types'
 import { STORAGE_SCHEMA_VERSION } from '../shared/types'
 import { LiveRounds } from './rounds'
-import { GhostCharadesState, gameState } from './state'
-import { flushNow, startFlushLoop } from './storage'
+import { GhostCharadesState, dayKey, gameState } from './state'
+import { StorageUnavailableError, flushNow, startFlushLoop } from './storage'
 
 type HelloPayload = { displayName: string; isGuest: boolean; protocolVersion: number }
 type PingPayload = { seq: number }
-type NextCharadePayload = { exclude: string[] }
+type NextCharadePayload = { requestId: string; exclude: string[] }
 type GuessPayload = { charadeId: string; answerIndex: number; requestId: string }
 type PostPayload = { phraseId: string; emotes: string[]; requestId: string; replyTo?: string }
 type ReactPayload = { kind: string }
@@ -164,6 +164,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
   const instanceId = options.instanceId ?? String(now())
   const looks = new Map<string, Look>()
   const welcomed = new Set<string>()
+  const negotiated = new Set<string>()
   const welcomePromises = new Map<string, Promise<boolean>>()
   const cancelledWelcomePromises = new WeakSet<Promise<boolean>>()
   const answerIndexes = new Map<string, number>()
@@ -174,9 +175,14 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     {
       type: 'reveal' | 'posted'
       data: RevealPayload | PostedPayload
+      durable: boolean
     }
   >()
+  const nextRequests = new Map<string, Promise<Charade>>()
+  const activeRequestHandlers = new Map<string, Promise<void>>()
   const rounds = new LiveRounds((type, data) => options.send(type, data))
+  let currentDay = dayKey(now())
+  let rolloverPromise: Promise<void> | null = null
 
   async function sendTo(address: string, type: string, data: unknown) {
     await options.send(type, data, [address])
@@ -184,6 +190,39 @@ export function createServerProtocol(options: ServerProtocolOptions) {
 
   async function sendError(address: string, code: string) {
     await sendTo(address, 'error', { code })
+  }
+
+  async function checkpointOrError(address: string) {
+    try {
+      await checkpoint()
+      options.state.evictInactiveStats(new Set(looks.keys()))
+      return true
+    } catch (error) {
+      if (!(error instanceof StorageUnavailableError)) console.error('[storage] checkpoint failed', error)
+      await sendError(address, 'storage-unavailable')
+      return false
+    }
+  }
+
+  async function requireNegotiated(address: string) {
+    if (negotiated.has(canonicalAddress(address))) return true
+    await sendError(address, 'protocol-required')
+    return false
+  }
+
+  async function serializeRequest(key: string, run: () => Promise<void>) {
+    const active = activeRequestHandlers.get(key)
+    if (active) {
+      await active
+      return run()
+    }
+    const owner = run()
+    activeRequestHandlers.set(key, owner)
+    try {
+      await owner
+    } finally {
+      if (activeRequestHandlers.get(key) === owner) activeRequestHandlers.delete(key)
+    }
   }
 
   async function waitForLook(address: string) {
@@ -268,6 +307,40 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     await Promise.all([...looks.values()].map((look) => sendBoards(look.address)))
   }
 
+  async function rolloverIfNeeded() {
+    const nextDay = dayKey(now())
+    if (nextDay === currentDay) return
+    if (rolloverPromise) return rolloverPromise
+    rolloverPromise = (async () => {
+      options.state.rollover(now())
+      await checkpoint()
+      currentDay = nextDay
+      for (const [address, look] of looks) {
+        const stats = await options.state.getOrCreateStats(address, look.name, !look.isGuest)
+        await sendTo(look.address, 'ready', readyPayload())
+        await sendTo(look.address, 'progress', {
+          daily: { ...options.state.getDaily(stats) },
+          ...progressFor(stats)
+        })
+        await sendBoards(look.address)
+      }
+    })().finally(() => {
+      rolloverPromise = null
+    })
+    return rolloverPromise
+  }
+
+  async function rolloverOrError(address: string) {
+    try {
+      await rolloverIfNeeded()
+      return true
+    } catch (error) {
+      if (!(error instanceof StorageUnavailableError)) console.error('[storage] rollover failed', error)
+      await sendError(address, 'storage-unavailable')
+      return false
+    }
+  }
+
   function progressFor(stats: Awaited<ReturnType<GhostCharadesState['getOrCreateStats']>>) {
     const progress = options.state.getPlayerProgress(stats)
     return { title: progress.title, nextUnlock: { ...progress.nextUnlock } }
@@ -339,19 +412,29 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     const key = canonicalAddress(address)
     const owner = welcomePromises.get(key)
     if (!owner) return false
+    if (!negotiated.has(key)) return false
     const look = await waitForLook(address)
     if (welcomePromises.get(key) !== owner) return false
     if (!look) return false
 
     const previousVisitors = [...options.state.recentVisitors]
-    looks.set(key, look)
-    rounds.enter({ address: look.address, name: look.name })
-    options.state.touchVisitor(look)
     const stats = await options.state.getOrCreateStats(key, look.name, !look.isGuest)
     if (welcomePromises.get(key) !== owner) return false
+    looks.set(key, look)
+    options.state.touchVisitor(look)
     const rankIndex = options.state.boards.decoders.findIndex((row) => canonicalAddress(row.address) === key)
     const pending = { ...stats.pending }
     const progress = progressFor(stats)
+
+    options.state.consumePending(key, !look.isGuest)
+    try {
+      await checkpoint()
+    } catch (error) {
+      stats.pending = pending
+      options.state.saveStats(key, !look.isGuest)
+      throw error
+    }
+    if (welcomePromises.get(key) !== owner) return false
 
     await sendTo(address, 'progress', { daily: { ...options.state.getDaily(stats) }, ...progress })
     if (welcomePromises.get(key) !== owner) return false
@@ -366,7 +449,6 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       })
       if (welcomePromises.get(key) !== owner) return false
     }
-    options.state.consumePending(key, !look.isGuest)
     await sendVisibleTitles(address)
     if (welcomePromises.get(key) !== owner) return false
     await sendAudience(address, previousVisitors)
@@ -374,9 +456,6 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     await sendBoards(address)
     if (welcomePromises.get(key) !== owner) return false
     welcomed.add(key)
-    ensureRound()
-    await checkpoint()
-    if (welcomePromises.get(key) !== owner) return false
     return true
   }
 
@@ -396,16 +475,22 @@ export function createServerProtocol(options: ServerProtocolOptions) {
 
   async function ensureWelcome(address: string) {
     const key = canonicalAddress(address)
-    return welcomed.has(key) || (await welcome(address))
+    if (!(await requireNegotiated(address))) return false
+    if (welcomed.has(key)) return true
+    try {
+      const result = await welcome(address)
+      if (!result) await sendError(address, 'look-not-ready')
+      return result
+    } catch (error) {
+      if (!(error instanceof StorageUnavailableError)) console.error('[storage] welcome failed', error)
+      await sendError(address, 'storage-unavailable')
+      return false
+    }
   }
 
   async function handleEnter(address: string) {
     await ready
     await sendTo(address, 'ready', readyPayload())
-    const pendingWelcome = welcome(address)
-    if (!(await pendingWelcome) && !cancelledWelcomePromises.has(pendingWelcome)) {
-      await sendError(address, 'look-not-ready')
-    }
   }
 
   async function handleLeave(address: string) {
@@ -421,6 +506,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     }
     looks.delete(key)
     welcomed.delete(key)
+    negotiated.delete(key)
     lastAuthors.delete(key)
     lastPosts.delete(key)
     for (const answerKey of answerIndexes.keys()) {
@@ -429,27 +515,45 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     for (const request of completedRequests.keys()) {
       if (request.startsWith(`${key}:`)) completedRequests.delete(request)
     }
+    for (const request of nextRequests.keys()) {
+      if (request.startsWith(`${key}:`)) nextRequests.delete(request)
+    }
+    for (const request of activeRequestHandlers.keys()) {
+      if (request.startsWith(`${key}:`)) activeRequestHandlers.delete(request)
+    }
     rounds.leave(key)
     await checkpoint()
+    options.state.evictStats(key)
   }
 
   async function handleHello(data: HelloPayload, address: string) {
     await ready
     if (data.protocolVersion !== PROTOCOL_VERSION) {
+      negotiated.delete(canonicalAddress(address))
       await sendError(address, 'protocol-version')
       return
     }
+    negotiated.add(canonicalAddress(address))
+    if (!(await rolloverOrError(address))) return
     await sendTo(address, 'ready', readyPayload())
     const pendingWelcome = welcome(address)
-    if (!(await pendingWelcome) && !cancelledWelcomePromises.has(pendingWelcome)) {
-      await sendError(address, 'look-not-ready')
+    try {
+      if (!(await pendingWelcome) && !cancelledWelcomePromises.has(pendingWelcome)) {
+        await sendError(address, 'look-not-ready')
+      }
+    } catch (error) {
+      if (!(error instanceof StorageUnavailableError)) console.error('[storage] welcome failed', error)
+      await sendError(address, 'storage-unavailable')
     }
   }
 
   async function handlePing(data: PingPayload, address: string) {
     await ready
+    if (negotiated.has(canonicalAddress(address)) && !(await rolloverOrError(address))) return
     await sendTo(address, 'pong', { seq: data.seq })
-    if (!welcomed.has(canonicalAddress(address))) await welcome(address)
+    if (negotiated.has(canonicalAddress(address)) && !welcomed.has(canonicalAddress(address))) {
+      await ensureWelcome(address)
+    }
   }
 
   function answerSet(charade: Charade) {
@@ -461,7 +565,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     return { phrase, answers, correctIndex: answers.indexOf(phrase.text) }
   }
 
-  async function sendCharade(address: string, charade: Charade) {
+  async function sendCharade(address: string, requestId: string, charade: Charade) {
     const answers = answerSet(charade)
     if (!answers) {
       await sendError(address, 'invalid-charade')
@@ -477,6 +581,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         ).title
     const authorLook = withoutLastSeen(charade.author)
     await sendTo(address, 'charade', {
+      requestId,
       id: charade.id,
       authorName: authorLook.name,
       authorAddress: authorLook.address,
@@ -503,33 +608,51 @@ export function createServerProtocol(options: ServerProtocolOptions) {
 
   async function handleNextCharade(data: NextCharadePayload, address: string) {
     await ready
-    if (!(await ensureWelcome(address))) {
-      await sendError(address, 'look-not-ready')
+    if (!data.requestId) {
+      await sendError(address, 'invalid-next-charade')
       return
     }
-    const key = canonicalAddress(address)
-    const look = looks.get(key)
-    const stats = await options.state.getOrCreateStats(key, playerName(key), !(look?.isGuest ?? true))
-    const liveCharade = ensureRound()
-    if (
-      liveCharade &&
-      !liveCharade.isHouse &&
-      (stats.seen.includes(liveCharade.id) || canonicalAddress(liveCharade.author.address) === key)
-    ) {
-      rounds.guess(key, liveCharade.id, false)
+    if (!(await ensureWelcome(address))) {
+      return
     }
-    const requesterGuessed = rounds.current?.guessed.includes(key) ?? false
-    const selected =
-      (requesterGuessed ? null : liveCharade) ??
-      chooseCharadeFor(
-        key,
-        [...stats.seen, ...data.exclude],
-        options.state.getPool(),
-        lastAuthors.get(key),
-        themeForTimestamp(now()).id
-      ) ??
-      HOUSE_CHARADE
-    await sendCharade(address, selected)
+    if (!(await rolloverOrError(address))) return
+    const key = canonicalAddress(address)
+    const selectionKey = `${key}:${data.requestId}`
+    let selection = nextRequests.get(selectionKey)
+    if (!selection) {
+      selection = (async () => {
+        const look = looks.get(key)
+        const stats = await options.state.getOrCreateStats(key, playerName(key), !(look?.isGuest ?? true))
+        const currentRound = rounds.current
+        const currentCharade =
+          currentRound && !rounds.isSettled ? options.state.getCharade(currentRound.charadeId) ?? HOUSE_CHARADE : null
+        const roundEligible =
+          currentCharade !== null &&
+          (currentCharade.isHouse ||
+            (!stats.seen.includes(currentCharade.id) && canonicalAddress(currentCharade.author.address) !== key))
+
+        if (!rounds.hasPlayer(key) && (currentCharade === null || roundEligible)) {
+          rounds.enter({ address: look?.address ?? address, name: look?.name ?? playerName(key) })
+          if (currentCharade) await sendTo(address, 'roundStart', { charadeId: currentCharade.id })
+        }
+
+        const liveCharade = ensureRound()
+        const requesterGuessed = rounds.current?.guessed.includes(key) ?? false
+        return (
+          (rounds.hasPlayer(key) && !requesterGuessed ? liveCharade : null) ??
+          chooseCharadeFor(
+            key,
+            [...stats.seen, ...data.exclude],
+            options.state.getPool(),
+            lastAuthors.get(key),
+            themeForTimestamp(now()).id
+          ) ??
+          HOUSE_CHARADE
+        )
+      })()
+      nextRequests.set(selectionKey, selection)
+    }
+    await sendCharade(address, data.requestId, await selection)
   }
 
   function requestKey(address: string, kind: string, requestId: string) {
@@ -539,13 +662,16 @@ export function createServerProtocol(options: ServerProtocolOptions) {
   async function handleGuess(data: GuessPayload, address: string) {
     await ready
     if (!(await ensureWelcome(address))) {
-      await sendError(address, 'look-not-ready')
       return
     }
     const key = canonicalAddress(address)
     const idempotencyKey = requestKey(key, 'guess', data.requestId)
     const completed = completedRequests.get(idempotencyKey)
     if (completed) {
+      if (!completed.durable) {
+        if (!(await checkpointOrError(address))) return
+        completed.durable = true
+      }
       await sendTo(address, completed.type, completed.data)
       return
     }
@@ -576,8 +702,8 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     let stampAwarded = false
     if (!charade.isHouse) {
       stats.seen.push(charade.id)
-      stats.decoded += 1
-      stats.correct += correct ? 1 : 0
+      stats.decoded = Math.min(stats.decoded + 1, WIRE_INT_MAX)
+      stats.correct = Math.min(stats.correct + (correct ? 1 : 0), WIRE_INT_MAX)
       stampAwarded = options.state.recordDailyDecode(stats)
       options.state.recordGuess(charade.id, correct)
       options.state.recordDecoder(key, stats.name, correct)
@@ -586,8 +712,8 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         charade.author.name,
         !charade.author.isGuest
       )
-      authorStats.pending.triedYou += 1
-      authorStats.pending.gotYou += correct ? 1 : 0
+      authorStats.pending.triedYou = Math.min(authorStats.pending.triedYou + 1, WIRE_INT_MAX)
+      authorStats.pending.gotYou = Math.min(authorStats.pending.gotYou + (correct ? 1 : 0), WIRE_INT_MAX)
       options.state.saveStats(charade.author.address, !charade.author.isGuest)
     }
     options.state.saveStats(key, !(look?.isGuest ?? true))
@@ -612,23 +738,28 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       ...progress,
       titleUnlocked
     }
-    completedRequests.set(idempotencyKey, { type: 'reveal', data: reveal })
+    const request = { type: 'reveal' as const, data: reveal, durable: false }
+    completedRequests.set(idempotencyKey, request)
+    if (!(await checkpointOrError(address))) return
+    request.durable = true
     await sendTo(address, 'reveal', reveal)
     if (titleUnlocked) await broadcastTitleUnlock(address, progress.title)
     if (!charade.isHouse) await refreshBoards()
-    await checkpoint()
   }
 
   async function handlePost(data: PostPayload, address: string) {
     await ready
     if (!(await ensureWelcome(address))) {
-      await sendError(address, 'look-not-ready')
       return
     }
     const key = canonicalAddress(address)
     const idempotencyKey = requestKey(key, 'post', data.requestId)
     const completed = completedRequests.get(idempotencyKey)
     if (completed) {
+      if (!completed.durable) {
+        if (!(await checkpointOrError(address))) return
+        completed.durable = true
+      }
       await sendTo(address, completed.type, completed.data)
       return
     }
@@ -670,7 +801,10 @@ export function createServerProtocol(options: ServerProtocolOptions) {
           ...progressFor(stats),
           titleUnlocked: false
         }
-        completedRequests.set(idempotencyKey, { type: 'posted', data: posted })
+        const request = { type: 'posted' as const, data: posted, durable: false }
+        completedRequests.set(idempotencyKey, request)
+        if (!(await checkpointOrError(address))) return
+        request.durable = true
         await sendTo(address, 'posted', posted)
         return
       }
@@ -698,7 +832,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
           return
         }
       } else {
-        authorStats.pending.replies += 1
+        authorStats.pending.replies = Math.min(authorStats.pending.replies + 1, WIRE_INT_MAX)
         options.state.saveStats(target.author.address, !target.author.isGuest)
       }
       const posted: PostedPayload = {
@@ -709,9 +843,11 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         ...progressFor(stats),
         titleUnlocked: false
       }
-      completedRequests.set(idempotencyKey, { type: 'posted', data: posted })
+      const request = { type: 'posted' as const, data: posted, durable: false }
+      completedRequests.set(idempotencyKey, request)
+      if (!(await checkpointOrError(address))) return
+      request.durable = true
       await sendTo(address, 'posted', posted)
-      await checkpoint()
       return
     }
     const phrase = DECK.find((candidate) => candidate.id === data.phraseId)
@@ -731,7 +867,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         ...progressFor(stats),
         titleUnlocked: false
       }
-      completedRequests.set(idempotencyKey, { type: 'posted', data: posted })
+      completedRequests.set(idempotencyKey, { type: 'posted', data: posted, durable: true })
       await sendTo(address, 'posted', posted)
       return
     }
@@ -775,7 +911,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         ...progressFor(stats),
         titleUnlocked: false
       }
-      completedRequests.set(idempotencyKey, { type: 'posted', data: posted })
+      completedRequests.set(idempotencyKey, { type: 'posted', data: posted, durable: true })
       await sendTo(address, 'posted', posted)
       return
     }
@@ -799,7 +935,10 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     options.state.upsertCharade(charade)
     const stats = await options.state.getOrCreateStats(key, look.name, !look.isGuest)
     const previousTitle = progressFor(stats).title
-    stats.authored.push(id)
+    if (!stats.authored.includes(id)) {
+      stats.authored.push(id)
+      stats.authoredCount = Math.min(stats.authoredCount + 1, WIRE_INT_MAX)
+    }
     const stampAwarded = options.state.recordDailyAuthor(stats)
     options.state.saveStats(key, !look.isGuest)
     lastPosts.set(key, currentTime)
@@ -813,15 +952,18 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       ...progress,
       titleUnlocked
     }
-    completedRequests.set(idempotencyKey, { type: 'posted', data: posted })
+    const request = { type: 'posted' as const, data: posted, durable: false }
+    completedRequests.set(idempotencyKey, request)
+    if (!(await checkpointOrError(address))) return
+    request.durable = true
     await sendTo(address, 'posted', posted)
     if (titleUnlocked) await broadcastTitleUnlock(address, progress.title)
     await refreshBoards()
-    await checkpoint()
   }
 
   async function handleReact(data: ReactPayload, address: string) {
     await ready
+    if (!(await ensureWelcome(address))) return
     if (!REACTION_KINDS.has(data.kind)) {
       await sendError(address, 'invalid-reaction')
       return
@@ -840,9 +982,12 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     handleHello,
     handlePing,
     handleNextCharade,
-    handleGuess: (data: GuessPayload, address: string) => handleGuess(data, address),
-    handleRoundGuess: (data: GuessPayload, address: string) => handleGuess(data, address),
-    handlePost,
+    handleGuess: (data: GuessPayload, address: string) =>
+      serializeRequest(requestKey(address, 'guess', data.requestId), () => handleGuess(data, address)),
+    handleRoundGuess: (data: GuessPayload, address: string) =>
+      serializeRequest(requestKey(address, 'guess', data.requestId), () => handleGuess(data, address)),
+    handlePost: (data: PostPayload, address: string) =>
+      serializeRequest(requestKey(address, 'post', data.requestId), () => handlePost(data, address)),
     handleReact
   }
 }

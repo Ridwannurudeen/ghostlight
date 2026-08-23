@@ -57,6 +57,7 @@ let audienceSpawnClock = 0
 let wantedAudience: Look[] = []
 let ghostOfNightActive = false
 let duet: DuetState | null = null
+let previewActive = false
 
 export function initializeGhosts() {
   if (initialized) return
@@ -77,6 +78,7 @@ export function initializeGhosts() {
 export function showPerformer(look: Look, emotes: GhostEmotes) {
   initializeGhosts()
   cancelDuet()
+  clearAuthorPreview()
   showGhost(slots[0], look, emotes)
 }
 
@@ -93,6 +95,7 @@ export function showDuet(author: DuetPerformer, reply: DuetPerformer) {
     frozen: false
   }
   trigger(slots[0], author.emotes[0])
+  syncAudience()
 }
 
 export function replayPerformer() {
@@ -135,6 +138,7 @@ export function playPerformerEmote(emote: string) {
 export function clearPerformer() {
   initializeGhosts()
   cancelDuet()
+  clearAuthorPreview()
   hideGhost(slots[0])
 }
 
@@ -145,7 +149,8 @@ export function setAudience(looks: readonly Look[]) {
 }
 
 function syncAudience() {
-  const wanted = wantedAudience.slice(0, ghostOfNightActive ? AUDIENCE_SEATS - 1 : AUDIENCE_SEATS)
+  const reservedSlots = (ghostOfNightActive ? 1 : 0) + (duet ? 1 : 0)
+  const wanted = wantedAudience.slice(0, AUDIENCE_SEATS - reservedSlots)
   const wantedAddresses = new Set(wanted.map((look) => canonicalAddress(look.address)))
 
   audienceQueue = audienceQueue.filter(
@@ -218,13 +223,14 @@ export function clearGhostOfNight() {
 export function showPreview(look: Look, emotes: GhostEmotes) {
   initializeGhosts()
   cancelDuet()
+  clearAuthorPreview()
   showGhost(slots[PREVIEW_INDEX], look, emotes)
+  previewActive = true
 }
 
 export function clearPreview() {
   initializeGhosts()
-  duet = null
-  hideGhost(slots[PREVIEW_INDEX])
+  clearAuthorPreview()
 }
 
 export function react(kind: AudienceReaction) {
@@ -316,6 +322,13 @@ function hideGhost(slot: GhostSlot) {
 function cancelDuet() {
   if (!duet) return
   duet = null
+  hideGhost(slots[PREVIEW_INDEX])
+  syncAudience()
+}
+
+function clearAuthorPreview() {
+  if (!previewActive) return
+  previewActive = false
   hideGhost(slots[PREVIEW_INDEX])
 }
 

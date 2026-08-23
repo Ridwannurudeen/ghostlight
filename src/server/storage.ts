@@ -16,11 +16,25 @@ export function boardsKey(day: string) {
   return `gc:v1:boards:${day}`
 }
 
+export function decoderAggregateKey(day: string) {
+  return `gc:v1:decoders:${day}`
+}
+
+type GetValuesResult = {
+  data: Array<{ key: string; value: unknown }>
+  pagination: { offset: number; total: number }
+}
+
 export type StoragePort = {
   get(key: string, options?: { fresh?: boolean }): Promise<unknown | null>
+  getValues(options?: { prefix?: string; limit?: number; offset?: number }): Promise<GetValuesResult>
   set(key: string, value: unknown): Promise<boolean>
   player: {
     get(address: string, key: string, options?: { fresh?: boolean }): Promise<unknown | null>
+    getValues(
+      address: string,
+      options?: { prefix?: string; limit?: number; offset?: number }
+    ): Promise<GetValuesResult>
     set(address: string, key: string, value: unknown): Promise<boolean>
   }
 }
@@ -49,43 +63,100 @@ export type FlushResult = {
 
 export type StorageRepository = ReturnType<typeof createStorageRepository>
 
+export class StorageUnavailableError extends Error {
+  constructor(readonly keys: string[]) {
+    super(`Storage unavailable for: ${keys.join(', ')}`)
+    this.name = 'StorageUnavailableError'
+  }
+}
+
 const MAX_CONCURRENT_WRITES = 8
+const MAX_CONCURRENT_HOST_CALLS = 32
+const MAX_READ_ATTEMPTS = 3
+const MAX_CHECKPOINT_ATTEMPTS = 3
 
 function hasValidVersion(value: unknown) {
   if (typeof value !== 'object' || value === null || Array.isArray(value) || !('v' in value)) return true
   return typeof (value as { v?: unknown }).v === 'number'
 }
 
-function parseStoredJSON<T>(raw: unknown, fallback: T): T {
-  if (typeof raw !== 'string') return fallback
-
-  try {
-    const value: unknown = JSON.parse(raw)
-    return hasValidVersion(value) ? (value as T) : fallback
-  } catch {
-    return fallback
-  }
-}
-
 export function createStorageRepository(storage: StoragePort = Storage) {
   const dirty = new Map<string, DirtyWrite>()
   let flushPromise: Promise<FlushResult> | null = null
   let flushTimer: ReturnType<typeof setInterval> | null = null
+  let activeHostCalls = 0
+  const waitingHostCalls: Array<() => void> = []
 
-  async function loadJSON<T>(key: string, fallback: T): Promise<T> {
+  async function hostCall<T>(call: () => Promise<T>) {
+    if (activeHostCalls >= MAX_CONCURRENT_HOST_CALLS) {
+      await new Promise<void>((resolve) => waitingHostCalls.push(resolve))
+    }
+    activeHostCalls += 1
     try {
-      return parseStoredJSON(await storage.get(key), fallback)
-    } catch {
-      return fallback
+      return await call()
+    } finally {
+      activeHostCalls -= 1
+      waitingHostCalls.shift()?.()
     }
   }
 
-  async function loadPlayerJSON<T>(address: string, key: string, fallback: T): Promise<T> {
-    try {
-      return parseStoredJSON(await storage.player.get(address, key), fallback)
-    } catch {
-      return fallback
+  async function confirmSceneValue(key: string) {
+    const result = await hostCall(() => storage.getValues({ prefix: key, limit: 2 }))
+    return result.data.find((entry) => entry.key === key)?.value ?? null
+  }
+
+  async function confirmPlayerValue(address: string, key: string) {
+    const result = await hostCall(() => storage.player.getValues(address, { prefix: key, limit: 2 }))
+    return result.data.find((entry) => entry.key === key)?.value ?? null
+  }
+
+  async function readRaw(read: (fresh: boolean) => Promise<unknown | null>, confirm: () => Promise<unknown | null>) {
+    for (let attempt = 0; attempt < MAX_READ_ATTEMPTS; attempt += 1) {
+      try {
+        const raw = await hostCall(() => read(attempt > 0))
+        if (raw !== null) return { status: 'found' as const, raw }
+      } catch {
+        // A separate authoritative listing below decides missing versus unavailable.
+      }
     }
+
+    try {
+      const raw = await confirm()
+      return raw === null ? { status: 'missing' as const } : { status: 'found' as const, raw }
+    } catch {
+      return { status: 'unavailable' as const }
+    }
+  }
+
+  function parseRead<T>(key: string, result: Awaited<ReturnType<typeof readRaw>>, fallback: T): T {
+    if (result.status === 'missing') return fallback
+    if (result.status === 'unavailable') throw new StorageUnavailableError([key])
+    if (typeof result.raw !== 'string') throw new StorageUnavailableError([key])
+
+    try {
+      const value: unknown = JSON.parse(result.raw)
+      if (!hasValidVersion(value)) throw new StorageUnavailableError([key])
+      return value as T
+    } catch (error) {
+      if (error instanceof StorageUnavailableError) throw error
+      throw new StorageUnavailableError([key])
+    }
+  }
+
+  async function loadJSON<T>(key: string, fallback: T): Promise<T> {
+    const result = await readRaw(
+      (fresh) => storage.get(key, fresh ? { fresh: true } : undefined),
+      () => confirmSceneValue(key)
+    )
+    return parseRead(key, result, fallback)
+  }
+
+  async function loadPlayerJSON<T>(address: string, key: string, fallback: T): Promise<T> {
+    const result = await readRaw(
+      (fresh) => storage.player.get(address, key, fresh ? { fresh: true } : undefined),
+      () => confirmPlayerValue(address, key)
+    )
+    return parseRead(`player:${address}:${key}`, result, fallback)
   }
 
   function markDirty(key: string, value: unknown) {
@@ -103,8 +174,8 @@ export function createStorageRepository(storage: StoragePort = Storage) {
 
   async function write(entry: DirtyWrite) {
     try {
-      if (entry.scope === 'scene') return await storage.set(entry.key, entry.serialized)
-      return await storage.player.set(entry.address, entry.key, entry.serialized)
+      if (entry.scope === 'scene') return await hostCall(() => storage.set(entry.key, entry.serialized))
+      return await hostCall(() => storage.player.set(entry.address, entry.key, entry.serialized))
     } catch {
       return false
     }
@@ -147,9 +218,12 @@ export function createStorageRepository(storage: StoragePort = Storage) {
   }
 
   async function flushNow() {
-    const joinedActiveFlush = flushPromise !== null
-    const result = await flush()
-    return joinedActiveFlush && dirty.size > 0 ? flush() : result
+    let result: FlushResult = { attempted: 0, saved: 0, failed: 0, remaining: dirty.size }
+    for (let attempt = 0; attempt < MAX_CHECKPOINT_ATTEMPTS && dirty.size > 0; attempt += 1) {
+      result = await flush()
+    }
+    if (dirty.size > 0) throw new StorageUnavailableError([...dirty.keys()])
+    return result
   }
 
   function startFlushLoop() {

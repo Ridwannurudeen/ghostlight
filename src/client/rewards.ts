@@ -1,5 +1,8 @@
 import { AvatarAnchorPointType, AvatarAttach, GltfContainer, Transform, engine, type Entity } from '@dcl/sdk/ecs'
+import { getPlayer } from '@dcl/sdk/src/players'
 import { REWARD_PROPS, type PlayerTitle } from '../shared/config'
+
+export const MAX_VISIBLE_REWARD_PROPS = 16
 
 type RewardTitle = Exclude<PlayerTitle, ''>
 
@@ -15,7 +18,7 @@ export type RewardPort<TEntity> = {
   setTransform(entity: TEntity, parent: TEntity, position: Vector3, scale: Vector3): void
   setModel(entity: TEntity, src: string): void
   clearModel(entity: TEntity): void
-  removeEntityTree(entity: TEntity): void
+  distanceToPlayer(address: string): number | null
 }
 
 type RewardSpec = {
@@ -27,6 +30,10 @@ type RewardSpec = {
 type RewardEntities<TEntity> = {
   anchor: TEntity
   prop: TEntity
+}
+
+type RewardSlot<TEntity> = RewardEntities<TEntity> & {
+  address: string
 }
 
 const REWARD_SPECS: Record<RewardTitle, RewardSpec> = {
@@ -48,7 +55,8 @@ const REWARD_SPECS: Record<RewardTitle, RewardSpec> = {
 }
 
 export function createRewardController<TEntity>(port: RewardPort<TEntity>) {
-  const rewards = new Map<string, RewardEntities<TEntity>>()
+  const candidates = new Map<string, { address: string; title: RewardTitle }>()
+  const rewardSlots: RewardSlot<TEntity>[] = []
   let stageReward: RewardEntities<TEntity> | null = null
   let stageAddress = ''
   let stageTitle: PlayerTitle = ''
@@ -61,7 +69,7 @@ export function createRewardController<TEntity>(port: RewardPort<TEntity>) {
   }
 
   function renderStageReward() {
-    if (stageTitle === '' || rewards.has(stageAddress.toLowerCase())) {
+    if (stageTitle === '' || rewardSlots.some((slot) => slot.address === stageAddress.toLowerCase())) {
       if (stageReward !== null) port.clearModel(stageReward.prop)
       return
     }
@@ -73,24 +81,47 @@ export function createRewardController<TEntity>(port: RewardPort<TEntity>) {
     applyReward(stageReward, stageAddress, stageTitle)
   }
 
+  function sync() {
+    const selected = [...candidates.entries()]
+      .map(([key, reward]) => ({ key, reward, distance: port.distanceToPlayer(reward.address) }))
+      .filter((entry): entry is typeof entry & { distance: number } => entry.distance !== null)
+      .sort((left, right) => left.distance - right.distance || left.key.localeCompare(right.key))
+      .slice(0, MAX_VISIBLE_REWARD_PROPS)
+    const selectedKeys = new Set(selected.map(({ key }) => key))
+
+    for (const slot of rewardSlots) {
+      if (slot.address && !selectedKeys.has(slot.address)) {
+        port.clearModel(slot.prop)
+        slot.address = ''
+      }
+    }
+
+    for (const { key, reward } of selected) {
+      let slot = rewardSlots.find((candidate) => candidate.address === key)
+      if (!slot) {
+        slot = rewardSlots.find((candidate) => candidate.address === '')
+        if (!slot && rewardSlots.length < MAX_VISIBLE_REWARD_PROPS) {
+          slot = { anchor: port.createEntity(), prop: port.createEntity(), address: '' }
+          rewardSlots.push(slot)
+        }
+      }
+      if (!slot) continue
+      slot.address = key
+      applyReward(slot, reward.address, reward.title)
+    }
+    renderStageReward()
+  }
+
   return {
     set(address: string, title: PlayerTitle) {
       const key = address.toLowerCase()
-      const existing = rewards.get(key)
-
       if (title === '') {
-        if (existing !== undefined) port.clearModel(existing.prop)
+        candidates.delete(key)
+        sync()
         return
       }
-
-      const entities = existing ?? {
-        anchor: port.createEntity(),
-        prop: port.createEntity()
-      }
-      if (existing === undefined) rewards.set(key, entities)
-
-      applyReward(entities, address, title)
-      if (key === stageAddress.toLowerCase()) renderStageReward()
+      candidates.set(key, { address, title })
+      sync()
     },
     setStage(address: string, title: PlayerTitle) {
       stageAddress = address
@@ -104,12 +135,10 @@ export function createRewardController<TEntity>(port: RewardPort<TEntity>) {
     },
     remove(address: string) {
       const key = address.toLowerCase()
-      const existing = rewards.get(key)
-      if (existing === undefined) return
-      port.removeEntityTree(existing.anchor)
-      rewards.delete(key)
-      if (key === stageAddress.toLowerCase()) renderStageReward()
-    }
+      candidates.delete(key)
+      sync()
+    },
+    refresh: sync
   }
 }
 
@@ -121,7 +150,15 @@ const ecsRewardPort: RewardPort<Entity> = {
   clearModel: (entity) => {
     GltfContainer.deleteFrom(entity)
   },
-  removeEntityTree: (entity) => engine.removeEntityWithChildren(entity)
+  distanceToPlayer: (address) => {
+    const localPosition = getPlayer()?.position
+    const remotePosition = getPlayer({ userId: address })?.position
+    if (!localPosition || !remotePosition) return null
+    const x = remotePosition.x - localPosition.x
+    const y = remotePosition.y - localPosition.y
+    const z = remotePosition.z - localPosition.z
+    return x * x + y * y + z * z
+  }
 }
 
 const rewardController = createRewardController(ecsRewardPort)
@@ -140,4 +177,8 @@ export function setStageRewardProp(address: string, title: PlayerTitle) {
 
 export function clearStageRewardProp() {
   rewardController.clearStage()
+}
+
+export function refreshRewardProps() {
+  rewardController.refresh()
 }

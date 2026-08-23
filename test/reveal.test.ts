@@ -64,6 +64,7 @@ function createHarness() {
     twitchCurtains: () => record('curtains:twitch'),
     freezePerformer: () => record('performer:freeze'),
     setCamera: (camera) => record(`camera:${camera}`),
+    releaseCamera: () => record('camera:release'),
     fadeWrongAnswers: () => record('answers:fade-wrong'),
     setSpotlightColor: (color) => record(`spotlight:${color}`),
     showFloatingVerdict: (text) => record(`floating:${text}`),
@@ -124,7 +125,7 @@ describe('reveal timeline', () => {
       '4000:sound:applause',
       '6000:stats:7/11',
       '6000:title:animate',
-      '7500:camera:stage',
+      '7500:camera:release',
       '7500:lights:house',
       '7500:visuals:reset',
       '7500:audio:restore',
@@ -194,20 +195,23 @@ describe('reveal controller interruption', () => {
 
     controller.resolve(CORRECT_OUTCOME)
 
-    expect(events.slice(-13)).toEqual([
+    expect(events.slice(-4)).toEqual([
       '8000:lights:hit',
       '8000:sound:hit',
       '8000:floating:YOU GOT IT',
-      '8000:audience:clap',
-      '8000:performer:wave',
-      '8000:sound:applause',
-      '8000:stats:7/11',
-      '8000:title:animate',
-      '8000:camera:stage',
-      '8000:lights:house',
-      '8000:visuals:reset',
-      '8000:audio:restore',
-      '8000:complete'
+      '8000:audience:clap'
+    ])
+    clock.advanceTo(13_400)
+    expect(events.slice(-9)).toEqual([
+      '9400:performer:wave',
+      '9400:sound:applause',
+      '11400:stats:7/11',
+      '11400:title:animate',
+      '12900:camera:release',
+      '12900:lights:house',
+      '12900:visuals:reset',
+      '12900:audio:restore',
+      '13400:complete'
     ])
     expect(controller.getStatus()).toBe('complete')
   })
@@ -224,7 +228,7 @@ describe('reveal controller interruption', () => {
 
     expect(events).toEqual(afterFirstReset)
     expect(events.slice(-4)).toEqual([
-      '2600:camera:stage',
+      '2600:camera:release',
       '2600:lights:house',
       '2600:visuals:reset',
       '2600:audio:restore'
@@ -241,7 +245,7 @@ describe('reveal controller interruption', () => {
 
     controller.start({ ...CORRECT_OUTCOME, correct: false })
     expect(events.slice(-10)).toEqual([
-      '2000:camera:stage',
+      '2000:camera:release',
       '2000:lights:house',
       '2000:visuals:reset',
       '2000:audio:restore',
@@ -273,7 +277,7 @@ describe('reveal controller interruption', () => {
     expect(controller.skipToEnd()).toBe(true)
     const afterSkip = [...events]
     expect(events.slice(-5)).toEqual([
-      '1200:camera:stage',
+      '1200:camera:release',
       '1200:lights:house',
       '1200:visuals:reset',
       '1200:audio:restore',

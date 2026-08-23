@@ -1,6 +1,6 @@
 import { createOpeningController } from './opening'
 import { play } from './sound'
-import { switchTheaterCamera } from './setup'
+import { releaseTheaterCamera, switchTheaterCamera } from './setup'
 import { foyerDoors, marquee } from './theater'
 
 export type OpeningViewState = {
@@ -35,6 +35,7 @@ export function createSceneOpeningController(enterPerformer: () => void, showDec
     },
     showDecode: () => {
       openingView = { ...EMPTY_OPENING_VIEW }
+      releaseTheaterCamera()
       showDecode()
     }
   })
@@ -48,6 +49,14 @@ export function createSceneOpeningController(enterPerformer: () => void, showDec
     },
     tick: controller.tick,
     skip: controller.skip,
+    cancel() {
+      const cancelled = controller.cancel()
+      if (cancelled) {
+        openingView = { ...EMPTY_OPENING_VIEW }
+        releaseTheaterCamera()
+      }
+      return cancelled
+    },
     isRunning: controller.isRunning,
     hasPlayed: controller.hasPlayed
   }

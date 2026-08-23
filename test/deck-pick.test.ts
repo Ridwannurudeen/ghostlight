@@ -1,8 +1,14 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { decodeEvent, encodeEvent } from '@dcl/sdk/network/events/protocol'
 import { THEMES, themeForTimestamp } from '../src/shared/config'
 import { CATEGORIES, DECK, EMOTE_VOCABULARY, HOUSE_CHARADE, type Category, type Phrase } from '../src/shared/deck'
+import { Messages } from '../src/shared/messages'
 import { chooseCharadeFor, dealPhrase, offerEmotes, pickDecoys, shuffleSeeded } from '../src/shared/pick'
 import { STORAGE_SCHEMA_VERSION, type Charade, type Look } from '../src/shared/types'
+
+vi.mock('@dcl/sdk/network', () => ({
+  registerMessages: () => ({})
+}))
 
 const look = (address: string): Look => ({
   address,
@@ -217,5 +223,127 @@ describe('offerEmotes', () => {
     expect(new Set(offered).size).toBe(5)
     expect(phrase.suggested.every((emote) => offered.includes(emote))).toBe(true)
     expect(offered.every((emote) => EMOTE_VOCABULARY.includes(emote))).toBe(true)
+  })
+})
+
+describe('installed protocol codec', () => {
+  it('round-trips every registered message through the pinned SDK codec below the 4 KB envelope cap', () => {
+    const maximalLook = {
+      ...look(`0x${'a'.repeat(40)}`),
+      name: 'A'.repeat(30),
+      bodyShape: 'urn:decentraland:off-chain:base-avatars:BaseFemale',
+      wearables: Array.from({ length: 20 }, (_, index) =>
+        `urn:decentraland:matic:collections-v2:wearable-${index}`.padEnd(85, 'x')
+      )
+    }
+    const daily = { day: '2026-08-23', decoded: 3, authored: 1, stamped: true }
+    const nextUnlock = { nextTitle: 'Scene Stealer', requirement: '10 correct decodes or 5 posts', progress: 0.4 }
+    const fixtures: Record<keyof typeof Messages, unknown> = {
+      hello: { displayName: 'Player', isGuest: false, protocolVersion: 2 },
+      ready: { instanceId: 'instance', serverTime: 1_777_000_000_000, theme: 'food', themeLabel: 'Kitchen Capers' },
+      ping: { seq: 1 },
+      pong: { seq: 1 },
+      progress: { daily, title: 'Understudy', nextUnlock },
+      playerTitle: { address: maximalLook.address, title: 'Understudy' },
+      nextCharade: { requestId: 'next-1', exclude: ['one'] },
+      charade: {
+        requestId: 'next-1',
+        id: 'ghost-0000000000000000',
+        authorName: maximalLook.name,
+        authorAddress: maximalLook.address,
+        look: maximalLook,
+        emotes: ['wave', 'clap', 'kiss'],
+        answers: ['Wake up late', 'Brush your teeth', 'Miss the bus'],
+        createdAt: 1_777_000_000_000,
+        isHouse: false,
+        authorTitle: 'Understudy'
+      },
+      guess: { charadeId: 'ghost-1', answerIndex: 1, requestId: 'guess-1' },
+      reveal: {
+        charadeId: 'ghost-1',
+        correct: true,
+        phraseId: DECK[0].id,
+        phrase: DECK[0].text,
+        stats: { total: 3, correct: 2 },
+        yourScore: 2,
+        daily,
+        stampAwarded: true,
+        title: 'Understudy',
+        nextUnlock,
+        titleUnlocked: true
+      },
+      post: { phraseId: DECK[0].id, emotes: [...DECK[0].suggested], requestId: 'post-1' },
+      posted: {
+        charadeId: 'ghost-1',
+        daily,
+        stampAwarded: true,
+        title: 'Understudy',
+        nextUnlock,
+        titleUnlocked: true
+      },
+      since: { triedYou: 2, gotYou: 1, replies: 1, rank: 11, daily, title: 'Understudy', nextUnlock },
+      audience: { looks: [maximalLook] },
+      boards: {
+        topDecoders: [{ address: maximalLook.address, name: maximalLook.name, correct: 2, total: 3 }],
+        hardestGhosts: [{ charadeId: 'ghost-1', authorName: maximalLook.name, total: 3, correct: 1 }],
+        playbill: [
+          {
+            address: maximalLook.address,
+            name: maximalLook.name,
+            isGuest: false,
+            title: 'Understudy',
+            performedAt: 1_777_000_000_000
+          }
+        ],
+        ghostOfNightId: 'ghost-1'
+      },
+      ghostOfNight: {
+        charadeId: 'ghost-1',
+        address: maximalLook.address,
+        name: maximalLook.name,
+        title: 'Understudy',
+        look: maximalLook,
+        total: 3,
+        correct: 1
+      },
+      charadeReply: {
+        charadeId: 'ghost-1',
+        address: maximalLook.address,
+        name: maximalLook.name,
+        look: maximalLook,
+        emotes: ['wave', 'clap', 'kiss'],
+        createdAt: 1_777_000_000_000
+      },
+      roundStart: { charadeId: 'ghost-1' },
+      roundGuess: { charadeId: 'ghost-1', answerIndex: 1, requestId: 'round-1' },
+      roundWinner: { address: maximalLook.address, name: maximalLook.name },
+      react: { kind: 'genius' },
+      error: { code: 'storage-unavailable' }
+    }
+
+    for (const type of Object.keys(Messages) as Array<keyof typeof Messages>) {
+      const encoded = encodeEvent(type, fixtures[type] as never, Messages)
+      const decoded = decodeEvent(encoded, Messages)
+      expect(decoded.eventType).toBe(type)
+      expect(decoded.payload).toBeDefined()
+      expect(encoded.byteLength, type).toBeLessThan(4_000)
+      if (type === 'ready') {
+        expect((decoded.payload as { serverTime: number }).serverTime).toBe(1_777_000_000_000)
+      }
+      if (type === 'charade' || type === 'charadeReply') {
+        expect((decoded.payload as { createdAt: number }).createdAt).toBe(1_777_000_000_000)
+      }
+    }
+
+    const saturatedReveal = {
+      ...(fixtures.reveal as Record<string, unknown>),
+      stats: { total: 2_147_483_647, correct: 2_147_483_647 },
+      yourScore: 2_147_483_647
+    }
+    const saturated = decodeEvent(encodeEvent('reveal', saturatedReveal as never, Messages), Messages)
+    expect(saturated.payload).toMatchObject({
+      stats: { total: 2_147_483_647, correct: 2_147_483_647 },
+      yourScore: 2_147_483_647
+    })
   })
 })

@@ -3,6 +3,7 @@ import { FLUSH_SECONDS } from '../src/shared/config'
 import {
   PLAYER_STATS_KEY,
   RECENT_VISITORS_KEY,
+  StorageUnavailableError,
   boardsKey,
   charadeKey,
   createStorageRepository,
@@ -32,7 +33,7 @@ describe('storage keys', () => {
 })
 
 describe('storage reads', () => {
-  it('parses JSON and falls back for missing, malformed, non-string, invalid-version, and throwing reads', async () => {
+  it('parses confirmed values, falls back only for confirmed missing keys, and fails closed on corrupt data', async () => {
     const storage = new FakeStorage()
     const repository = createStorageRepository(storage)
     const fallback = { v: 1, answer: 0 }
@@ -44,9 +45,9 @@ describe('storage reads', () => {
 
     await expect(repository.loadJSON('valid', fallback)).resolves.toEqual({ v: 1, answer: 42 })
     await expect(repository.loadJSON('missing', fallback)).resolves.toBe(fallback)
-    await expect(repository.loadJSON('malformed', fallback)).resolves.toBe(fallback)
-    await expect(repository.loadJSON('non-string', fallback)).resolves.toBe(fallback)
-    await expect(repository.loadJSON('invalid-version', fallback)).resolves.toBe(fallback)
+    await expect(repository.loadJSON('malformed', fallback)).rejects.toBeInstanceOf(StorageUnavailableError)
+    await expect(repository.loadJSON('non-string', fallback)).rejects.toBeInstanceOf(StorageUnavailableError)
+    await expect(repository.loadJSON('invalid-version', fallback)).rejects.toBeInstanceOf(StorageUnavailableError)
     await expect(repository.loadJSON('throws', fallback)).resolves.toBe(fallback)
   })
 
@@ -58,8 +59,39 @@ describe('storage reads', () => {
     storage.playerGetErrors.add('player:throws')
 
     await expect(repository.loadPlayerJSON('player', 'valid', null)).resolves.toEqual({ v: 1, score: 7 })
-    await expect(repository.loadPlayerJSON('player', 'malformed', null)).resolves.toBeNull()
+    await expect(repository.loadPlayerJSON('player', 'malformed', null)).rejects.toBeInstanceOf(StorageUnavailableError)
     await expect(repository.loadPlayerJSON('player', 'throws', null)).resolves.toBeNull()
+  })
+
+  it('shares one below-40 host-call semaphore across concurrent player reads', async () => {
+    const storage = new FakeStorage()
+    const repository = createStorageRepository(storage)
+    const gate = deferred<void>()
+    storage.readGate = gate.promise
+
+    const reads = Array.from({ length: 41 }, (_, index) =>
+      repository.loadPlayerJSON(`player-${index}`, PLAYER_STATS_KEY, null)
+    )
+    await vi.waitFor(() => expect(storage.activeHostCalls).toBe(32))
+    expect(storage.maxActiveHostCalls).toBe(32)
+    gate.resolve()
+
+    await expect(Promise.all(reads)).resolves.toEqual(Array.from({ length: 41 }, () => null))
+    expect(storage.maxActiveHostCalls).toBe(32)
+  })
+
+  it('fails closed when both point reads and authoritative listings are unavailable', async () => {
+    const storage = new FakeStorage()
+    const repository = createStorageRepository(storage)
+    storage.getErrors.add('ambiguous')
+    storage.getValuesErrors.add('ambiguous')
+    storage.playerGetErrors.add('player:ambiguous')
+    storage.playerGetValuesErrors.add('player')
+
+    await expect(repository.loadJSON('ambiguous', null)).rejects.toBeInstanceOf(StorageUnavailableError)
+    await expect(repository.loadPlayerJSON('player', 'ambiguous', null)).rejects.toBeInstanceOf(StorageUnavailableError)
+    expect(storage.sceneGets.filter((key) => key === 'ambiguous')).toHaveLength(3)
+    expect(storage.playerGets.filter((call) => call.key === 'ambiguous')).toHaveLength(3)
   })
 })
 
@@ -157,6 +189,17 @@ describe('storage flushes', () => {
 
     expect(storage.readPlayerJSON('0xplayer', PLAYER_STATS_KEY)).toEqual({ v: 1, decoded: 3 })
     expect(storage.writes[0]).toMatchObject({ scope: 'player', address: '0xplayer', key: PLAYER_STATS_KEY })
+  })
+
+  it('retries a checkpoint three times and rejects while required writes remain dirty', async () => {
+    const storage = new FakeStorage()
+    const repository = createStorageRepository(storage)
+    storage.sceneWriteOutcomes.push(false, false, false)
+    repository.markDirty('required', { value: 1 })
+
+    await expect(repository.flushNow()).rejects.toMatchObject({ keys: ['scene:required'] })
+    expect(storage.writes).toHaveLength(3)
+    expect(repository.getDirtyKeys()).toEqual(['scene:required'])
   })
 })
 

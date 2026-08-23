@@ -7,19 +7,28 @@ const uiTest = vi.hoisted(() => ({
   state: {} as Record<string, unknown>
 }))
 
-vi.mock('@dcl/sdk/react-ecs', async () => import('@dcl/react-ecs'))
-
-vi.mock('~system/RestrictedActions', () => ({
-  copyToClipboard: vi.fn()
+const uiActions = vi.hoisted(() => ({
+  showInvite: vi.fn(),
+  setInviteStatus: vi.fn()
 }))
 
+const restrictedActions = vi.hoisted(() => ({ copyToClipboard: vi.fn(() => Promise.resolve()) }))
+
+vi.mock('@dcl/sdk/react-ecs', async () => import('@dcl/react-ecs'))
+
+vi.mock('~system/RestrictedActions', () => restrictedActions)
+
 vi.mock('../src/client/setup', () => ({
-  getCurrentTheaterRegion: () => uiTest.region
+  isPlayerInDecodeArea: () => uiTest.region === 'house' || uiTest.region === 'stage'
 }))
 
 vi.mock('../src/client/reactions', () => ({
-  REACTION_OPTIONS: [],
-  sendReaction: vi.fn()
+  REACTION_OPTIONS: [
+    { kind: 'laugh', label: 'LAUGH', emote: 'clap' },
+    { kind: 'confused', label: 'CONFUSED', emote: 'shrug' },
+    { kind: 'genius', label: 'GENIUS', emote: 'fistpump' }
+  ],
+  sendReaction: vi.fn(() => Promise.resolve(true))
 }))
 
 vi.mock('../src/client/opening-scene', () => ({
@@ -34,13 +43,30 @@ vi.mock('../src/client/flow', () => ({
     guess: vi.fn(),
     replay: vi.fn(),
     beginAuthoring: vi.fn(),
+    beginAnswerBack: vi.fn(),
+    backFromAuthor: vi.fn(),
+    continueAuthoring: vi.fn(),
+    reviseAuthorEmotes: vi.fn(),
+    selectAuthorEmote: vi.fn(),
+    shuffleAuthorPhrase: vi.fn(),
+    previewAuthor: vi.fn(),
+    postAuthor: vi.fn(),
+    toggleReactionMenu: vi.fn(),
     requestNextCharade: vi.fn(),
     showBoards: vi.fn(),
-    showInvite: vi.fn()
+    showInvite: uiActions.showInvite,
+    setInviteStatus: uiActions.setInviteStatus,
+    reportError: vi.fn()
   }
 }))
 
-import { COLORS, formatPerformedAgo, performerPortraitBackground, uiComponent } from '../src/client/ui'
+import {
+  COLORS,
+  REVEAL_VERTICAL_BUDGET,
+  formatPerformedAgo,
+  performerPortraitBackground,
+  uiComponent
+} from '../src/client/ui'
 
 type ElementNode = {
   type: string | ((props: Record<string, unknown>) => unknown)
@@ -86,6 +112,21 @@ function collectButtons(node: unknown, buttons: ButtonProps[] = []): ButtonProps
   return buttons
 }
 
+function findButton(node: unknown, value: string): Record<string, unknown> | null {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const match = findButton(child, value)
+      if (match) return match
+    }
+    return null
+  }
+  if (node === null || typeof node !== 'object' || !('type' in node) || !('props' in node)) return null
+  const element = node as ElementNode
+  if (element.props.value === value && typeof element.props.onMouseDown === 'function') return element.props
+  if (typeof element.type === 'function') return findButton(element.type(element.props), value)
+  return findButton(element.props.children, value)
+}
+
 function stateFor(screen: 'decode' | 'reveal' | 'posted') {
   const charade = {
     id: 'charade-1',
@@ -108,6 +149,7 @@ function stateFor(screen: 'decode' | 'reveal' | 'posted') {
         : null,
     pending: screen === 'decode' ? [{ requestId: 'request-1', kind: 'guess', sentAt: 0, retries: 0 }] : [],
     roundCharadeId: '',
+    reactionMenuOpen: false,
     errorCode: '',
     toast: null
   }
@@ -115,6 +157,7 @@ function stateFor(screen: 'decode' | 'reveal' | 'posted') {
 
 describe('UI colors', () => {
   beforeEach(() => {
+    vi.clearAllMocks()
     uiTest.region = 'house'
     uiTest.canReply = false
     uiTest.opening = { active: false, instruction: '' }
@@ -128,6 +171,82 @@ describe('UI colors', () => {
     render(uiComponent())
 
     expect(COLORS.ink.a).toBe(inkAlpha)
+  })
+
+  it('uses dark readable text for every unselected author emote', () => {
+    const phrase = { id: 'phrase', text: 'Walking a dog' }
+    uiTest.state = {
+      ...stateFor('decode'),
+      screen: 'author',
+      author: {
+        phrase,
+        offeredEmotes: ['wave', 'clap', 'dab', 'dance', 'shrug'],
+        selectedEmotes: [],
+        shufflesRemaining: 2,
+        phase: 'emotes'
+      }
+    }
+
+    const button = findButton(uiComponent(), 'WAVE')
+    expect(button?.color).toEqual(COLORS.ink)
+  })
+})
+
+describe('mobile control budget', () => {
+  it.each([
+    ['phrase', 3],
+    ['emotes', 5],
+    ['confirm', 4]
+  ] as const)('keeps author %s phase within five buttons', (phase, expected) => {
+    uiTest.state = {
+      ...stateFor('decode'),
+      screen: 'author',
+      author: {
+        phrase: { id: 'phrase', text: 'Walking a dog' },
+        offeredEmotes: ['wave', 'clap', 'dab', 'dance', 'shrug'],
+        selectedEmotes: phase === 'confirm' ? ['wave', 'clap', 'dab'] : [],
+        shufflesRemaining: 2,
+        phase
+      }
+    }
+    expect(collectButtons(uiComponent())).toHaveLength(expected)
+  })
+
+  it('replaces live-round answers with the four-control reaction menu', () => {
+    uiTest.state = { ...stateFor('decode'), roundCharadeId: 'charade-1', reactionMenuOpen: false }
+    expect(collectButtons(uiComponent())).toHaveLength(5)
+
+    uiTest.state = { ...uiTest.state, reactionMenuOpen: true }
+    expect(collectButtons(uiComponent()).map(({ value }) => value)).toEqual([
+      'LAUGH',
+      'CONFUSED',
+      'GENIUS',
+      'BACK TO ANSWERS'
+    ])
+  })
+
+  it('fits reveal content and its single action row inside the fixed panel', () => {
+    const usedHeight = Object.entries(REVEAL_VERTICAL_BUDGET)
+      .filter(([key]) => key !== 'panelHeight')
+      .reduce((total, [, value]) => total + value, 0)
+    expect(usedHeight).toBeLessThanOrEqual(REVEAL_VERTICAL_BUDGET.panelHeight)
+    uiTest.state = stateFor('reveal')
+    expect(collectButtons(uiComponent()).map(({ value }) => value).sort()).toEqual(['MAKE YOUR OWN', 'NEXT GHOST'])
+  })
+})
+
+describe('invite handoff', () => {
+  it('copies an honest general World invite on the posted screen first tap', async () => {
+    uiTest.state = stateFor('posted')
+    const button = findButton(uiComponent(), 'COPY INVITE')
+    ;(button?.onMouseDown as (() => void) | undefined)?.()
+    await Promise.resolve()
+
+    expect(uiActions.showInvite).toHaveBeenCalledTimes(1)
+    expect(restrictedActions.copyToClipboard).toHaveBeenCalledWith({
+      text: 'Join me for Ghost Charades: https://decentraland.org/jump/?realm=ghostcharades.dcl.eth'
+    })
+    expect(uiActions.setInviteStatus).toHaveBeenCalledWith('copied')
   })
 })
 

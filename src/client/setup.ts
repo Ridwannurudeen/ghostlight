@@ -58,6 +58,11 @@ export function getCurrentTheaterRegion() {
   return currentRegion
 }
 
+export function isPlayerInDecodeArea() {
+  const playerTransform = Transform.getOrNull(engine.PlayerEntity)
+  return playerTransform !== null && isInDecodeArea(playerTransform.position)
+}
+
 function clientSetupSystem() {
   if (platform === null) {
     const detectedPlatform = getPlatform()
@@ -87,8 +92,7 @@ function applyRequestedCamera() {
 }
 
 function getAutomaticCamera(): TheaterCamera | 'player' {
-  const playerTransform = Transform.getOrNull(engine.PlayerEntity)
-  return playerTransform !== null && isInDecodeArea(playerTransform.position) ? 'stage' : 'player'
+  return isPlayerInDecodeArea() ? 'stage' : 'player'
 }
 
 function createVirtualCamera(camera: TheaterCamera, lookAtEntity: Entity) {
