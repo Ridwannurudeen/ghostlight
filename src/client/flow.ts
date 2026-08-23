@@ -185,7 +185,9 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
           }
     case 'ready': {
       const newInstance = state.instanceId !== action.instanceId
-      const screen = state.resumeScreen ?? (state.since && !state.sinceShown ? 'since' : 'foyer')
+      const screen = newInstance
+        ? 'foyer'
+        : (state.resumeScreen ?? (state.since && !state.sinceShown ? 'since' : 'foyer'))
       return {
         ...state,
         ready: true,
@@ -194,7 +196,9 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
         lastHeartbeatAt: action.now,
         screen,
         resumeScreen: null,
+        charade: newInstance ? null : state.charade,
         audience: newInstance ? [] : state.audience,
+        roundCharadeId: newInstance ? '' : state.roundCharadeId,
         errorCode: ''
       }
     }
@@ -231,6 +235,7 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
         ...state,
         screen: state.screen === 'author' ? 'author' : 'reveal',
         reveal: action.reveal,
+        roundCharadeId: state.roundCharadeId === action.reveal.charadeId ? '' : state.roundCharadeId,
         errorCode: '',
         pending: state.pending.filter((request) => request.kind !== 'guess' && request.kind !== 'roundGuess')
       }
@@ -321,7 +326,12 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
     case 'clearToast':
       return { ...state, toast: null }
     case 'error':
-      return { ...state, errorCode: action.code, pending: [] }
+      return {
+        ...state,
+        roundCharadeId: state.screen === 'decode' ? '' : state.roundCharadeId,
+        errorCode: action.code,
+        pending: []
+      }
   }
 }
 
@@ -385,6 +395,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
   let requestSequence = 0
   let helloSent = false
   let lastHelloInstance = ''
+  let roundMismatchRefetchAttempted = false
   const requests = new Map<string, StoredRequest>()
   const listeners = new Set<(nextState: ClientFlowState) => void>()
   const now = options.now ?? Date.now
@@ -435,6 +446,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     switch (message.type) {
       case 'ready': {
         const instanceChanged = state.instanceId !== message.data.instanceId
+        if (instanceChanged) roundMismatchRefetchAttempted = false
         dispatch({
           type: 'ready',
           instanceId: message.data.instanceId,
@@ -463,15 +475,18 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           answers: [firstAnswer, secondAnswer, thirdAnswer]
         }
         resolveRequests('nextCharade')
-        if (state.roundCharadeId && state.roundCharadeId !== charade.id) {
-          requestNextCharade()
-          break
+        if (state.roundCharadeId && state.roundCharadeId !== charade.id && !roundMismatchRefetchAttempted) {
+          if (requestNextCharade()) {
+            roundMismatchRefetchAttempted = true
+            break
+          }
         }
         dispatch({ type: 'charade', charade })
         effects.showPerformer?.(charade.look, charade.emotes)
         break
       }
       case 'reveal':
+        if (state.roundCharadeId === message.data.charadeId) roundMismatchRefetchAttempted = false
         resolveRequests('guess', 'roundGuess')
         dispatch({ type: 'reveal', reveal: message.data })
         effects.revealAudience?.(message.data.correct)
@@ -491,11 +506,14 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         break
       case 'roundStart': {
         const needsRoundCharade = state.charade?.id !== message.data.charadeId
+        const preserveScreen = state.screen === 'author' || state.screen === 'posted'
+        if (state.roundCharadeId !== message.data.charadeId) roundMismatchRefetchAttempted = false
         dispatch({ type: 'roundStart', charadeId: message.data.charadeId })
-        if (needsRoundCharade) requestNextCharade()
+        if (needsRoundCharade && !preserveScreen) requestNextCharade()
         break
       }
       case 'roundWinner': {
+        roundMismatchRefetchAttempted = false
         resolveRequests('roundGuess')
         dispatch({ type: 'roundWinner', address: message.data.address, name: message.data.name, now: now() })
         const profile = options.getProfile?.()
@@ -508,6 +526,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         }
         break
       case 'error':
+        if (state.screen === 'decode') roundMismatchRefetchAttempted = false
         requests.clear()
         dispatch({ type: 'error', code: message.data.code })
         break
