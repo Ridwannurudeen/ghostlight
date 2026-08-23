@@ -549,6 +549,8 @@ export type FlowEffects = {
   showPreview?: (look: Look, emotes: GhostEmotes) => void
   clearPreview?: () => void
   showReward?: (address: string, title: PlayerTitle) => void
+  showStageReward?: (address: string, title: PlayerTitle) => void
+  clearStageReward?: () => void
   showGhostOfNight?: (ghost: GhostOfNightView | null) => void
   beginReveal?: (charade: DecodeCharade, answerIndex: number) => void
   resolveReveal?: (reveal: RevealResult, charade: DecodeCharade) => void
@@ -668,6 +670,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           THEMES.find((candidate) => candidate.id === state.theme)!
         const profile = options.getProfile?.()
         if (instanceChanged) roundMismatchRefetchAttempted = false
+        if (instanceChanged) effects.clearStageReward?.()
         dispatch({
           type: 'ready',
           instanceId: message.data.instanceId,
@@ -733,7 +736,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         } else {
           effects.showPerformer?.(charade.look, charade.emotes)
         }
-        effects.showReward?.(charade.authorAddress, charade.authorTitle)
+        effects.showStageReward?.(charade.authorAddress, charade.authorTitle)
         break
       }
       case 'charadeReply': {
@@ -947,6 +950,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
   function beginAuthoring() {
     if (!state.ready) return false
     effects.cancelReveal?.()
+    effects.clearStageReward?.()
     const seed = createRequestId()
     const phrase = dealPhrase(DECK, state.dealtPhraseIds, seed)
     if (!phrase) {

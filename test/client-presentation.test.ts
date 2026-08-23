@@ -92,7 +92,13 @@ vi.mock('../src/client/opening-scene', () => ({
 const setup = vi.hoisted(() => ({ startClientSetup: vi.fn() }))
 vi.mock('../src/client/setup', () => setup)
 const sound = vi.hoisted(() => ({ duckForReveal: vi.fn(), play: vi.fn(), restoreAfterReveal: vi.fn() }))
-vi.mock('../src/client/rewards', () => ({ removeRewardProp: vi.fn(), setRewardProp: vi.fn() }))
+const rewards = vi.hoisted(() => ({
+  clearStageRewardProp: vi.fn(),
+  removeRewardProp: vi.fn(),
+  setRewardProp: vi.fn(),
+  setStageRewardProp: vi.fn()
+}))
+vi.mock('../src/client/rewards', () => rewards)
 vi.mock('../src/client/theater', () => ({
   lights: { setThemeAccent: vi.fn() },
   marquee: { setText: vi.fn() }
@@ -113,7 +119,10 @@ describe('client presentation integration', () => {
       resolveReveal: reveal.resolve,
       skipReveal: reveal.skipToEnd,
       cancelReveal: reveal.cancel,
-      clearPreview: ghosts.clearPreview
+      clearPreview: ghosts.clearPreview,
+      showReward: rewards.setRewardProp,
+      showStageReward: rewards.setStageRewardProp,
+      clearStageReward: rewards.clearStageRewardProp
     })
     expect(setup.startClientSetup).toHaveBeenCalledTimes(1)
     expect(flow.startClientFlow).toHaveBeenCalledTimes(1)

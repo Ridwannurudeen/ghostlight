@@ -93,11 +93,43 @@ def add_cone(name, radius1, radius2, depth, location, material, vertices=12):
 
 
 def add_sphere(name, radius, location, material, scale=(1.0, 1.0, 1.0)):
-    bpy.ops.mesh.primitive_uv_sphere_add(
-        segments=8, ring_count=4, radius=radius, location=location
-    )
-    obj = bpy.context.object
-    obj.name = name
+    segments = 8
+    rings = 4
+    vertices = [(0.0, 0.0, radius)]
+    for ring in range(1, rings):
+        polar = math.pi * ring / rings
+        ring_radius = math.sin(polar) * radius
+        z = math.cos(polar) * radius
+        for segment in range(segments):
+            angle = math.tau * segment / segments
+            vertices.append(
+                (math.cos(angle) * ring_radius, math.sin(angle) * ring_radius, z)
+            )
+    bottom = len(vertices)
+    vertices.append((0.0, 0.0, -radius))
+
+    faces = []
+    for segment in range(segments):
+        next_segment = (segment + 1) % segments
+        faces.append((0, 1 + segment, 1 + next_segment))
+    for ring in range(rings - 2):
+        upper = 1 + ring * segments
+        lower = upper + segments
+        for segment in range(segments):
+            next_segment = (segment + 1) % segments
+            faces.append((upper + segment, lower + segment, lower + next_segment))
+            faces.append((upper + segment, lower + next_segment, upper + next_segment))
+    last_ring = 1 + (rings - 2) * segments
+    for segment in range(segments):
+        next_segment = (segment + 1) % segments
+        faces.append((bottom, last_ring + next_segment, last_ring + segment))
+
+    mesh = bpy.data.meshes.new(name)
+    mesh.from_pydata(vertices, [], faces)
+    mesh.update()
+    obj = bpy.data.objects.new(name, mesh)
+    bpy.context.collection.objects.link(obj)
+    obj.location = location
     obj.scale = scale
     return finish_object(obj, material)
 
@@ -423,6 +455,7 @@ def export_model(filename, objects):
         export_animations=False,
         export_cameras=False,
         export_lights=False,
+        export_texcoords=False,
         export_draco_mesh_compression_enable=False,
         export_yup=True,
         use_selection=True,

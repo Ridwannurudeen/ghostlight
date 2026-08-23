@@ -19,7 +19,12 @@ import { createSceneOpeningController } from './client/opening-scene'
 import { createSceneRevealController } from './client/reveal-scene'
 import { startClientSetup } from './client/setup'
 import { duckForReveal, play, restoreAfterReveal } from './client/sound'
-import { removeRewardProp, setRewardProp } from './client/rewards'
+import {
+  clearStageRewardProp,
+  removeRewardProp,
+  setRewardProp,
+  setStageRewardProp
+} from './client/rewards'
 import { lights, marquee } from './client/theater'
 import { uiComponent } from './client/ui'
 import { startServer } from './server/server'
@@ -85,6 +90,8 @@ export function main() {
     showPreview,
     clearPreview,
     showReward: setRewardProp,
+    showStageReward: setStageRewardProp,
+    clearStageReward: clearStageRewardProp,
     showGhostOfNight: (ghost) => {
       pedestalGhost = ghost?.look ?? null
       syncPedestalGhost()

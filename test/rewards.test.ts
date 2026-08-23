@@ -102,4 +102,28 @@ describe('title reward props', () => {
     controller.set('0xAlice', 'Understudy')
     expect(entityCount()).toBe(4)
   })
+
+  it('reuses one bounded prop slot across asynchronous stage authors', () => {
+    const { controller, attachments, models, removed, entityCount } = createRewardHarness()
+
+    controller.setStage('0xAuthor-1', 'Understudy')
+    for (let index = 2; index <= 20; index += 1) {
+      controller.setStage(`0xAuthor-${index}`, index % 2 === 0 ? 'Scene Stealer' : 'Ghostlight Legend')
+    }
+
+    expect(entityCount()).toBe(2)
+    expect(attachments.get(1)?.avatarId).toBe('0xAuthor-20')
+    expect(models.get(2)).toBe(REWARD_PROPS['Scene Stealer'])
+
+    controller.set('0xAuthor-20', 'Scene Stealer')
+    expect(entityCount()).toBe(4)
+    expect(models.size).toBe(1)
+
+    controller.remove('0xAuthor-20')
+    expect(removed).toEqual([3])
+    expect(models.get(2)).toBe(REWARD_PROPS['Scene Stealer'])
+
+    controller.clearStage()
+    expect(models.has(2)).toBe(false)
+  })
 })

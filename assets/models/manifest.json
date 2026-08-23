@@ -10,7 +10,7 @@
         "Brass Gold",
         "Velvet Red"
       ],
-      "bytes": 58180
+      "bytes": 44500
     },
     {
       "file": "curtain_left.glb",
@@ -19,7 +19,7 @@
         "Velvet Red",
         "Brass Gold"
       ],
-      "bytes": 33884
+      "bytes": 26060
     },
     {
       "file": "curtain_right.glb",
@@ -28,7 +28,7 @@
         "Velvet Red",
         "Brass Gold"
       ],
-      "bytes": 33896
+      "bytes": 26072
     },
     {
       "file": "stage.glb",
@@ -38,7 +38,7 @@
         "Velvet Red",
         "Brass Gold"
       ],
-      "bytes": 20048
+      "bytes": 15488
     },
     {
       "file": "seat_row.glb",
@@ -48,7 +48,7 @@
         "Warm Wood",
         "Brass Gold"
       ],
-      "bytes": 96724
+      "bytes": 72772
     },
     {
       "file": "footlight.glb",
@@ -58,7 +58,7 @@
         "Brass Gold",
         "Ghost Light Cyan"
       ],
-      "bytes": 12924
+      "bytes": 10356
     },
     {
       "file": "chandelier.glb",
@@ -67,7 +67,7 @@
         "Brass Gold",
         "Ghost Light Cyan"
       ],
-      "bytes": 67420
+      "bytes": 49708
     },
     {
       "file": "poster_frame.glb",
@@ -77,7 +77,7 @@
         "Brass Gold",
         "Warm Wood"
       ],
-      "bytes": 23716
+      "bytes": 18244
     },
     {
       "file": "marquee.glb",
@@ -87,7 +87,7 @@
         "Brass Gold",
         "Ghost Light Cyan"
       ],
-      "bytes": 103032
+      "bytes": 75624
     },
     {
       "file": "spotlight_cone.glb",
@@ -97,7 +97,7 @@
         "Brass Gold",
         "Ghost Light Cyan"
       ],
-      "bytes": 12348
+      "bytes": 9972
     },
     {
       "file": "foyer_doors.glb",
@@ -107,7 +107,7 @@
         "Velvet Red",
         "Brass Gold"
       ],
-      "bytes": 37060
+      "bytes": 28184
     },
     {
       "file": "pedestal.glb",
@@ -117,7 +117,7 @@
         "Warm Wood",
         "Velvet Red"
       ],
-      "bytes": 14424
+      "bytes": 11448
     },
     {
       "file": "prop_tophat.glb",
@@ -127,7 +127,7 @@
         "Velvet Red",
         "Brass Gold"
       ],
-      "bytes": 16536
+      "bytes": 13080
     },
     {
       "file": "prop_mask.glb",
@@ -137,7 +137,7 @@
         "Ghost Light Cyan",
         "Brass Gold"
       ],
-      "bytes": 21860
+      "bytes": 16880
     },
     {
       "file": "prop_trophy.glb",
@@ -147,7 +147,7 @@
         "Velvet Red",
         "Brass Gold"
       ],
-      "bytes": 24044
+      "bytes": 18908
     }
   ],
   "totals": {
@@ -159,6 +159,6 @@
       "Velvet Red",
       "Warm Wood"
     ],
-    "bytes": 576096
+    "bytes": 437296
   }
 }

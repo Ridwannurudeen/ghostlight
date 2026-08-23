@@ -49,6 +49,29 @@ const REWARD_SPECS: Record<RewardTitle, RewardSpec> = {
 
 export function createRewardController<TEntity>(port: RewardPort<TEntity>) {
   const rewards = new Map<string, RewardEntities<TEntity>>()
+  let stageReward: RewardEntities<TEntity> | null = null
+  let stageAddress = ''
+  let stageTitle: PlayerTitle = ''
+
+  function applyReward(entities: RewardEntities<TEntity>, address: string, title: RewardTitle) {
+    const spec = REWARD_SPECS[title]
+    port.attach(entities.anchor, address, spec.anchorPointId)
+    port.setTransform(entities.prop, entities.anchor, spec.position, spec.scale)
+    port.setModel(entities.prop, REWARD_PROPS[title])
+  }
+
+  function renderStageReward() {
+    if (stageTitle === '' || rewards.has(stageAddress.toLowerCase())) {
+      if (stageReward !== null) port.clearModel(stageReward.prop)
+      return
+    }
+
+    stageReward ??= {
+      anchor: port.createEntity(),
+      prop: port.createEntity()
+    }
+    applyReward(stageReward, stageAddress, stageTitle)
+  }
 
   return {
     set(address: string, title: PlayerTitle) {
@@ -66,10 +89,18 @@ export function createRewardController<TEntity>(port: RewardPort<TEntity>) {
       }
       if (existing === undefined) rewards.set(key, entities)
 
-      const spec = REWARD_SPECS[title]
-      port.attach(entities.anchor, address, spec.anchorPointId)
-      port.setTransform(entities.prop, entities.anchor, spec.position, spec.scale)
-      port.setModel(entities.prop, REWARD_PROPS[title])
+      applyReward(entities, address, title)
+      if (key === stageAddress.toLowerCase()) renderStageReward()
+    },
+    setStage(address: string, title: PlayerTitle) {
+      stageAddress = address
+      stageTitle = title
+      renderStageReward()
+    },
+    clearStage() {
+      stageAddress = ''
+      stageTitle = ''
+      if (stageReward !== null) port.clearModel(stageReward.prop)
     },
     remove(address: string) {
       const key = address.toLowerCase()
@@ -77,6 +108,7 @@ export function createRewardController<TEntity>(port: RewardPort<TEntity>) {
       if (existing === undefined) return
       port.removeEntityTree(existing.anchor)
       rewards.delete(key)
+      if (key === stageAddress.toLowerCase()) renderStageReward()
     }
   }
 }
@@ -100,4 +132,12 @@ export function setRewardProp(address: string, title: PlayerTitle) {
 
 export function removeRewardProp(address: string) {
   rewardController.remove(address)
+}
+
+export function setStageRewardProp(address: string, title: PlayerTitle) {
+  rewardController.setStage(address, title)
+}
+
+export function clearStageRewardProp() {
+  rewardController.clearStage()
 }

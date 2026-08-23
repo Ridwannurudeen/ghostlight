@@ -66,6 +66,8 @@ function createFlowHarness(
     showPreview: vi.fn(),
     clearPreview: vi.fn(),
     showReward: vi.fn(),
+    showStageReward: vi.fn(),
+    clearStageReward: vi.fn(),
     showGhostOfNight: vi.fn(),
     beginReveal: vi.fn(),
     resolveReveal: vi.fn(),
@@ -409,6 +411,7 @@ describe('flow lifecycle', () => {
     runtime.receive({ type: 'charade', data: charade })
     expect(runtime.getState()).toMatchObject({ screen: 'decode', charade })
     expect(effects.showPerformer).toHaveBeenCalledWith(charade.look, charade.emotes)
+    expect(effects.showStageReward).toHaveBeenCalledWith(charade.authorAddress, charade.authorTitle)
 
     expect(runtime.guess(1)).toBe(true)
     expect(runtime.guess(1)).toBe(false)
@@ -426,6 +429,7 @@ describe('flow lifecycle', () => {
     expect(effects.resolveReveal).toHaveBeenCalledWith(expect.objectContaining(reveal), charade)
 
     expect(runtime.beginAuthoring()).toBe(true)
+    expect(effects.clearStageReward).toHaveBeenCalled()
     const draft = runtime.getState().author!
     expect(runtime.getState().screen).toBe('author')
     for (const emote of draft.offeredEmotes.slice(0, 3)) expect(runtime.selectAuthorEmote(emote)).toBe(true)
