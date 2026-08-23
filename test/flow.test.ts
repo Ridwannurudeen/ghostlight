@@ -218,6 +218,9 @@ describe('heartbeats and request retries', () => {
     runtime.receive({ type: 'pong', data: { seq: 1 } })
     expect(runtime.getState()).toMatchObject({ ready: true, screen: 'decode', resumeScreen: null })
     expect(messagesOfType(sent, 'hello')).toHaveLength(1)
+
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    expect(runtime.getState()).toMatchObject({ ready: true, screen: 'decode', charade: { id: 'charade-1' } })
   })
 
   it('sends one identical retry after five seconds and times out after the next five', () => {

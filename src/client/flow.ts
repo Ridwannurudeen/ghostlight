@@ -187,7 +187,9 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
       const newInstance = state.instanceId !== action.instanceId
       const screen = newInstance
         ? 'foyer'
-        : (state.resumeScreen ?? (state.since && !state.sinceShown ? 'since' : 'foyer'))
+        : state.screen !== 'waking'
+          ? state.screen
+          : (state.resumeScreen ?? (state.since && !state.sinceShown ? 'since' : 'foyer'))
       return {
         ...state,
         ready: true,
