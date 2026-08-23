@@ -54,6 +54,11 @@ function actionButton(
   )
 }
 
+function canDecodeInCurrentRegion() {
+  const region = getCurrentTheaterRegion()
+  return region === 'house' || region === 'stage'
+}
+
 function screenShell(sentence: string, body: ReactEcs.JSX.Element, state: ClientFlowState) {
   return (
     <UiEntity uiTransform={PANEL} uiBackground={{ color: COLORS.ink }}>
@@ -91,8 +96,7 @@ function wakingScreen(state: ClientFlowState) {
 }
 
 function foyerScreen(state: ClientFlowState) {
-  const region = getCurrentTheaterRegion()
-  const canDecode = region === 'house' || region === 'stage'
+  const canDecode = canDecodeInCurrentRegion()
   return screenShell(
     "Tonight's ghosts are ready.",
     <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', justifyContent: 'center' }}>
@@ -217,6 +221,7 @@ function decodeScreen(state: ClientFlowState) {
 function revealScreen(state: ClientFlowState) {
   const reveal = state.reveal
   const author = state.charade?.authorName ?? 'The ghost'
+  const canDecode = canDecodeInCurrentRegion()
   const sentence = reveal
     ? `${author} meant “${reveal.phrase}”; ${reveal.stats.correct} of ${reveal.stats.total} got it, and your score is ${reveal.yourScore}.`
     : 'The ghost has revealed the answer.'
@@ -230,7 +235,11 @@ function revealScreen(state: ClientFlowState) {
         color={reveal?.correct ? COLORS.success : COLORS.alert}
         uiTransform={{ width: '100%', height: 54 }}
       />
-      {actionButton('NEXT GHOST', () => clientFlow.requestNextCharade())}
+      {actionButton(
+        canDecode ? 'NEXT GHOST' : 'WALK TO THE STAGE',
+        () => clientFlow.requestNextCharade(),
+        !canDecode
+      )}
       {actionButton('MAKE YOUR OWN', () => clientFlow.beginAuthoring(), false, 'secondary')}
       {actionButton("TODAY'S BOARDS", () => clientFlow.showBoards(), false, 'secondary')}
     </UiEntity>,
@@ -296,12 +305,18 @@ function authorScreen(state: ClientFlowState) {
 }
 
 function postedScreen(state: ClientFlowState) {
+  const canDecode = canDecodeInCurrentRegion()
   return screenShell(
     'Your ghost is on stage for the next stranger.',
     <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', justifyContent: 'center' }}>
       {actionButton('COPY INVITE', () => clientFlow.showInvite())}
       {actionButton("TODAY'S BOARDS", () => clientFlow.showBoards(), false, 'secondary')}
-      {actionButton('DECODE ANOTHER', () => clientFlow.requestNextCharade(), false, 'secondary')}
+      {actionButton(
+        canDecode ? 'DECODE ANOTHER' : 'WALK TO THE STAGE',
+        () => clientFlow.requestNextCharade(),
+        !canDecode,
+        'secondary'
+      )}
     </UiEntity>,
     state
   )

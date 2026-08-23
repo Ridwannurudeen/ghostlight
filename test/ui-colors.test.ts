@@ -1,4 +1,9 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+const uiTest = vi.hoisted(() => ({
+  region: 'house',
+  state: {} as Record<string, unknown>
+}))
 
 vi.mock('@dcl/sdk/react-ecs', async () => import('@dcl/react-ecs'))
 
@@ -7,7 +12,7 @@ vi.mock('~system/RestrictedActions', () => ({
 }))
 
 vi.mock('../src/client/setup', () => ({
-  getCurrentTheaterRegion: () => 'house'
+  getCurrentTheaterRegion: () => uiTest.region
 }))
 
 vi.mock('../src/client/reactions', () => ({
@@ -17,22 +22,13 @@ vi.mock('../src/client/reactions', () => ({
 
 vi.mock('../src/client/flow', () => ({
   clientFlow: {
-    getState: () => ({
-      screen: 'decode',
-      charade: {
-        id: 'charade-1',
-        authorName: 'Author',
-        answers: ['One', 'Two', 'Three'],
-        isHouse: false
-      },
-      pending: [{ requestId: 'request-1', kind: 'guess', sentAt: 0, retries: 0 }],
-      roundCharadeId: '',
-      errorCode: '',
-      toast: null
-    }),
+    getState: () => uiTest.state,
     guess: vi.fn(),
     replay: vi.fn(),
-    beginAuthoring: vi.fn()
+    beginAuthoring: vi.fn(),
+    requestNextCharade: vi.fn(),
+    showBoards: vi.fn(),
+    showInvite: vi.fn()
   }
 }))
 
@@ -41,6 +37,11 @@ import { COLORS, uiComponent } from '../src/client/ui'
 type ElementNode = {
   type: string | ((props: Record<string, unknown>) => unknown)
   props: Record<string, unknown>
+}
+
+type ButtonProps = {
+  value: string
+  disabled: boolean
 }
 
 function render(node: unknown): void {
@@ -58,7 +59,58 @@ function render(node: unknown): void {
   render(element.props.children)
 }
 
+function collectButtons(node: unknown, buttons: ButtonProps[] = []): ButtonProps[] {
+  if (Array.isArray(node)) {
+    node.forEach((child) => collectButtons(child, buttons))
+    return buttons
+  }
+  if (node === null || typeof node !== 'object' || !('type' in node) || !('props' in node)) return buttons
+
+  const element = node as ElementNode
+  if (typeof element.props.value === 'string' && typeof element.props.onMouseDown === 'function') {
+    buttons.push({ value: element.props.value, disabled: element.props.disabled === true })
+  }
+  if (typeof element.type === 'function') {
+    collectButtons(element.type(element.props), buttons)
+    return buttons
+  }
+  collectButtons(element.props.children, buttons)
+  return buttons
+}
+
+function stateFor(screen: 'decode' | 'reveal' | 'posted') {
+  const charade = {
+    id: 'charade-1',
+    authorName: 'Author',
+    answers: ['One', 'Two', 'Three'],
+    isHouse: false
+  }
+  return {
+    screen,
+    charade,
+    reveal:
+      screen === 'reveal'
+        ? {
+            charadeId: charade.id,
+            correct: false,
+            phrase: 'Answer one',
+            stats: { total: 1, correct: 0 },
+            yourScore: 0
+          }
+        : null,
+    pending: screen === 'decode' ? [{ requestId: 'request-1', kind: 'guess', sentAt: 0, retries: 0 }] : [],
+    roundCharadeId: '',
+    errorCode: '',
+    toast: null
+  }
+}
+
 describe('UI colors', () => {
+  beforeEach(() => {
+    uiTest.region = 'house'
+    uiTest.state = stateFor('decode')
+  })
+
   it('does not let disabled buttons mutate the shared ink color across renders', () => {
     const inkAlpha = COLORS.ink.a
 
@@ -66,5 +118,26 @@ describe('UI colors', () => {
     render(uiComponent())
 
     expect(COLORS.ink.a).toBe(inkAlpha)
+  })
+})
+
+describe('decode region gates', () => {
+  it.each([
+    ['reveal', 'house', 'NEXT GHOST', false, 'NEXT GHOST'],
+    ['reveal', 'stage', 'NEXT GHOST', false, 'NEXT GHOST'],
+    ['reveal', 'foyer', 'NEXT GHOST', true, 'WALK TO THE STAGE'],
+    ['reveal', 'outside', 'NEXT GHOST', true, 'WALK TO THE STAGE'],
+    ['posted', 'house', 'DECODE ANOTHER', false, 'DECODE ANOTHER'],
+    ['posted', 'stage', 'DECODE ANOTHER', false, 'DECODE ANOTHER'],
+    ['posted', 'foyer', 'DECODE ANOTHER', true, 'WALK TO THE STAGE'],
+    ['posted', 'outside', 'DECODE ANOTHER', true, 'WALK TO THE STAGE']
+  ] as const)('gates %s action in the %s region', (screen, region, originalLabel, disabled, expectedLabel) => {
+    uiTest.region = region
+    uiTest.state = stateFor(screen)
+
+    const buttons = collectButtons(uiComponent())
+
+    expect(buttons).toContainEqual({ value: expectedLabel, disabled })
+    if (disabled) expect(buttons.some((button) => button.value === originalLabel)).toBe(false)
   })
 })
