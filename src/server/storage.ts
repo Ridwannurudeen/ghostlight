@@ -183,7 +183,5 @@ export const loadJSON = repository.loadJSON
 export const loadPlayerJSON = repository.loadPlayerJSON
 export const markDirty = repository.markDirty
 export const markPlayerDirty = repository.markPlayerDirty
-export const flush = repository.flush
 export const flushNow = repository.flushNow
 export const startFlushLoop = repository.startFlushLoop
-export const stopFlushLoop = repository.stopFlushLoop

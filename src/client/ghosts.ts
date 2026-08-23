@@ -108,15 +108,6 @@ export function setAudience(looks: readonly Look[]) {
   if (queueWasEmpty && audienceQueue.length > 0) audienceSpawnClock = 0
 }
 
-export function clearAudience() {
-  initializeGhosts()
-  audienceQueue = []
-  audienceSpawnClock = 0
-  for (let index = AUDIENCE_START_INDEX; index < PREVIEW_INDEX; index += 1) {
-    hideGhost(slots[index])
-  }
-}
-
 export function showPreview(look: Look, emotes: GhostEmotes) {
   initializeGhosts()
   showGhost(slots[PREVIEW_INDEX], look, emotes)

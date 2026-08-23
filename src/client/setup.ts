@@ -29,13 +29,13 @@ export function startClientSetup(renderer: UiComponent) {
   engine.addSystem(clientSetupSystem, undefined, SETUP_SYSTEM)
 }
 
-export function engageStageCamera() {
+function engageStageCamera() {
   if (stageCameraActive || cameraEntity === null) return
   MainCamera.createOrReplace(engine.CameraEntity, { virtualCameraEntity: cameraEntity })
   stageCameraActive = true
 }
 
-export function releaseStageCamera() {
+function releaseStageCamera() {
   if (!stageCameraActive) return
   MainCamera.createOrReplace(engine.CameraEntity, { virtualCameraEntity: undefined })
   stageCameraActive = false
