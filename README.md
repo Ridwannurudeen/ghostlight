@@ -13,13 +13,15 @@ is confirmed.
 ## Controls
 
 - Move with the Decentraland joystick on mobile or the normal movement controls on desktop.
-- Use the large on-screen buttons to decode, replay, author, react, view boards, and copy an invite.
+- Walk into the theater to enable `DECODE A GHOST`; the foyer prompt remains `WALK TO THE STAGE` until then.
+- Use the large on-screen buttons to decode, replay, author, react, view boards, and copy an invite. `MAKE YOUR
+  OWN` remains available while a decode request is pending or recovering from an error.
 - Authoring uses no text input: choose one dealt phrase and three emotes in order.
 - Native mobile action buttons are hidden; the movement joystick remains available.
 
 ## Game loop
 
-1. Walk through the foyer while the authoritative multiplayer server wakes.
+1. Walk through the foyer while the authoritative multiplayer server wakes, then enter the theater to decode.
 2. Decode a real player's three-emote ghost, or the clearly labelled House ghost when no real charade exists.
 3. See the answer, aggregate result, and personal decoder score.
 4. Take a dealt phrase, select three emotes, preview the performance, and post it.
@@ -41,8 +43,10 @@ House guesses and House performances are excluded from player stats and boards.
   protocol races, rounds, and the complete client flow.
 
 Persistent data uses versioned `gc:v1:*` keys. Scene writes are serialized as JSON strings, retained when a
-host write returns `false`, and flushed in batches of at most eight concurrent calls. Player looks used for
-posted ghosts are read from server-side ECS components, never from client payloads.
+host write returns `false`, and flushed in batches of at most eight concurrent calls. Startup hydrates the last
+14 daily charade indexes in read batches of at most eight so the full judging window remains available. Player
+looks used for posted ghosts are read from server-side ECS components, never from client payloads, and retain
+up to 20 wearable URNs.
 
 The runtime keeps at most eight `AvatarShape` components active: one performer, six audience members, and one
 preview. Audience spawns are staggered to three per second, and the scene uses primitives without particles or
