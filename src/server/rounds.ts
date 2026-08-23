@@ -19,6 +19,7 @@ export class LiveRounds {
     charadeId: string
     guessed: Set<string>
     winner: RoundPlayer | null
+    settled: boolean
   } | null = null
 
   constructor(private readonly send: RoundSend = () => {}) {}
@@ -30,7 +31,11 @@ export class LiveRounds {
   leave(address: string) {
     const key = address.toLowerCase()
     this.players.delete(key)
+    const active = this.active
     if (this.players.size < 2) this.active = null
+    else if (active && [...this.players.keys()].every((player) => active.guessed.has(player))) {
+      active.settled = true
+    }
   }
 
   get playerCount() {
@@ -44,7 +49,11 @@ export class LiveRounds {
   get isSettled() {
     const active = this.active
     if (!active) return false
-    return active.winner !== null || [...this.players.keys()].every((address) => active.guessed.has(address))
+    return (
+      active.settled ||
+      active.winner !== null ||
+      [...this.players.keys()].every((address) => active.guessed.has(address))
+    )
   }
 
   get current(): RoundSnapshot | null {
@@ -59,7 +68,7 @@ export class LiveRounds {
   start(charadeId: string) {
     if (!this.isLive) return false
     if (this.active?.charadeId === charadeId && !this.isSettled) return false
-    this.active = { charadeId, guessed: new Set(), winner: null }
+    this.active = { charadeId, guessed: new Set(), winner: null, settled: false }
     void this.send('roundStart', { charadeId })
     return true
   }
@@ -67,14 +76,19 @@ export class LiveRounds {
   guess(address: string, charadeId: string, correct: boolean): RoundGuessResult {
     const key = address.toLowerCase()
     const player = this.players.get(key)
-    if (!player || !this.active || this.active.charadeId !== charadeId || this.active.guessed.has(key)) {
+    const active = this.active
+    if (!player || !active || active.charadeId !== charadeId || active.guessed.has(key)) {
       return { accepted: false, winner: null }
     }
 
-    this.active.guessed.add(key)
-    if (!correct || this.active.winner) return { accepted: true, winner: null }
+    active.guessed.add(key)
+    if (!correct || active.winner) {
+      if ([...this.players.keys()].every((address) => active.guessed.has(address))) active.settled = true
+      return { accepted: true, winner: null }
+    }
 
-    this.active.winner = player
+    active.winner = player
+    active.settled = true
     void this.send('roundWinner', { address: player.address, name: player.name })
     return { accepted: true, winner: player }
   }

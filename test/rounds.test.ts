@@ -55,6 +55,20 @@ describe('live rounds', () => {
     expect(rounds.isSettled).toBe(true)
   })
 
+  it('keeps an all-wrong round settled when another player enters', () => {
+    const rounds = new LiveRounds()
+    rounds.enter({ address: 'alice', name: 'Alice' })
+    rounds.enter({ address: 'bob', name: 'Bob' })
+    rounds.start('active')
+    rounds.guess('alice', 'active', false)
+    rounds.guess('bob', 'active', false)
+
+    rounds.enter({ address: 'carol', name: 'Carol' })
+
+    expect(rounds.isSettled).toBe(true)
+    expect(rounds.start('next')).toBe(true)
+  })
+
   it('awards exactly one first correct winner', () => {
     const send = vi.fn()
     const rounds = new LiveRounds(send)
