@@ -1,7 +1,7 @@
 {
-  "name": "dcl-project",
+  "name": "ghost-charades",
   "version": "1.0.0",
-  "description": "SDK7 Template scene",
+  "description": "Asynchronous social charades performed by real Decentraland player ghosts",
   "scripts": {
     "start": "sdk-commands start",
     "deploy": "sdk-commands deploy",
@@ -17,8 +17,8 @@
     "vitest": "^4.1.11"
   },
   "engines": {
-    "node": ">=16.0.0",
-    "npm": ">=6.0.0"
+    "node": "^20.0.0 || ^22.0.0 || >=24.0.0",
+    "npm": ">=10.0.0"
   },
   "prettier": {
     "semi": false,

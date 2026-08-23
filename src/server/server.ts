@@ -110,7 +110,10 @@ export function createServerProtocol(options: ServerProtocolOptions) {
   const answerIndexes = new Map<string, number>()
   const lastAuthors = new Map<string, string>()
   const lastPosts = new Map<string, number>()
-  const completedRequests = new Map<string, { type: 'reveal' | 'posted'; data: RevealPayload | { charadeId: string } }>()
+  const completedRequests = new Map<
+    string,
+    { type: 'reveal' | 'posted'; data: RevealPayload | { charadeId: string } }
+  >()
   const rounds = new LiveRounds((type, data) => options.send(type, data))
 
   async function sendTo(address: string, type: string, data: unknown) {
@@ -198,9 +201,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     rounds.enter({ address: look.address, name: look.name })
     options.state.touchVisitor(look)
     const stats = await options.state.getOrCreateStats(key, look.name, !look.isGuest)
-    const rankIndex = options.state.boards.decoders.findIndex(
-      (row) => canonicalAddress(row.address) === key
-    )
+    const rankIndex = options.state.boards.decoders.findIndex((row) => canonicalAddress(row.address) === key)
     const pending = { ...stats.pending }
 
     if (pending.triedYou > 0) {
@@ -308,12 +309,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     const liveCharade = ensureRound()
     const selected =
       liveCharade ??
-      chooseCharadeFor(
-        key,
-        [...stats.seen, ...data.exclude],
-        options.state.getPool(),
-        lastAuthors.get(key)
-      ) ??
+      chooseCharadeFor(key, [...stats.seen, ...data.exclude], options.state.getPool(), lastAuthors.get(key)) ??
       HOUSE_CHARADE
     await sendCharade(address, selected)
   }
@@ -409,12 +405,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       return
     }
     const phrase = DECK.find((candidate) => candidate.id === data.phraseId)
-    if (
-      !data.requestId ||
-      !phrase ||
-      data.emotes.length !== 3 ||
-      data.emotes.some((emote) => !EMOTES.has(emote))
-    ) {
+    if (!data.requestId || !phrase || data.emotes.length !== 3 || data.emotes.some((emote) => !EMOTES.has(emote))) {
       await sendError(address, 'invalid-post')
       return
     }
@@ -521,8 +512,7 @@ export function startServer() {
   startFlushLoop()
   const protocol = createServerProtocol({
     state: gameState,
-    send: (type, data, to) =>
-      room.send(type as keyof typeof Messages, data as never, to ? { to } : undefined),
+    send: (type, data, to) => room.send(type as keyof typeof Messages, data as never, to ? { to } : undefined),
     snapshotLook: snapshotServerLook,
     ready: hydration,
     flush: flushNow,

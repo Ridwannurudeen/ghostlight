@@ -1,265 +1,90 @@
-# SDK7 Template scene
+# Ghost Charades
 
-## Try it out
+Guess what a stranger's ghost is acting out, then leave your own charade for whoever comes next.
 
-**Previewing the scene**
+Ghost Charades is a mobile-first Decentraland SDK7 World built for the Friendzone Mobile Buildathon. A
+visitor decodes three-emote performances left by real previous players, sees the crowd's result, and records
+a new performance from a fixed phrase deck. The last six real visitors appear as the theater audience. When
+two or more players are present, the server turns the shared performance into a first-correct race.
 
-1. Download this repository.
+The deployment target is `ghostcharades.dcl.eth`. That NAME is not configured in `scene.json` until ownership
+is confirmed.
 
-2. Install the [Decentraland Editor](https://docs.decentraland.org/creator/development-guide/sdk7/editor/)
+## Controls
 
-3. Open a Visual Studio Code window on this scene's root folder. Not on the root folder of the whole repo, but instead on this sub-folder that belongs to the scene.
+- Move with the Decentraland joystick on mobile or the normal movement controls on desktop.
+- Use the large on-screen buttons to decode, replay, author, react, view boards, and copy an invite.
+- Authoring uses no text input: choose one dealt phrase and three emotes in order.
+- Native mobile action buttons are hidden; the movement joystick remains available.
 
-4. Open the Decentraland Editor tab, and press **Run Scene**
+## Game loop
 
-Alternatively, you can use the command line. Inside this scene root directory run:
+1. Walk through the foyer while the authoritative multiplayer server wakes.
+2. Decode a real player's three-emote ghost, or the clearly labelled House ghost when no real charade exists.
+3. See the answer, aggregate result, and personal decoder score.
+4. Take a dealt phrase, select three emotes, preview the performance, and post it.
+5. Copy the World invite, inspect today's real-player boards, and return later for the “since you left” result.
 
-```
+House guesses and House performances are excluded from player stats and boards.
+
+## Architecture
+
+`src/index.ts` branches once between the authoritative server and the client.
+
+- `src/shared/` contains the registered binary message schemas, immutable configuration, 120-phrase deck,
+  shared types, and deterministic selection functions.
+- `src/server/` owns storage hydration and migrations, checked dirty-write flushing, player state, authoritative
+  avatar snapshots, request idempotency, cooldowns, decode/post handlers, boards, and live rounds.
+- `src/client/` owns the theater, eight-slot avatar pool, virtual stage camera, platform-aware HUD, client state
+  machine, retries, reactions, and ReactEcs mobile UI.
+- `test/` covers deck integrity, deterministic selection, persistence failure recovery, migrations, boards,
+  protocol races, rounds, and the complete client flow.
+
+Persistent data uses versioned `gc:v1:*` keys. Scene writes are serialized as JSON strings, retained when a
+host write returns `false`, and flushed in batches of at most eight concurrent calls. Player looks used for
+posted ghosts are read from server-side ECS components, never from client payloads.
+
+The runtime keeps at most eight `AvatarShape` components active: one performer, six audience members, and one
+preview. Audience spawns are staggered to three per second, and the scene uses primitives without particles or
+dynamic lights.
+
+## Run from scratch
+
+Requirements: Node.js 20.x, 22.x, or 24+ and npm 10+. The exact supported ranges are enforced by `package.json`.
+
+```bash
+npm ci
+npm run build
+npm test
 npm run start
 ```
 
-## What's new on SDK 7
+`npm run start` launches the local Decentraland preview. For phone validation, open its QR preview in the real
+Decentraland mobile app and follow [`docs/DEVICE-CHECKLIST.md`](docs/DEVICE-CHECKLIST.md).
 
-Below are some basic concepts about the SDK 7 syntax. For more details, see the [Documentation site](https://docs.decentraland.org/creator/).
+The Decentraland packages are pinned to `7.26.1-32239895147.commit-3c77d90`; do not upgrade them without a new
+device validation pass.
 
-### Entities
+## World deployment
 
-An Entity is just an ID. It is an abstract concept not represented by any data structure. There is no "class Entity". Just a number that is used as a reference to group different components.
+Deployment is owner-gated. After the owner controls the NAME, add this top-level block to `scene.json`:
 
-```ts
-const myEntity = engine.addEntity()
-console.console.log(myEntity) // 100
-
-// Remove Entity
-engine.removeEntity(myEntity)
-```
-
-> Note: Note that it's no longer necessary to separately create an entity and then add it to the engine, this is all done in a single act.
-
-### Components
-
-The component is just a data container, WITHOUT any functions.
-
-To add a component to an entity, the entry point is now the component type, not the entity.
-
-```ts
-Transform.create(myEntity, <params>)
-```
-
-This is different from how the syntax was in SDK6:
-
-```ts
-// OLD Syntax
-myEntity.addComponent(Transform)
-```
-
-#### Base Components
-
-Base components already come packed as part of the SDK. Most of them interact directly with the renderer in some way. This is the full list of currently supported base components:
-
-- Transform
-- Animator
-- Material
-- MeshRenderer
-- MeshCollider
-- AudioSource
-- AudioStream
-- AvatarAttach
-- AvatarModifierArea
-- AvatarShape
-- Billboard
-- CameraMode
-- CameraModeArea
-- GltfContainer
-- NftShape
-- PointerEventsResult
-- PointerHoverFeedback
-- PointerLock
-- Raycast
-- RaycastResult
-- TextShape
-- VisibilityComponent
-
-```ts
-const entity = engine.addEntity()
-Transfrom.create(entity, {
-  position: Vector3.create(12, 1, 12)
-  scale: Vector3.One(),
-  rotation: Quaternion.Identity()
-})
-GltfContainer.create(zombie, {
-  withCollisions: true,
-  isPointerBlocker: true,
-  visible: true,
-  src: 'models/zombie.glb'
-})
-```
-
-#### Custom Components
-
-Each component must have a unique number ID. If a number is repeated, the engine or another player receiving updates might apply changes to the wrong component. Note that numbers 1-2000 are reserved for the base components.
-
-When creating a custom component you declare the schema of the data to be stored in it. Every field in a component MUST belong to one of the built-in special schemas provided as part of the SDK. These special schemas include extra functionality that allows them to be serialized/deserialized.
-
-Currently, the names of these special schemas are:
-
-##### Primitives
-
-1. `Schemas.Boolean`: true or false (serialized as a Byte)
-2. `Schemas.String`: UTF8 strings (serialized length and content)
-3. `Schemas.Float`: single precission float
-4. `Schemas.Double`: double precision float
-5. `Schemas.Byte`: a single byte, integer with range 0..255
-6. `Schemas.Short`: 16 bits signed-integer with range -32768..32767
-7. `Schemas.Int`: 32 bits signed-integer with range -2³¹..(2³¹-1)
-8. `Schemas.Int64`: 64 bits signed-integer
-9. `Schemas.Number`: an alias to Schemas.Float
-
-##### Specials
-
-10. `Schemas.Entity`: a wrapper to int32 that casts the type to `Entity`
-11. `Schemas.Vector3`: a Vector3 with { x, y, z }
-12. `Schemas.Quaternion`: a Quaternion with { x, y, z, w}
-13. `Schemas.Color3`: a Color3 with { r, g, b }
-14. `Schemas.Color4`: a Colo4 with { r, g, b, a }
-
-##### Schema generator
-
-15. `Schemas.Enum`: passing the serialization Schema and the original Enum as generic
-16. `Schemas.Array`: passing the item Schema
-17. `Schemas.Map`: passing a Map with Schemas as values
-18. `Schemas.Optional`: passing the schema to serialize
-
-Below are some examples of how these schemas can be declared.
-
-```ts
-const object = Schemas.Map({ x: Schemas.Int }) // { x: 1 }
-
-const array = Schemas.Map(Schemas.Int) // [1,2,3,4]
-
-const objectArray = Schemas.Array(Schemas.Map({ x: Schemas.Int })) // [{ x: 1 }, { x: 2 }]
-
-const BasicSchemas = Schemas.Map({
-  x: Schemas.Int,
-  y: Schemas.Float,
-  text: Schemas.String,
-  flag: Schemas.Boolean
-}) // { x: 1, y: 1.412, text: 'ecs 7 text', flag: true }
-
-const VelocitySchema = Schemas.Map({
-  x: Schemas.Float,
-  y: Schemas.Float,
-  z: Schemas.Float
-})
-```
-
-To then create a custom component using one of these schemas, use the following syntax:
-
-```ts
-export const myCustomComponent = engine.defineComponent(MyDataSchema, ComponentID)
-```
-
-For contrast, below is an example of how components were constructed prior to SDK 7.
-
-```ts
-/**
- * OLD SDK
- */
-
-// Define Component
-@Component('velocity')
-export class Velocity extends Vector3 {
-  constructor(x: number, y: number, z: number) {
-    super(x, y, z)
-  }
+```json
+"worldConfiguration": {
+  "name": "ghostcharades.dcl.eth"
 }
-// Create entity
-const wheel = new Entity()
-
-// Create instance of component with default values
-wheel.addComponent(new WheelSpin())
-
-/**
- * ECS 7
- */
-// Define Component
-const VelocitySchema = Schemas.Map({
-  x: Schemas.Float,
-  y: Schemas.Float,
-  z: Schemas.Float
-})
-const COMPONENT_ID = 2008
-const VelocityComponent = engine.defineComponent(Velocity, COMPONENT_ID)
-// Create Entity
-const entity = engine.addEntity()
-
-// Create instance of component
-VelocityComponent.create(entity, { x: 1, y: 2.3, z: 8 })
-
-// Remove instance of a component
-VelocityComponent.deleteFrom(entity)
 ```
 
-### Systems
+Keep `authoritativeMultiplayer: true`, do not add an offline fixed adapter, and leave Places opt-out unset.
+Build, complete the device checklist, and deploy only after the owner approves the release.
 
-Systems are pure & simple functions.
-All your logic comes here.
-A system might hold data which is relevant to the system itself, but no data about the entities it processes.
+## Roadmap to submission
 
-To add a system, all you need to do is define a function and add it to the engine. The function may optionally include a `dt` parameter with the delay since last frame, just like in prior versions of the SDK.
+- Complete the Android cold-start, rendering, safe-area, camera, persistence, invite, and performance checks.
+- Buy and configure the target Decentraland NAME, then deploy the tested commit.
+- Seed only through real playtests; never create synthetic visitors, charades, guesses, or leaderboard rows.
+- Run the two-device live-round check and a blind five-minute solo judge audit before the release lock.
 
-```ts
-// Basic system
-function mySystem() {
-  console.log('my system is running')
-}
+## License
 
-engine.addSystem(mySystem)
-
-// System with dt
-function mySystemDT(dt: number) {
-  console.log('time since last frame:  ', dt)
-}
-
-engine.addSystem(mySystemDT)
-```
-
-#### Query components
-
-The way to group/query the components inside systems is using the method getEntitiesWith.
-`engine.getEntitiesWith(...components)`.
-
-```ts
-function physicsSystem(dt: number) {
-  for (const [entity, transform, velocity] of engine.getEntitiesWith(Transform, Velocity)) {
-    // transform & velocity are read only components.
-    if (transform.position.x === 10) {
-      // To update a component, you need to call the `.mutable` method
-      const mutableVelocity = VelocityComponent.getMutable(entity)
-      mutableVelocity.x += 1
-    }
-  }
-}
-
-// Add system to the engine
-engine.addSystem(physicsSystem)
-
-// Remove system
-engine.removeSystem(physicsSystem)
-```
-
-### Mutability
-
-Mutability is now an important distinction. We can choose to deal with mutable or with immutable versions of a component. We should use `getMutable` only when we plan to make changes to a component. Dealing with immutable versions of components results in a huge gain in performance.
-
-The `.get()` function in a component returns an immutable version of the component. You can only read its values, but can't change any of the properties on it.
-
-```ts
-const immutableTransform = Transform.get(myEntity)
-```
-
-To fetch the mutable version of a component, call it via `ComponentDefinition.getMutable()`. For example:
-
-```ts
-const mutableTransform = Transform.getMutable(myEntity)
-```
+[MIT](LICENSE) © 2026 Ridwan Nurudeen.

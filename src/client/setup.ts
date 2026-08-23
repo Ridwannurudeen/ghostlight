@@ -1,21 +1,8 @@
-import {
-  MainCamera,
-  TouchScreenControls,
-  Transform,
-  VirtualCamera,
-  engine,
-  type Entity
-} from '@dcl/sdk/ecs'
+import { MainCamera, TouchScreenControls, Transform, VirtualCamera, engine, type Entity } from '@dcl/sdk/ecs'
 import { getPlatform, isMobile, type Platform } from '@dcl/sdk/platform'
 import { ReactEcsRenderer, type UiComponent } from '@dcl/sdk/react-ecs'
 import { getPerformerEntity, initializeGhosts } from './ghosts'
-import {
-  STAGE_CAMERA_POSITION,
-  createTheater,
-  getTheaterRegion,
-  isInDecodeArea,
-  type TheaterRegion
-} from './theater'
+import { STAGE_CAMERA_POSITION, createTheater, getTheaterRegion, isInDecodeArea, type TheaterRegion } from './theater'
 
 const SETUP_SYSTEM = 'ghost-charades::client-setup'
 

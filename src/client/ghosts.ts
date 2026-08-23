@@ -2,11 +2,7 @@ import { AvatarShape, Transform, engine, type Entity } from '@dcl/sdk/ecs'
 import { Quaternion, type Quaternion as QuaternionType, type Vector3 as Vector3Type } from '@dcl/sdk/math'
 import { AUDIENCE_SEATS, EMOTE_STEP_SECONDS, MAX_GHOSTS } from '../shared/config'
 import type { Look } from '../shared/types'
-import {
-  AUDIENCE_POSITIONS,
-  STAGE_PERFORMER_POSITION,
-  STAGE_PREVIEW_POSITION
-} from './theater'
+import { AUDIENCE_POSITIONS, STAGE_PERFORMER_POSITION, STAGE_PREVIEW_POSITION } from './theater'
 
 export type GhostEmotes = readonly [string, string, string]
 export type AudienceReaction = 'clap' | 'shrug' | 'laugh' | 'confused' | 'genius'

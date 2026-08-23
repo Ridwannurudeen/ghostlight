@@ -9,9 +9,7 @@ export type RoundSnapshot = {
   winner: RoundPlayer | null
 }
 
-export type RoundGuessResult =
-  | { accepted: false; winner: null }
-  | { accepted: true; winner: RoundPlayer | null }
+export type RoundGuessResult = { accepted: false; winner: null } | { accepted: true; winner: RoundPlayer | null }
 
 export type RoundSend = (type: 'roundStart' | 'roundWinner', data: unknown) => void | Promise<void>
 

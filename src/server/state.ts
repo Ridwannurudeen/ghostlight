@@ -17,10 +17,7 @@ import {
 
 export type RecentVisitor = Look & { lastSeenAt: number }
 
-type StateStorage = Pick<
-  StorageRepository,
-  'loadJSON' | 'loadPlayerJSON' | 'markDirty' | 'markPlayerDirty'
->
+type StateStorage = Pick<StorageRepository, 'loadJSON' | 'loadPlayerJSON' | 'markDirty' | 'markPlayerDirty'>
 
 const defaultStorage: StateStorage = {
   loadJSON,
@@ -256,9 +253,7 @@ export class GhostCharadesState {
     const ids = [...new Set([...todayIndex, ...yesterdayIndex])]
     for (let offset = 0; offset < ids.length; offset += 8) {
       const batch = ids.slice(offset, offset + 8)
-      const values = await Promise.all(
-        batch.map((id) => this.storage.loadJSON<unknown>(charadeKey(id), null))
-      )
+      const values = await Promise.all(batch.map((id) => this.storage.loadJSON<unknown>(charadeKey(id), null)))
       values.forEach((value) => {
         const charade = migrateCharade(value)
         if (charade && !charade.isHouse) this.charades.set(charade.id, charade)
@@ -338,9 +333,7 @@ export class GhostCharadesState {
       .sort((a, b) => b.correct - a.correct || b.total - a.total || a.name.localeCompare(b.name))
       .slice(0, 10)
     const hardest = [...this.charades.values()]
-      .filter(
-        (charade) => !charade.isHouse && dayKey(charade.createdAt) === today && charade.guesses.total > 0
-      )
+      .filter((charade) => !charade.isHouse && dayKey(charade.createdAt) === today && charade.guesses.total > 0)
       .sort((a, b) => {
         const aRate = a.guesses.correct / a.guesses.total
         const bRate = b.guesses.correct / b.guesses.total
@@ -375,9 +368,7 @@ export class GhostCharadesState {
     }
 
     const load = (async () => {
-      const stored = persistent
-        ? await this.storage.loadPlayerJSON<unknown>(key, PLAYER_STATS_KEY, null)
-        : null
+      const stored = persistent ? await this.storage.loadPlayerJSON<unknown>(key, PLAYER_STATS_KEY, null) : null
       const stats = migratePlayerStats(stored, name, this.now())
       stats.name = name || stats.name
       this.playerStats.set(key, stats)

@@ -67,10 +67,7 @@
             "serializationType": "optional",
             "optionalJsonSchema": {
               "type": "string",
-              "enum": [
-                "T",
-                "A"
-              ],
+              "enum": ["T", "A"],
               "default": "T",
               "serializationType": "enum-string",
               "enumObject": {
@@ -314,13 +311,13 @@
       "data": {
         "0": {
           "json": {
-            "name": "SDK7 Scene Template",
-            "description": "template scene with SDK7",
+            "name": "Ghost Charades",
+            "description": "Guess what a stranger's ghost is acting out, then leave your own charade.",
             "thumbnail": "images/scene-thumbnail.png",
-            "categories": [],
-            "author": "SDK",
+            "categories": ["game", "social"],
+            "author": "Ridwan Nurudeen",
             "email": "",
-            "tags": [],
+            "tags": ["social", "game", "mobile", "multiplayer", "charades"],
             "layout": {
               "parcels": [
                 {
@@ -342,24 +339,15 @@
                 "position": {
                   "x": {
                     "$case": "range",
-                    "value": [
-                      0,
-                      3
-                    ]
+                    "value": [0, 3]
                   },
                   "y": {
                     "$case": "range",
-                    "value": [
-                      0,
-                      0
-                    ]
+                    "value": [0, 0]
                   },
                   "z": {
                     "$case": "range",
-                    "value": [
-                      0,
-                      3
-                    ]
+                    "value": [0, 3]
                   }
                 },
                 "cameraTarget": {
