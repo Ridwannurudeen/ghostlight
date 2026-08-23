@@ -3,6 +3,7 @@ import { Vector3 } from '@dcl/sdk/math'
 import { getPlatform, isMobile, type Platform } from '@dcl/sdk/platform'
 import { ReactEcsRenderer, type UiComponent } from '@dcl/sdk/react-ecs'
 import { getPerformerEntity, initializeGhosts } from './ghosts'
+import { initializeSounds, startRoomTone } from './sound'
 import { STAGE_CAMERA_POSITION, createTheater, getTheaterRegion, isInDecodeArea, type TheaterRegion } from './theater'
 
 const SETUP_SYSTEM = 'ghost-charades::client-setup'
@@ -102,6 +103,8 @@ function createVirtualCamera(camera: TheaterCamera, lookAtEntity: Entity) {
 
 function configurePlatform(detectedPlatform: Platform) {
   platform = detectedPlatform
+  initializeSounds()
+  startRoomTone()
   mobile = isMobile()
   if (mobile) {
     TouchScreenControls.hideAll()

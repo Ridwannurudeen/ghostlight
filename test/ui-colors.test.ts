@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const uiTest = vi.hoisted(() => ({
   region: 'house',
+  opening: { active: false, instruction: '' },
   state: {} as Record<string, unknown>
 }))
 
@@ -18,6 +19,11 @@ vi.mock('../src/client/setup', () => ({
 vi.mock('../src/client/reactions', () => ({
   REACTION_OPTIONS: [],
   sendReaction: vi.fn()
+}))
+
+vi.mock('../src/client/opening-scene', () => ({
+  getOpeningViewState: () => uiTest.opening,
+  skipOpening: vi.fn()
 }))
 
 vi.mock('../src/client/flow', () => ({
@@ -108,6 +114,7 @@ function stateFor(screen: 'decode' | 'reveal' | 'posted') {
 describe('UI colors', () => {
   beforeEach(() => {
     uiTest.region = 'house'
+    uiTest.opening = { active: false, instruction: '' }
     uiTest.state = stateFor('decode')
   })
 
@@ -121,7 +128,23 @@ describe('UI colors', () => {
   })
 })
 
+describe('cold-open overlay', () => {
+  it('hides decode controls behind one clear skip action', () => {
+    uiTest.region = 'house'
+    uiTest.opening = { active: true, instruction: "Guess what they're saying" }
+    uiTest.state = stateFor('decode')
+
+    const buttons = collectButtons(uiComponent())
+
+    expect(buttons).toEqual([{ value: 'SKIP INTRO', disabled: false }])
+  })
+})
+
 describe('decode region gates', () => {
+  beforeEach(() => {
+    uiTest.opening = { active: false, instruction: '' }
+  })
+
   it.each([
     ['reveal', 'house', 'NEXT GHOST', false, 'NEXT GHOST'],
     ['reveal', 'stage', 'NEXT GHOST', false, 'NEXT GHOST'],

@@ -4,6 +4,7 @@ import { copyToClipboard } from '~system/RestrictedActions'
 import { INVITE_URL } from '../shared/config'
 import type { Emote } from '../shared/deck'
 import { clientFlow, type ClientFlowState } from './flow'
+import { getOpeningViewState, skipOpening, type OpeningViewState } from './opening-scene'
 import { REACTION_OPTIONS, sendReaction } from './reactions'
 import { getRevealViewState, type RevealViewState } from './reveal-scene'
 import { getCurrentTheaterRegion } from './setup'
@@ -39,6 +40,7 @@ const UI_TEXTURES = {
   panel: 'assets/ui/panel.png',
   card: 'assets/ui/card.png',
   cardSelected: 'assets/ui/card_selected.png',
+  marquee: 'assets/ui/marquee.png',
   ribbon: 'assets/ui/ribbon.png'
 } as const
 
@@ -482,6 +484,36 @@ function inviteScreen(state: ClientFlowState) {
   )
 }
 
+function openingOverlay(opening: OpeningViewState) {
+  return (
+    <UiEntity
+      uiTransform={{
+        width: '100%',
+        height: '100%',
+        flexDirection: 'column',
+        justifyContent: 'center',
+        alignItems: 'center'
+      }}
+      uiBackground={{ color: Color4.create(0.02, 0.014, 0.037, 0.72) }}
+    >
+      <UiEntity
+        uiTransform={{ width: 780, maxWidth: '72%', height: 270, padding: 30, flexDirection: 'column' }}
+        uiBackground={{ texture: { src: UI_TEXTURES.marquee }, textureMode: 'stretch', color: COLORS.ink }}
+      >
+        <Label
+          value={opening.instruction || 'OPENING NIGHT'}
+          fontSize={36}
+          font="serif"
+          color={COLORS.bone}
+          textAlign="middle-center"
+          uiTransform={{ width: '100%', height: 112 }}
+        />
+        {actionButton('SKIP INTRO', () => skipOpening(), false, 'secondary')}
+      </UiEntity>
+    </UiEntity>
+  )
+}
+
 function currentScreen(state: ClientFlowState) {
   switch (state.screen) {
     case 'waking':
@@ -507,13 +539,14 @@ function currentScreen(state: ClientFlowState) {
 
 export const uiComponent = () => {
   const state = clientFlow.getState()
+  const opening = getOpeningViewState()
   return (
     <UiEntity
       uiTransform={{ width: '100%', height: '100%', positionType: 'absolute', pointerFilter: 'none' }}
       uiBackground={{ color: Color4.create(0.02, 0.014, 0.037, 0.08) }}
     >
-      {currentScreen(state)}
-      {state.toast ? (
+      {opening.active ? openingOverlay(opening) : currentScreen(state)}
+      {!opening.active && state.toast ? (
         <UiEntity
           uiTransform={{
             width: 520,
