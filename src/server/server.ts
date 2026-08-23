@@ -343,7 +343,11 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     const look = looks.get(key)
     const stats = await options.state.getOrCreateStats(key, playerName(key), !(look?.isGuest ?? true))
     const liveCharade = ensureRound()
-    if (liveCharade && !liveCharade.isHouse && stats.seen.includes(liveCharade.id)) {
+    if (
+      liveCharade &&
+      !liveCharade.isHouse &&
+      (stats.seen.includes(liveCharade.id) || canonicalAddress(liveCharade.author.address) === key)
+    ) {
       rounds.guess(key, liveCharade.id, false)
     }
     const requesterGuessed = rounds.current?.guessed.includes(key) ?? false

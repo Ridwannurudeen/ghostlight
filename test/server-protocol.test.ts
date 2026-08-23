@@ -673,6 +673,52 @@ describe('live protocol', () => {
     expect(protocol.rounds.isSettled).toBe(true)
   })
 
+  it('serves a re-entering author another charade without counting a self-attempt', async () => {
+    const snapshotLook = async (address: string) => makeLook(address, address)
+    const { state, sent, protocol } = await createHarness({ snapshotLook })
+    const live = makeCharade('author-live', {
+      author: { address: 'author', name: 'Author' },
+      createdAt: FIXED_NOW - 2
+    })
+    const alternate = makeCharade('author-alternate', {
+      author: { address: 'outside', name: 'Outside' },
+      createdAt: FIXED_NOW - 1
+    })
+    state.upsertCharade(live)
+    state.upsertCharade(alternate)
+    await protocol.handleEnter('author')
+    await protocol.handleLeave('author')
+    await protocol.handleEnter('alice')
+    await protocol.handleEnter('bob')
+    sent.length = 0
+    await protocol.handleNextCharade({ exclude: [] }, 'alice')
+    await protocol.handleNextCharade({ exclude: [] }, 'bob')
+    const liveMessage = dataOf<CharadeMessage>(messagesOfType(sent, 'charade')[0])
+    expect(liveMessage.id).toBe(live.id)
+
+    await protocol.handleEnter('author')
+    const authorStats = state.playerStats.get('author')!
+    const triedYouBefore = authorStats.pending.triedYou
+    sent.length = 0
+    await protocol.handleNextCharade({ exclude: [] }, 'author')
+
+    expect(dataOf<CharadeMessage>(messagesOfType(sent, 'charade')[0]).id).toBe(alternate.id)
+    expect(protocol.rounds.current?.guessed).toContain('author')
+    expect(authorStats.pending.triedYou).toBe(triedYouBefore)
+
+    const phrase = DECK.find((candidate) => candidate.id === live.phraseId)!
+    const wrongIndex = (liveMessage.answers.indexOf(phrase.text) + 1) % liveMessage.answers.length
+    await protocol.handleRoundGuess(
+      { charadeId: live.id, answerIndex: wrongIndex, requestId: 'alice-wrong' },
+      'alice'
+    )
+    expect(protocol.rounds.isSettled).toBe(false)
+    await protocol.handleRoundGuess({ charadeId: live.id, answerIndex: wrongIndex, requestId: 'bob-wrong' }, 'bob')
+
+    expect(protocol.rounds.isSettled).toBe(true)
+    expect(authorStats.pending.triedYou).toBe(triedYouBefore + 2)
+  })
+
   it("accepts a survivor's round guess as a plain guess after the other player leaves", async () => {
     const snapshotLook = async (address: string) => makeLook(address, address === 'alice' ? 'Alice' : 'Bob')
     const { state, sent, protocol } = await createHarness({ snapshotLook })
