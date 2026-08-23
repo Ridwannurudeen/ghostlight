@@ -125,6 +125,35 @@ describe('flow reducer', () => {
     state = flowReducer(state, { type: 'since', summary: { triedYou: 3, gotYou: 2, rank: 3 } })
     expect(state).toMatchObject({ screen: 'foyer', sinceShown: true })
   })
+
+  it('returns from authoring to reveal or foyer without discarding the draft', () => {
+    const phrase = DECK[0]
+    const draft = {
+      phrase,
+      offeredEmotes: [...phrase.suggested],
+      selectedEmotes: [phrase.suggested[0]],
+      shufflesRemaining: 2
+    }
+    const authorState = flowReducer(createInitialFlowState(), { type: 'author', draft })
+
+    const foyerState = flowReducer(authorState, { type: 'authorBack' })
+    expect(foyerState.screen).toBe('foyer')
+    expect(foyerState.author).toBe(draft)
+
+    const revealedState = flowReducer(authorState, {
+      type: 'reveal',
+      reveal: {
+        charadeId: 'revealed',
+        correct: true,
+        phrase: 'A revealed phrase',
+        stats: { total: 1, correct: 1 },
+        yourScore: 1
+      }
+    })
+    const revealState = flowReducer(revealedState, { type: 'authorBack' })
+    expect(revealState.screen).toBe('reveal')
+    expect(revealState.author).toBe(draft)
+  })
 })
 
 describe('flow lifecycle', () => {

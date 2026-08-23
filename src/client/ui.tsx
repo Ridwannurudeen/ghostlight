@@ -284,7 +284,10 @@ function authorScreen(state: ClientFlowState) {
         {author.offeredEmotes.map((emote, index) => emoteButton(emote, index, state))}
       </UiEntity>
       <UiEntity uiTransform={{ width: '100%', flexDirection: 'row', justifyContent: 'space-between' }}>
-        <UiEntity uiTransform={{ width: '32%' }}>
+        <UiEntity uiTransform={{ width: '24%' }}>
+          {actionButton('BACK', () => clientFlow.backFromAuthor(), false, 'secondary')}
+        </UiEntity>
+        <UiEntity uiTransform={{ width: '24%' }}>
           {actionButton(
             `SHUFFLE · ${author.shufflesRemaining}`,
             () => clientFlow.shuffleAuthorPhrase(),
@@ -292,10 +295,10 @@ function authorScreen(state: ClientFlowState) {
             'secondary'
           )}
         </UiEntity>
-        <UiEntity uiTransform={{ width: '32%' }}>
+        <UiEntity uiTransform={{ width: '24%' }}>
           {actionButton('PREVIEW', () => clientFlow.previewAuthor(), !readyToPost || posting, 'secondary')}
         </UiEntity>
-        <UiEntity uiTransform={{ width: '32%' }}>
+        <UiEntity uiTransform={{ width: '24%' }}>
           {actionButton('POST', () => clientFlow.postAuthor(), !readyToPost || posting)}
         </UiEntity>
       </UiEntity>

@@ -114,6 +114,7 @@ export type FlowAction =
   | { type: 'reveal'; reveal: RevealResult }
   | { type: 'author'; draft: AuthorDraft }
   | { type: 'authorSelect'; emote: Emote }
+  | { type: 'authorBack' }
   | { type: 'posted'; charadeId: string }
   | { type: 'since'; summary: SinceSummary }
   | { type: 'dismissSince' }
@@ -261,6 +262,8 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
           : state.author.selectedEmotes
       return { ...state, author: { ...state.author, selectedEmotes } }
     }
+    case 'authorBack':
+      return { ...state, screen: state.reveal ? 'reveal' : 'foyer' }
     case 'posted':
       return {
         ...state,
@@ -723,6 +726,9 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     selectAuthorEmote,
     previewAuthor,
     postAuthor,
+    backFromAuthor() {
+      dispatch({ type: 'authorBack' })
+    },
     dismissSince() {
       dispatch({ type: 'dismissSince' })
     },
