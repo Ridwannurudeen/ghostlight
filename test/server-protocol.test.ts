@@ -212,6 +212,46 @@ describe('server readiness and welcome', () => {
     expect(state.playerStats.get('player')).toMatchObject({ decoded: 7, correct: 5 })
     expect(messagesOfType(sent, 'charade')).toHaveLength(1)
   })
+
+  it('cancels an in-flight welcome on leave and completes a fresh welcome on re-entry', async () => {
+    const firstLook = deferred<ReturnType<typeof makeLook> | null>()
+    const secondLook = deferred<ReturnType<typeof makeLook> | null>()
+    const snapshotLook = vi
+      .fn<ServerProtocolOptions['snapshotLook']>()
+      .mockReturnValueOnce(firstLook.promise)
+      .mockReturnValueOnce(secondLook.promise)
+    const { storage, repository, state, sent, protocol } = await createHarness({ snapshotLook })
+    storage.putPlayerJSON(
+      'player',
+      PLAYER_STATS_KEY,
+      makeStats({ decoded: 7, correct: 5, pending: { triedYou: 2, gotYou: 1 } })
+    )
+
+    const firstEnter = protocol.handleEnter('player')
+    await vi.waitFor(() => expect(snapshotLook).toHaveBeenCalledOnce())
+    await protocol.handleLeave('player')
+    const secondEnter = protocol.handleEnter('player')
+    await vi.waitFor(() => expect(snapshotLook).toHaveBeenCalledTimes(2))
+
+    firstLook.resolve(makeLook('player', 'Stale Player'))
+    await firstEnter
+    sent.length = 0
+    secondLook.resolve(makeLook('player', 'Fresh Player'))
+    await secondEnter
+
+    expect(state.recentVisitors[0]).toMatchObject({ address: 'player', name: 'Fresh Player' })
+    expect(state.playerStats.get('player')).toMatchObject({
+      decoded: 7,
+      correct: 5,
+      pending: { triedYou: 0, gotYou: 0 }
+    })
+    expect(storage.playerGets).toEqual([{ address: 'player', key: PLAYER_STATS_KEY }])
+    expect(repository.getDirtyKeys()).toContain(`player:player:${PLAYER_STATS_KEY}`)
+    expect(messagesOfType(sent, 'since').map((message) => message.data)).toEqual([{ triedYou: 2, gotYou: 1, rank: 0 }])
+    expect(messagesOfType(sent, 'audience')).toHaveLength(1)
+    expect(messagesOfType(sent, 'boards')).toHaveLength(1)
+    expect(messagesOfType(sent, 'error')).toEqual([])
+  })
 })
 
 describe('charade serving and guesses', () => {

@@ -194,7 +194,10 @@ export function createServerProtocol(options: ServerProtocolOptions) {
 
   async function runWelcome(address: string) {
     const key = canonicalAddress(address)
+    const owner = welcomePromises.get(key)
+    if (!owner) return false
     const look = await waitForLook(address)
+    if (welcomePromises.get(key) !== owner) return false
     if (!look) return false
 
     const previousVisitors = [...options.state.recentVisitors]
@@ -202,6 +205,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     rounds.enter({ address: look.address, name: look.name })
     options.state.touchVisitor(look)
     const stats = await options.state.getOrCreateStats(key, look.name, !look.isGuest)
+    if (welcomePromises.get(key) !== owner) return false
     const rankIndex = options.state.boards.decoders.findIndex((row) => canonicalAddress(row.address) === key)
     const pending = { ...stats.pending }
 
@@ -211,13 +215,17 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         gotYou: pending.gotYou,
         rank: rankIndex < 0 ? 0 : rankIndex + 1
       })
+      if (welcomePromises.get(key) !== owner) return false
     }
     options.state.consumePending(key, !look.isGuest)
     await sendAudience(address, previousVisitors)
+    if (welcomePromises.get(key) !== owner) return false
     await sendBoards(address)
+    if (welcomePromises.get(key) !== owner) return false
     welcomed.add(key)
     ensureRound()
     await checkpoint()
+    if (welcomePromises.get(key) !== owner) return false
     return true
   }
 
@@ -226,9 +234,11 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     if (welcomed.has(key)) return Promise.resolve(true)
     const active = welcomePromises.get(key)
     if (active) return active
-    const pending = runWelcome(address).finally(() => {
-      if (welcomePromises.get(key) === pending) welcomePromises.delete(key)
-    })
+    const pending = Promise.resolve()
+      .then(() => runWelcome(address))
+      .finally(() => {
+        if (welcomePromises.get(key) === pending) welcomePromises.delete(key)
+      })
     welcomePromises.set(key, pending)
     return pending
   }
@@ -247,6 +257,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
   async function handleLeave(address: string) {
     await ready
     const key = canonicalAddress(address)
+    welcomePromises.delete(key)
     const look = looks.get(key)
     if (look) {
       options.state.touchVisitor(look)
