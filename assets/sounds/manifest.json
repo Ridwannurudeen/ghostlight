@@ -1,0 +1,96 @@
+{
+  "generator": "tools/audio/build_sounds.py",
+  "sounds": [
+    {
+      "file": "room_tone.mp3",
+      "durationSeconds": 12.0,
+      "sampleRate": 44100,
+      "channels": 1,
+      "peakDbfs": -1,
+      "bytes": 144509
+    },
+    {
+      "file": "tick.mp3",
+      "durationSeconds": 0.18,
+      "sampleRate": 44100,
+      "channels": 1,
+      "peakDbfs": -1,
+      "bytes": 2508
+    },
+    {
+      "file": "drumroll.mp3",
+      "durationSeconds": 2.6,
+      "sampleRate": 44100,
+      "channels": 1,
+      "peakDbfs": -1,
+      "bytes": 31660
+    },
+    {
+      "file": "sting.mp3",
+      "durationSeconds": 1.2,
+      "sampleRate": 44100,
+      "channels": 1,
+      "peakDbfs": -1,
+      "bytes": 14733
+    },
+    {
+      "file": "hit.mp3",
+      "durationSeconds": 0.8,
+      "sampleRate": 44100,
+      "channels": 1,
+      "peakDbfs": -1,
+      "bytes": 10031
+    },
+    {
+      "file": "miss.mp3",
+      "durationSeconds": 1.0,
+      "sampleRate": 44100,
+      "channels": 1,
+      "peakDbfs": -1,
+      "bytes": 12539
+    },
+    {
+      "file": "applause.mp3",
+      "durationSeconds": 2.8,
+      "sampleRate": 44100,
+      "channels": 1,
+      "peakDbfs": -1,
+      "bytes": 34168
+    },
+    {
+      "file": "gasp.mp3",
+      "durationSeconds": 1.4,
+      "sampleRate": 44100,
+      "channels": 1,
+      "peakDbfs": -1,
+      "bytes": 17241
+    },
+    {
+      "file": "unlock.mp3",
+      "durationSeconds": 1.7,
+      "sampleRate": 44100,
+      "channels": 1,
+      "peakDbfs": -1,
+      "bytes": 21002
+    },
+    {
+      "file": "curtain.mp3",
+      "durationSeconds": 1.6,
+      "sampleRate": 44100,
+      "channels": 1,
+      "peakDbfs": -1,
+      "bytes": 19749
+    },
+    {
+      "file": "stamp.mp3",
+      "durationSeconds": 0.45,
+      "sampleRate": 44100,
+      "channels": 1,
+      "peakDbfs": -1,
+      "bytes": 5956
+    }
+  ],
+  "totals": {
+    "bytes": 314096
+  }
+}

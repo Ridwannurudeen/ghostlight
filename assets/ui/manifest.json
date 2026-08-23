@@ -1,0 +1,59 @@
+{
+  "generator": "tools/ui/build_textures.py",
+  "textures": [
+    {
+      "file": "panel.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 33817
+    },
+    {
+      "file": "card.png",
+      "width": 512,
+      "height": 256,
+      "bytes": 16637
+    },
+    {
+      "file": "card_selected.png",
+      "width": 512,
+      "height": 256,
+      "bytes": 16502
+    },
+    {
+      "file": "button_primary.png",
+      "width": 512,
+      "height": 256,
+      "bytes": 1578
+    },
+    {
+      "file": "button_secondary.png",
+      "width": 512,
+      "height": 256,
+      "bytes": 1568
+    },
+    {
+      "file": "button_disabled.png",
+      "width": 512,
+      "height": 256,
+      "bytes": 1581
+    },
+    {
+      "file": "marquee.png",
+      "width": 512,
+      "height": 256,
+      "bytes": 1922
+    },
+    {
+      "file": "stamp.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 7259
+    },
+    {
+      "file": "ribbon.png",
+      "width": 512,
+      "height": 256,
+      "bytes": 1531
+    }
+  ]
+}

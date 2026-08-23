@@ -7,6 +7,10 @@
     "deploy": "sdk-commands deploy",
     "build": "sdk-commands build",
     "test": "vitest run",
+    "assets:models": "call \"C:\\Program Files\\Blender Foundation\\Blender 5.1\\blender.exe\" -b --python tools/blender/build_assets.py",
+    "assets:sounds": "python tools/audio/build_sounds.py",
+    "assets:ui": "python tools/ui/build_textures.py",
+    "assets": "npm run assets:models && npm run assets:sounds && npm run assets:ui",
     "upgrade-sdk": "npm install --save-dev @dcl/sdk@latest",
     "upgrade-sdk:next": "npm install --save-dev @dcl/sdk@next",
     "server-logs": "sdk-commands sdk-server-logs"

@@ -1,0 +1,164 @@
+{
+  "generator": "tools/blender/build_assets.py",
+  "blenderVersion": "5.1.2",
+  "models": [
+    {
+      "file": "proscenium.glb",
+      "triangles": 660,
+      "materials": [
+        "Warm Wood",
+        "Brass Gold",
+        "Velvet Red"
+      ],
+      "bytes": 58180
+    },
+    {
+      "file": "curtain_left.glb",
+      "triangles": 380,
+      "materials": [
+        "Velvet Red",
+        "Brass Gold"
+      ],
+      "bytes": 33884
+    },
+    {
+      "file": "curtain_right.glb",
+      "triangles": 380,
+      "materials": [
+        "Velvet Red",
+        "Brass Gold"
+      ],
+      "bytes": 33896
+    },
+    {
+      "file": "stage.glb",
+      "triangles": 220,
+      "materials": [
+        "Warm Wood",
+        "Velvet Red",
+        "Brass Gold"
+      ],
+      "bytes": 20048
+    },
+    {
+      "file": "seat_row.glb",
+      "triangles": 1080,
+      "materials": [
+        "Velvet Red",
+        "Warm Wood",
+        "Brass Gold"
+      ],
+      "bytes": 96724
+    },
+    {
+      "file": "footlight.glb",
+      "triangles": 128,
+      "materials": [
+        "Warm Wood",
+        "Brass Gold",
+        "Ghost Light Cyan"
+      ],
+      "bytes": 12924
+    },
+    {
+      "file": "chandelier.glb",
+      "triangles": 720,
+      "materials": [
+        "Brass Gold",
+        "Ghost Light Cyan"
+      ],
+      "bytes": 67420
+    },
+    {
+      "file": "poster_frame.glb",
+      "triangles": 264,
+      "materials": [
+        "Velvet Red",
+        "Brass Gold",
+        "Warm Wood"
+      ],
+      "bytes": 23716
+    },
+    {
+      "file": "marquee.glb",
+      "triangles": 1084,
+      "materials": [
+        "Velvet Red",
+        "Brass Gold",
+        "Ghost Light Cyan"
+      ],
+      "bytes": 103032
+    },
+    {
+      "file": "spotlight_cone.glb",
+      "triangles": 128,
+      "materials": [
+        "Ghost Light Glass",
+        "Brass Gold",
+        "Ghost Light Cyan"
+      ],
+      "bytes": 12348
+    },
+    {
+      "file": "foyer_doors.glb",
+      "triangles": 404,
+      "materials": [
+        "Warm Wood",
+        "Velvet Red",
+        "Brass Gold"
+      ],
+      "bytes": 37060
+    },
+    {
+      "file": "pedestal.glb",
+      "triangles": 168,
+      "materials": [
+        "Brass Gold",
+        "Warm Wood",
+        "Velvet Red"
+      ],
+      "bytes": 14424
+    },
+    {
+      "file": "prop_tophat.glb",
+      "triangles": 208,
+      "materials": [
+        "Warm Wood",
+        "Velvet Red",
+        "Brass Gold"
+      ],
+      "bytes": 16536
+    },
+    {
+      "file": "prop_mask.glb",
+      "triangles": 216,
+      "materials": [
+        "Velvet Red",
+        "Ghost Light Cyan",
+        "Brass Gold"
+      ],
+      "bytes": 21860
+    },
+    {
+      "file": "prop_trophy.glb",
+      "triangles": 284,
+      "materials": [
+        "Warm Wood",
+        "Velvet Red",
+        "Brass Gold"
+      ],
+      "bytes": 24044
+    }
+  ],
+  "totals": {
+    "triangles": 6324,
+    "materials": [
+      "Brass Gold",
+      "Ghost Light Cyan",
+      "Ghost Light Glass",
+      "Velvet Red",
+      "Warm Wood"
+    ],
+    "bytes": 576096
+  }
+}
