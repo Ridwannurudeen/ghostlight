@@ -1,15 +1,16 @@
-// We define the empty imports so the auto-complete feature works as expected.
-import {} from '@dcl/sdk/math'
-import { engine } from '@dcl/sdk/ecs'
+import { isServer } from '@dcl/sdk/network'
+import { startServer } from './server/server'
+import { startClient } from './client/spike'
+import { setupUi } from './client/ui'
 
-import { changeColorSystem, circularSystem } from './systems'
-import { setupUi } from './ui'
-
+// Day-1 device spike (throwaway): proves on a real phone that the Multiplayer Server wakes and persists,
+// that a clone of the player's own avatar renders and loops emotes, what a plain tap on a 3D entity does,
+// and whether the invite link copies. Replaced by the real scene once the spec's plan starts.
 export function main() {
-  // Defining behavior. See `src/systems.ts` file.
-  engine.addSystem(circularSystem)
-  engine.addSystem(changeColorSystem)
-
-  // draw UI. Here is the logic to spawn cubes.
+  if (isServer()) {
+    startServer()
+    return
+  }
+  startClient()
   setupUi()
 }
