@@ -3,3 +3,4 @@ bin/
 .dcl/
 *.log
 .env
+.DS_Store
