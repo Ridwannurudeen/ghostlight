@@ -11,6 +11,7 @@ import {
 import { Color3, Quaternion, Vector3 } from '@dcl/sdk/math'
 import { getPlatform } from '@dcl/sdk/platform'
 import { getPlayer } from '@dcl/sdk/src/players'
+import { PROTOCOL_VERSION } from '../shared/config'
 import { room } from '../shared/messages'
 
 // Three emotes from the list the docs publish AND the mobile client ships.
@@ -42,10 +43,8 @@ export function startClient(opts: { onPlatformKnown: (platform: string) => void 
   room.onMessage('pong', () => {
     spike.serverReady = true
   })
-  room.onMessage('helloAck', (data) => {
+  room.onMessage('ready', () => {
     spike.serverReady = true
-    spike.visits = data.visits
-    spike.persist = !data.saved ? 'set-failed' : !data.readBack ? 'readback-failed' : 'ok'
   })
 
   // Tap-on-3D-entity probe: the docs describe aim-then-press on mobile; this shows what a plain tap does.
@@ -101,7 +100,11 @@ function spikeSystem(dt: number) {
         expressionTriggerTimestamp: 1
       })
       spike.ghostSpawned = true
-      void room.send('hello', { name: player.name })
+      void room.send('hello', {
+        displayName: player.name,
+        isGuest: player.isGuest,
+        protocolVersion: PROTOCOL_VERSION
+      })
     }
   }
 
