@@ -285,7 +285,7 @@ function authorScreen(state: ClientFlowState) {
       </UiEntity>
       <UiEntity uiTransform={{ width: '100%', flexDirection: 'row', justifyContent: 'space-between' }}>
         <UiEntity uiTransform={{ width: '24%' }}>
-          {actionButton('BACK', () => clientFlow.backFromAuthor(), false, 'secondary')}
+          {actionButton('BACK', () => clientFlow.backFromAuthor(), posting, 'secondary')}
         </UiEntity>
         <UiEntity uiTransform={{ width: '24%' }}>
           {actionButton(
