@@ -529,6 +529,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         }
         break
       case 'error':
+        const refetchUnservedCharade = message.data.code === 'charade-not-served' && state.screen === 'decode'
         const resumeDeferredRound =
           state.screen === 'decode' &&
           !!state.roundCharadeId &&
@@ -537,7 +538,8 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         if (state.screen === 'decode') roundMismatchRefetchAttempted = false
         requests.clear()
         dispatch({ type: 'error', code: message.data.code })
-        if (resumeDeferredRound) requestRoundCharadeIfNeeded()
+        if (refetchUnservedCharade) requestNextCharade()
+        else if (resumeDeferredRound) requestRoundCharadeIfNeeded()
         break
     }
   }

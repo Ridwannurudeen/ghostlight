@@ -202,6 +202,26 @@ describe('flow lifecycle', () => {
     expect(messagesOfType(sent, 'roundGuess')).toHaveLength(1)
     expect(messagesOfType(sent, 'guess')).toHaveLength(1)
   })
+
+  it('fetches a fresh charade after same-instance re-entry drops the served answers', () => {
+    const { runtime, sent } = createFlowHarness()
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    runtime.receive({ type: 'charade', data: makeDecodeCharade('stale') })
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    expect(runtime.getState()).toMatchObject({ screen: 'decode', charade: { id: 'stale' } })
+    sent.length = 0
+
+    expect(runtime.guess(0)).toBe(true)
+    runtime.receive({ type: 'error', data: { code: 'charade-not-served' } })
+
+    expect(messagesOfType(sent, 'nextCharade')).toEqual([
+      { type: 'nextCharade', data: { exclude: ['stale'] } }
+    ])
+    expect(runtime.getState()).toMatchObject({ screen: 'decode', pending: [{ kind: 'nextCharade' }] })
+
+    runtime.receive({ type: 'charade', data: makeDecodeCharade('fresh') })
+    expect(runtime.getState()).toMatchObject({ screen: 'decode', charade: { id: 'fresh' }, pending: [] })
+  })
 })
 
 describe('heartbeats and request retries', () => {
