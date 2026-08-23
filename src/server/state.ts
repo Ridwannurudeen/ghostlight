@@ -1,4 +1,4 @@
-import { AUDIENCE_SEATS } from '../shared/config'
+import { AUDIENCE_SEATS, HYDRATION_DAYS } from '../shared/config'
 import { HOUSE_CHARADE } from '../shared/deck'
 import type { Boards, Charade, Color, Look, PlayerStats } from '../shared/types'
 import { STORAGE_SCHEMA_VERSION } from '../shared/types'
@@ -27,6 +27,8 @@ const defaultStorage: StateStorage = {
 }
 
 const EMPTY_BOARDS: Boards = { decoders: [], hardest: [] }
+const DAY_MILLISECONDS = 24 * 60 * 60 * 1000
+const MAX_CONCURRENT_READS = 8
 
 function asObject(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -213,6 +215,7 @@ export class GhostCharadesState {
   private readonly indexes = new Map<string, string[]>()
   private readonly dailyDecoders = new Map<string, Boards['decoders'][number]>()
   private readonly statsLoads = new Map<string, Promise<PlayerStats>>()
+  private decoderDay: string | null = null
 
   constructor(
     private readonly storage: StateStorage = defaultStorage,
@@ -222,18 +225,24 @@ export class GhostCharadesState {
   async hydrate() {
     const now = this.now()
     const today = dayKey(now)
-    const yesterday = dayKey(now - 24 * 60 * 60 * 1000)
-    const [todayIndexValue, yesterdayIndexValue, visitorsValue, boardsValue] = await Promise.all([
-      this.storage.loadJSON<unknown>(indexKey(today), []),
-      this.storage.loadJSON<unknown>(indexKey(yesterday), []),
+    const days = Array.from({ length: HYDRATION_DAYS }, (_, offset) => dayKey(now - offset * DAY_MILLISECONDS))
+    const ids = new Set<string>()
+    this.indexes.clear()
+    for (let offset = 0; offset < days.length; offset += MAX_CONCURRENT_READS) {
+      const batch = days.slice(offset, offset + MAX_CONCURRENT_READS)
+      const values = await Promise.all(batch.map((day) => this.storage.loadJSON<unknown>(indexKey(day), [])))
+      values.forEach((value, index) => {
+        const day = batch[index]
+        const dayIndex = migrateIndex(value)
+        this.indexes.set(day, dayIndex)
+        dayIndex.forEach((id) => ids.add(id))
+      })
+    }
+    const [visitorsValue, boardsValue] = await Promise.all([
       this.storage.loadJSON<unknown>(RECENT_VISITORS_KEY, []),
       this.storage.loadJSON<unknown>(boardsKey(today), EMPTY_BOARDS)
     ])
 
-    const todayIndex = migrateIndex(todayIndexValue)
-    const yesterdayIndex = migrateIndex(yesterdayIndexValue)
-    this.indexes.set(today, todayIndex)
-    this.indexes.set(yesterday, yesterdayIndex)
     const visitorAddresses = new Set<string>()
     this.recentVisitors = migrateRecentVisitors(visitorsValue)
       .sort((a, b) => b.lastSeenAt - a.lastSeenAt)
@@ -246,13 +255,14 @@ export class GhostCharadesState {
       .slice(0, AUDIENCE_SEATS)
     this.boards = migrateBoards(boardsValue)
     this.dailyDecoders.clear()
+    this.decoderDay = today
     this.boards.decoders.forEach((row) => this.dailyDecoders.set(row.address.toLowerCase(), row))
 
     this.charades.clear()
     this.charades.set(HOUSE_CHARADE.id, HOUSE_CHARADE)
-    const ids = [...new Set([...todayIndex, ...yesterdayIndex])]
-    for (let offset = 0; offset < ids.length; offset += 8) {
-      const batch = ids.slice(offset, offset + 8)
+    const charadeIds = [...ids]
+    for (let offset = 0; offset < charadeIds.length; offset += MAX_CONCURRENT_READS) {
+      const batch = charadeIds.slice(offset, offset + MAX_CONCURRENT_READS)
       const values = await Promise.all(batch.map((id) => this.storage.loadJSON<unknown>(charadeKey(id), null)))
       values.forEach((value) => {
         const charade = migrateCharade(value)
@@ -268,7 +278,9 @@ export class GhostCharadesState {
   }
 
   getPool() {
-    return [...this.charades.values()].filter((charade) => !charade.isHouse)
+    return [...this.charades.values()]
+      .filter((charade) => !charade.isHouse)
+      .sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id))
   }
 
   upsertCharade(charade: Charade) {
@@ -316,6 +328,7 @@ export class GhostCharadesState {
   }
 
   recordDecoder(address: string, name: string, correct: boolean) {
+    this.ensureDecoderDay()
     const key = address.toLowerCase()
     const current = this.dailyDecoders.get(key) ?? { address, name, correct: 0, total: 0 }
     this.dailyDecoders.set(key, {
@@ -328,7 +341,7 @@ export class GhostCharadesState {
   }
 
   recomputeBoards(markForStorage = true) {
-    const today = dayKey(this.now())
+    const today = this.ensureDecoderDay()
     const decoders = [...this.dailyDecoders.values()]
       .sort((a, b) => b.correct - a.correct || b.total - a.total || a.name.localeCompare(b.name))
       .slice(0, 10)
@@ -350,6 +363,14 @@ export class GhostCharadesState {
     this.boards = { decoders, hardest }
     if (markForStorage) this.storage.markDirty(boardsKey(today), this.boards)
     return this.boards
+  }
+
+  private ensureDecoderDay(today = dayKey(this.now())) {
+    if (this.decoderDay !== today) {
+      this.dailyDecoders.clear()
+      this.decoderDay = today
+    }
+    return today
   }
 
   async getOrCreateStats(address: string, name = 'Guest', persistent = true) {

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { AUDIENCE_SEATS } from '../src/shared/config'
+import { AUDIENCE_SEATS, HYDRATION_DAYS } from '../src/shared/config'
 import { HOUSE_CHARADE } from '../src/shared/deck'
 import { STORAGE_SCHEMA_VERSION } from '../src/shared/types'
 import { GhostCharadesState, dayKey, migrateCharade, migrateLook, migratePlayerStats } from '../src/server/state'
@@ -104,6 +104,26 @@ describe('state hydration', () => {
     expect(state.getCharade(HOUSE_CHARADE.id)).toEqual(HOUSE_CHARADE)
   })
 
+  it('hydrates a charade indexed ten days ago and keeps the pool ordered by creation time', async () => {
+    const { storage, state } = setup()
+    const tenDaysAgo = FIXED_NOW - 10 * 24 * 60 * 60 * 1000
+    const yesterday = FIXED_NOW - 24 * 60 * 60 * 1000
+    storage.putJSON(indexKey(dayKey(tenDaysAgo)), ['old-charade', 'old-charade'])
+    storage.putJSON(indexKey(dayKey(yesterday)), ['new-charade'])
+    storage.putJSON(charadeKey('old-charade'), makeCharade('old-charade', { createdAt: tenDaysAgo }))
+    storage.putJSON(charadeKey('new-charade'), makeCharade('new-charade', { createdAt: yesterday }))
+
+    await state.hydrate()
+
+    expect(state.getPool().map((charade) => charade.id)).toEqual(['old-charade', 'new-charade'])
+    expect(
+      Array.from({ length: HYDRATION_DAYS }, (_, offset) => indexKey(dayKey(FIXED_NOW - offset * 86_400_000))).every(
+        (key) => storage.sceneGets.includes(key)
+      )
+    ).toBe(true)
+    expect(storage.sceneGets.filter((key) => key === charadeKey('old-charade'))).toHaveLength(1)
+  })
+
   it('keeps only the six most recent distinct visitors when persisted data contains duplicates', async () => {
     const { storage, state } = setup()
     const visitors = [
@@ -179,6 +199,25 @@ describe('state mutations', () => {
       { address: 'bob', name: 'Bob', correct: 1, total: 1 }
     ])
     expect(state.boards.hardest.map((row) => row.charadeId)).toEqual(['hard-four', 'hard-two', 'medium'])
+  })
+
+  it('resets decoder standings when the UTC day changes', () => {
+    let now = FIXED_NOW
+    const changingState = new GhostCharadesState(
+      {
+        loadJSON: async (_key, fallback) => fallback,
+        loadPlayerJSON: async (_address, _key, fallback) => fallback,
+        markDirty: vi.fn(),
+        markPlayerDirty: vi.fn()
+      },
+      () => now
+    )
+    changingState.recordDecoder('alice', 'Alice', true)
+    now += 24 * 60 * 60 * 1000
+
+    changingState.recordDecoder('bob', 'Bob', false)
+
+    expect(changingState.boards.decoders).toEqual([{ address: 'bob', name: 'Bob', correct: 0, total: 1 }])
   })
 })
 
