@@ -1,60 +1,141 @@
-# Ghost Charades
+<div align="center">
+  <h1>Ghost Charades</h1>
+  <p><strong>Decode another player's three-emote performance, then leave one for the next visitor.</strong></p>
+  <p>A mobile-first social World built with Decentraland SDK7 and its authoritative Multiplayer Server.</p>
+</div>
 
-Guess what a stranger's ghost is acting out, then leave your own charade for whoever comes next.
+## Concept
 
-Ghost Charades is a mobile-first Decentraland SDK7 World built for the Friendzone Mobile Buildathon. A
-visitor decodes three-emote performances left by real previous players, sees the crowd's result, and records
-a new performance from a fixed phrase deck. The last six real visitors appear as the theater audience. When
-two or more players are present, the server turns the shared performance into a first-correct race.
+Ghost Charades turns player avatars into asynchronous performers. The server records a player's avatar look,
+phrase, and ordered emote sequence; later visitors watch that ghost on a theater stage and choose between three
+answers. The core loop uses performance instead of free-text input and does not depend on DMs, voice, or scene
+chat.
 
-The deployment target is `ghostcharades.dcl.eth`. That NAME is not configured in `scene.json` until ownership
-is confirmed.
-
-## Controls
-
-- Move with the Decentraland joystick on mobile or the normal movement controls on desktop.
-- Walk into the theater to enable `DECODE A GHOST`; the foyer prompt remains `WALK TO THE STAGE` until then.
-- Use the large on-screen buttons to decode, replay, author, react, view boards, and copy an invite. `MAKE YOUR
-  OWN` remains available while a decode request is pending or recovering from an error.
-- Authoring uses no text input: choose one dealt phrase and three emotes in order.
-- Native mobile action buttons are hidden; the movement joystick remains available.
+When no eligible player performance exists, the server serves one clearly labelled `HOUSE GHOST`. House content
+is excluded from player statistics, boards, and progression.
 
 ## Game loop
 
-1. Walk through the foyer while the authoritative multiplayer server wakes, then enter the theater to decode.
-2. Decode a real player's three-emote ghost, or the clearly labelled House ghost when no real charade exists.
-3. See the answer, aggregate result, and personal decoder score.
-4. Take a dealt phrase, select three emotes, preview the performance, and post it.
-5. Copy the World invite, inspect today's real-player boards, and return later for the “since you left” result.
+1. Enter the theater. A skippable ten-second cold open runs once per client session while the authoritative server
+   prepares the first performance.
+2. Watch a player-authored three-emote sequence, or the clearly labelled House fallback. If a player charade has
+   an answer-back, both players perform on stage in alternating three-emote sequences.
+3. Choose one of three phrase cards. Replay restarts the performance from its first emote.
+4. The eight-second reveal locks the answers, pushes the camera toward the stage, changes the theater lighting,
+   reveals the verdict, cues the audience, and reports the aggregate result.
+5. Answer back with a new performance of the same phrase, or make a new charade from the fixed phrase deck.
+6. Preview and post the ordered three-emote performance, inspect today's boards, or copy an invite for a friend.
+7. Return later to see how many people tried the performance, how many decoded it, and whether anyone answered
+   back.
 
-House guesses and House performances are excluded from player stats and boards.
+With two or more players present, the Multiplayer Server serves a shared live round and accepts one first-correct
+winner. The winner moves directly into the author flow; solo visitors continue through the asynchronous loop.
+
+## Tonight's Show
+
+The server rotates one of six themes at UTC midnight: Everyday Escapades, Big Feelings, Kitchen Capers,
+Decentraland Life, Pop Spectacles, and Awkward Moments. Each theme owns 20 of the 120 built-in phrases. Charade
+selection prefers the current theme and falls back to any eligible player performance without requiring a
+redeploy.
+
+The current theme drives the foyer marquee and UI accent. For a signed-in player, three real-player decodes plus
+one authored charade on the same UTC day awards one saved daily completion stamp. The playbill shows the six most
+recent player-authored performances, and Ghost of the Night places the day's hardest-to-decode real performer on
+the foyer pedestal.
+
+## Titles and reward props
+
+Titles come only from recorded participation. Signed-in player progress is stored by the Multiplayer Server and
+restored on reconnect.
+
+| Title | Requirement | Attached prop |
+| --- | --- | --- |
+| Understudy | Post the first charade | Top hat |
+| Scene Stealer | Reach 10 correct decodes or 5 posts | Mask |
+| Ghostlight Legend | Reach 25 correct decodes and 3 daily stamps | Trophy |
+
+The client attaches each reward to the titled player's avatar address, so visible players receive the correct
+head or hand prop rather than a local-only costume.
+
+## Answer-back duets
+
+After revealing an eligible real-player charade, the decoder can choose `ANSWER BACK`. The reply keeps the
+original phrase, offers five verified Decentraland emotes, and records a new ordered sequence of three. A charade
+accepts only its first reply. Future visitors see the original performer and replier alternate complete sequences,
+and the original author receives a persisted return notification.
+
+Self-replies, House replies, replies before a completed guess, phrase changes, and second replies are rejected by
+the server.
+
+## Controls
+
+| Action | Mobile-first behavior |
+| --- | --- |
+| Move | Use the Decentraland movement joystick. Native action buttons are hidden after mobile platform detection. |
+| Start decoding | Walk into the house or stage area, then tap `DECODE A GHOST`. The action remains disabled in the foyer. |
+| Guess | Tap one of three 96 px answer buttons. Required UI stays inside Decentraland's interactable screen inset. |
+| Watch again | Tap `REPLAY` to restart the current solo performance or duet. |
+| Make a charade | Tap `MAKE YOUR OWN`, take a dealt phrase, optionally shuffle twice, choose three of five emotes in order, preview, then post. |
+| Answer back | After an eligible reveal, tap `ANSWER BACK`, choose three emotes for the same phrase, preview, then send the reply. |
+| React in a live round | `LAUGH`, `CONFUSED`, and `GENIUS` trigger a local player emote and a remote audience reaction. |
+| Invite | `COPY INVITE` copies the World jump URL configured in `src/shared/config.ts`. |
+
+Desktop preview uses the normal Decentraland movement controls and the same on-screen game UI.
 
 ## Architecture
 
-`src/index.ts` branches once between the authoritative server and the client.
+`scene.json` enables `authoritativeMultiplayer`, and `src/index.ts` branches once between the server and client
+runtimes.
 
-- `src/shared/` contains the registered binary message schemas, immutable configuration, 120-phrase deck,
-  shared types, and deterministic selection functions.
-- `src/server/` owns storage hydration and migrations, checked dirty-write flushing, player state, authoritative
-  avatar snapshots, request idempotency, cooldowns, decode/post handlers, boards, and live rounds.
-- `src/client/` owns the theater, eight-slot avatar pool, virtual stage camera, platform-aware HUD, client state
-  machine, retries, reactions, and ReactEcs mobile UI.
-- `test/` covers deck integrity, deterministic selection, persistence failure recovery, migrations, boards,
-  protocol races, rounds, and the complete client flow.
+```text
+Decentraland mobile / desktop client
+  ReactEcs UI, theater GLBs, cameras, sound, reveal timeline, eight-slot avatar pool
+                         |
+                         | registered SDK7 network messages
+                         v
+Authoritative Multiplayer Server
+  request validation, avatar snapshots, themed selection, live rounds, progression
+                         |
+                         v
+Decentraland Storage
+  scene: charades, daily indexes, boards, recent visitors
+  player: signed-in statistics, daily stamps, titles, return notifications
+```
 
-Persistent data uses versioned `gc:v1:*` keys. Scene writes are serialized as JSON strings, retained when a
-host write returns `false`, and flushed in batches of at most eight concurrent calls. Startup hydrates the last
-14 daily charade indexes in read batches of at most eight so the full judging window remains available. Player
-looks used for posted ghosts are read from server-side ECS components, never from client payloads, and retain
-up to 20 wearable URNs.
+The client sends intents such as guess, post, and react. It never supplies the avatar look used for a stored
+performance; the server snapshots Decentraland's player ECS data. All persisted values are serialized JSON, and
+charade and player-stat records carry a schema version. Storage writes pass through a dirty queue, retry when the
+host returns `false`, and run in batches of at most eight. Requests that can mutate state carry IDs so a network
+retry does not double-count a guess or post.
 
-The runtime keeps at most eight `AvatarShape` components active: one performer, six audience members, and one
-preview. Audience spawns are staggered to three per second, and the scene uses primitives without particles or
-dynamic lights.
+The presentation layer uses generated GLBs and emissive material changes rather than dynamic lights or particles.
+The avatar pool is capped at eight slots: one stage performer, six audience positions, and one preview/replier;
+Ghost of the Night reuses an audience slot.
+
+## Generated assets
+
+All shipped models, sounds, and UI textures are generated in-repository and committed, so normal installation does
+not require Blender, Python imaging/audio packages, or FFmpeg.
+
+| Pipeline | Command | Source and output |
+| --- | --- | --- |
+| Theater and reward models | `npm run assets:models` | `tools/blender/build_assets.py` -> `assets/models/*.glb` and `manifest.json` |
+| Room tone and show cues | `npm run assets:sounds` | `tools/audio/build_sounds.py` -> `assets/sounds/*.mp3` and `manifest.json` |
+| Playbill UI textures | `npm run assets:ui` | `tools/ui/build_textures.py` -> `assets/ui/*.png` and `manifest.json` |
+| Everything | `npm run assets` | Runs the three pipelines in the order above |
+
+The model script is wired to Blender 5.1 at
+`C:\Program Files\Blender Foundation\Blender 5.1\blender.exe`. The current generator toolchain was verified with
+Blender 5.1.2; Python 3.12.10; NumPy 2.4.6; SciPy 1.18.0; Pillow 12.2.0; and FFmpeg 8.1.2. `ffmpeg` must be on
+`PATH` for sound generation.
+
+`test/asset-budget.test.ts` parses the committed outputs and enforces the mobile budgets: no model above 3,000
+triangles, no more than 40,000 total triangles, no Draco, power-of-two UI textures no larger than 1024 px, mono
+44.1 kHz audio, less than 2 MB of sound, and less than 25 MB under `assets/`.
 
 ## Run from scratch
 
-Requirements: Node.js 20.x, 22.x, or 24+ and npm 10+. The exact supported ranges are enforced by `package.json`.
+Requirements: Node.js 20.x, 22.x, or 24+ and npm 10+. From a fresh checkout:
 
 ```bash
 npm ci
@@ -63,32 +144,45 @@ npm test
 npm run start
 ```
 
-`npm run start` launches the local Decentraland preview. For phone validation, open its QR preview in the real
-Decentraland mobile app and follow [`docs/DEVICE-CHECKLIST.md`](docs/DEVICE-CHECKLIST.md).
+The final command launches the local Decentraland preview. The generated assets are already committed. The
+Decentraland packages are pinned to `7.26.1-32239895147.commit-3c77d90`; changing that pin requires a new build,
+test, and real-device validation pass.
 
-The Decentraland packages are pinned to `7.26.1-32239895147.commit-3c77d90`; do not upgrade them without a new
-device validation pass.
+## Device testing and release state
 
-## World deployment
+Automated tests cover the loop, reveal timing, duet pairing, title thresholds, live rounds, storage recovery,
+network retries, and generated-asset limits. Real-device validation remains a separate release gate; follow
+[`docs/DEVICE-CHECKLIST.md`](docs/DEVICE-CHECKLIST.md) for cold start, safe areas, sound latency, camera behavior,
+solo persistence, two-client rounds, and measured performance.
 
-Deployment is owner-gated. After the owner controls the NAME, add this top-level block to `scene.json`:
+The code targets `ghostcharades.dcl.eth`, but `scene.json` does not yet configure a World name. Deployment and NAME
+ownership are owner-gated, so this repository does not claim a live deployment.
 
-```json
-"worldConfiguration": {
-  "name": "ghostcharades.dcl.eth"
-}
+Guest progress remains in server memory rather than player-scoped Storage. A guest-authored charade can still enter
+the shared scene pool, but durable personal title and return progress requires a signed-in Decentraland profile.
+
+## Project layout
+
+```text
+src/
+  client/   Client flow, ReactEcs UI, theater, ghosts, cameras, sound, reveals, rewards
+  server/   Authoritative protocol handlers, live rounds, state, migrations, Storage queue
+  shared/   Message schemas, fixed phrase deck, themes, progression constants, selection logic
+test/       Vitest coverage for client, server, protocol, persistence, and asset budgets
+tools/
+  blender/  Procedural GLB generator
+  audio/    Deterministic synthesized MP3 generator
+  ui/       Procedural PNG generator
+assets/     Committed generated models, sounds, textures, and their manifests
+docs/       Build plans, device checklist, roadmap, and submission materials
 ```
 
-Keep `authoritativeMultiplayer: true`, do not add an offline fixed adapter, and leave Places opt-out unset.
-Build, complete the device checklist, and deploy only after the owner approves the release.
+## Roadmap
 
-## Roadmap to submission
-
-- Complete the Android cold-start, rendering, safe-area, camera, persistence, invite, and performance checks.
-- Buy and configure the target Decentraland NAME, then deploy the tested commit.
-- Seed only through real playtests; never create synthetic visitors, charades, guesses, or leaderboard rows.
-- Run the two-device live-round check and a blind five-minute solo judge audit before the release lock.
+The current release sequence, device gates, and post-build priorities live in
+[`docs/ROADMAP.md`](docs/ROADMAP.md). The implementation task record is
+[`docs/BUILD-PLAN-2.md`](docs/BUILD-PLAN-2.md).
 
 ## License
 
-[MIT](LICENSE) © 2026 Ridwan Nurudeen.
+[MIT](LICENSE) (c) 2026 Ridwan Nurudeen.
