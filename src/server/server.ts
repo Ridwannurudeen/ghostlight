@@ -41,6 +41,7 @@ export type ServerProtocolOptions = {
 
 const REACTION_KINDS = new Set(['laugh', 'confused', 'genius'])
 const EMOTES = new Set<string>(EMOTE_VOCABULARY)
+const MAX_WEARABLE_URNS = 20
 
 function canonicalAddress(address: string) {
   return address.toLowerCase()
@@ -55,7 +56,7 @@ function withoutLastSeen(look: Look) {
     skinColor: look.skinColor,
     hairColor: look.hairColor,
     eyeColor: look.eyeColor,
-    wearables: look.wearables.slice(0, 10)
+    wearables: look.wearables.slice(0, MAX_WEARABLE_URNS)
   }
 }
 
@@ -93,7 +94,7 @@ export function snapshotServerLook(address: string): Look | null {
       skinColor: avatar.skinColor ?? { r: 0.6, g: 0.46, b: 0.36 },
       hairColor: avatar.hairColor ?? { r: 0.28, g: 0.14, b: 0.08 },
       eyeColor: avatar.eyesColor ?? { r: 0.3, g: 0.48, b: 0.62 },
-      wearables: equipped.wearableUrns.slice(0, 10)
+      wearables: equipped.wearableUrns.slice(0, MAX_WEARABLE_URNS)
     }
   }
   return null
@@ -232,6 +233,11 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     return pending
   }
 
+  async function ensureWelcome(address: string) {
+    const key = canonicalAddress(address)
+    return welcomed.has(key) || (await welcome(address))
+  }
+
   async function handleEnter(address: string) {
     await ready
     await sendTo(address, 'ready', { instanceId, serverTime: now() })
@@ -250,6 +256,12 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     welcomed.delete(key)
     lastAuthors.delete(key)
     lastPosts.delete(key)
+    for (const answerKey of answerIndexes.keys()) {
+      if (answerKey.startsWith(`${key}:`)) answerIndexes.delete(answerKey)
+    }
+    for (const request of completedRequests.keys()) {
+      if (request.startsWith(`${key}:`)) completedRequests.delete(request)
+    }
     rounds.leave(key)
     await checkpoint()
   }
@@ -303,6 +315,10 @@ export function createServerProtocol(options: ServerProtocolOptions) {
 
   async function handleNextCharade(data: NextCharadePayload, address: string) {
     await ready
+    if (!(await ensureWelcome(address))) {
+      await sendError(address, 'look-not-ready')
+      return
+    }
     const key = canonicalAddress(address)
     const look = looks.get(key)
     const stats = await options.state.getOrCreateStats(key, playerName(key), !(look?.isGuest ?? true))
@@ -318,8 +334,12 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     return `${canonicalAddress(address)}:${kind}:${requestId}`
   }
 
-  async function handleGuess(data: GuessPayload, address: string, requireRound = false) {
+  async function handleGuess(data: GuessPayload, address: string) {
     await ready
+    if (!(await ensureWelcome(address))) {
+      await sendError(address, 'look-not-ready')
+      return
+    }
     const key = canonicalAddress(address)
     const idempotencyKey = requestKey(key, 'guess', data.requestId)
     const completed = completedRequests.get(idempotencyKey)
@@ -339,14 +359,10 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       return
     }
     const roundIsActive = rounds.current?.charadeId === charade.id && rounds.isLive
-    if (requireRound && !roundIsActive) {
-      await sendError(address, 'round-not-active')
-      return
-    }
 
     const look = looks.get(key)
     const stats = await options.state.getOrCreateStats(key, playerName(key), !(look?.isGuest ?? true))
-    if (stats.seen.includes(charade.id)) {
+    if (!charade.isHouse && stats.seen.includes(charade.id)) {
       await sendError(address, 'already-guessed')
       return
     }
@@ -360,8 +376,8 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       }
     }
 
-    stats.seen.push(charade.id)
     if (!charade.isHouse) {
+      stats.seen.push(charade.id)
       stats.decoded += 1
       stats.correct += correct ? 1 : 0
       options.state.recordGuess(charade.id, correct)
@@ -397,6 +413,10 @@ export function createServerProtocol(options: ServerProtocolOptions) {
 
   async function handlePost(data: PostPayload, address: string) {
     await ready
+    if (!(await ensureWelcome(address))) {
+      await sendError(address, 'look-not-ready')
+      return
+    }
     const key = canonicalAddress(address)
     const idempotencyKey = requestKey(key, 'post', data.requestId)
     const completed = completedRequests.get(idempotencyKey)
@@ -499,7 +519,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     handlePing,
     handleNextCharade,
     handleGuess: (data: GuessPayload, address: string) => handleGuess(data, address),
-    handleRoundGuess: (data: GuessPayload, address: string) => handleGuess(data, address, true),
+    handleRoundGuess: (data: GuessPayload, address: string) => handleGuess(data, address),
     handlePost,
     handleReact
   }
