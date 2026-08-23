@@ -19,8 +19,9 @@ export const EMOTES = ['dab', 'shrug', 'headexplode'] as const
 export const spike = {
   platform: 'detecting',
   serverReady: false,
+  // Persistence result comes only from the hello acknowledgement, never from heartbeats.
+  persist: 'pending' as 'pending' | 'ok' | 'set-failed' | 'readback-failed',
   visits: 0,
-  lastPong: 0,
   emoteIndex: 0,
   triggerCount: 0,
   cubeTaps: 0,
@@ -38,10 +39,13 @@ let onPlatformKnown: (platform: string) => void = () => {}
 
 export function startClient(opts: { onPlatformKnown: (platform: string) => void }) {
   onPlatformKnown = opts.onPlatformKnown
-  room.onMessage('pong', (data) => {
+  room.onMessage('pong', () => {
+    spike.serverReady = true
+  })
+  room.onMessage('helloAck', (data) => {
     spike.serverReady = true
     spike.visits = data.visits
-    spike.lastPong = data.serverTime
+    spike.persist = !data.saved ? 'set-failed' : !data.readBack ? 'readback-failed' : 'ok'
   })
 
   // Tap-on-3D-entity probe: the docs describe aim-then-press on mobile; this shows what a plain tap does.
@@ -93,7 +97,8 @@ function spikeSystem(dt: number) {
         wearables: [...player.wearables],
         emotes: [],
         expressionTriggerId: EMOTES[0],
-        expressionTriggerTimestamp: 0
+        // Lamport counter: start at 1 so the first instruction is seen as newer than the engine's initial 0.
+        expressionTriggerTimestamp: 1
       })
       spike.ghostSpawned = true
       void room.send('hello', { name: player.name })
@@ -122,6 +127,6 @@ export function playNextEmote() {
   spike.triggerCount += 1
   const shape = AvatarShape.getMutable(ghost)
   shape.expressionTriggerId = EMOTES[spike.emoteIndex]
-  // Lamport counter: raise it by one per repetition or the engine ignores the instruction.
-  shape.expressionTriggerTimestamp = spike.triggerCount
+  // Raise the counter by one per repetition or the engine ignores the instruction (creation used 1).
+  shape.expressionTriggerTimestamp = spike.triggerCount + 1
 }

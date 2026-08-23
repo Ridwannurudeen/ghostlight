@@ -22,11 +22,11 @@ const uiComponent = () => (
     }}
   >
     <UiEntity
-      uiTransform={{ width: 640, height: 120, margin: '12px 0 0 0', padding: 8, flexDirection: 'column' }}
+      uiTransform={{ width: '80%', height: 120, margin: '12px 0 0 0', padding: 8, flexDirection: 'column' }}
       uiBackground={{ color: Color4.create(0, 0, 0, 0.55) }}
     >
       <Label
-        value={`platform: ${spike.platform}   server: ${spike.serverReady ? 'ready' : 'waking'}   visits: ${spike.visits}`}
+        value={`platform: ${spike.platform}   server: ${spike.serverReady ? 'ready' : 'waking'}   visits: ${spike.visits}   storage: ${spike.persist}`}
         fontSize={22}
         color={Color4.White()}
       />
@@ -38,20 +38,20 @@ const uiComponent = () => (
       <Label value={`cube taps: ${spike.cubeTaps}   ${copied}`} fontSize={22} color={Color4.White()} />
     </UiEntity>
     <UiEntity
-      uiTransform={{ width: 640, height: 110, margin: '0 0 96px 0', flexDirection: 'row', justifyContent: 'center' }}
+      uiTransform={{ width: '80%', height: 110, margin: '0 0 96px 0', flexDirection: 'row', justifyContent: 'center' }}
     >
       <Button
         value="NEXT EMOTE"
         fontSize={28}
         variant="primary"
-        uiTransform={{ width: 300, height: 96, margin: '0 12px 0 0' }}
+        uiTransform={{ width: '45%', height: 96, margin: '0 2% 0 0' }}
         onMouseDown={() => playNextEmote()}
       />
       <Button
         value="COPY INVITE"
         fontSize={28}
         variant="secondary"
-        uiTransform={{ width: 300, height: 96 }}
+        uiTransform={{ width: '45%', height: 96 }}
         onMouseDown={() => {
           void copyToClipboard({ text: INVITE }).then(
             () => {
