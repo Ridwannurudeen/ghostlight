@@ -42,6 +42,19 @@ describe('live rounds', () => {
     expect(rounds.current).toEqual({ charadeId: 'active', guessed: ['alice'], winner: null })
   })
 
+  it('settles after every present player guesses without a winner', () => {
+    const rounds = new LiveRounds()
+    rounds.enter({ address: 'alice', name: 'Alice' })
+    rounds.enter({ address: 'bob', name: 'Bob' })
+    rounds.start('active')
+
+    expect(rounds.isSettled).toBe(false)
+    rounds.guess('alice', 'active', false)
+    expect(rounds.isSettled).toBe(false)
+    rounds.guess('bob', 'active', false)
+    expect(rounds.isSettled).toBe(true)
+  })
+
   it('awards exactly one first correct winner', () => {
     const send = vi.fn()
     const rounds = new LiveRounds(send)
@@ -58,6 +71,7 @@ describe('live rounds', () => {
     expect(rounds.guess('alice', 'race', true)).toEqual({ accepted: true, winner: null })
     expect(rounds.guess('carol', 'race', true)).toEqual({ accepted: true, winner: null })
     expect(rounds.current?.winner).toEqual({ address: 'bob', name: 'Bob' })
+    expect(rounds.isSettled).toBe(true)
     expect(send).toHaveBeenCalledOnce()
     expect(send).toHaveBeenCalledWith('roundWinner', { address: 'bob', name: 'Bob' })
   })
@@ -71,6 +85,11 @@ describe('live rounds', () => {
     expect(rounds.start('same')).toBe(true)
     expect(rounds.start('same')).toBe(false)
     rounds.guess('alice', 'same', true)
+    expect(rounds.start('same')).toBe(true)
+    expect(rounds.current).toEqual({ charadeId: 'same', guessed: [], winner: null })
+
+    rounds.guess('alice', 'same', false)
+    rounds.guess('bob', 'same', false)
     expect(rounds.start('same')).toBe(true)
     expect(rounds.current).toEqual({ charadeId: 'same', guessed: [], winner: null })
   })

@@ -492,6 +492,71 @@ describe('live protocol', () => {
     expect(protocol.rounds.current?.winner).toEqual({ address: 'alice', name: 'Alice' })
   })
 
+  it('starts a fresh round after every present player guesses wrong', async () => {
+    const snapshotLook = async (address: string) => makeLook(address, address)
+    const { state, sent, protocol } = await createHarness({ snapshotLook })
+    state.upsertCharade(makeCharade('live-a', { author: { address: 'outside-a' } }))
+    state.upsertCharade(makeCharade('live-b', { author: { address: 'outside-b' } }))
+    await protocol.handleEnter('alice')
+    await protocol.handleEnter('bob')
+    sent.length = 0
+
+    await protocol.handleNextCharade({ exclude: [] }, 'alice')
+    await protocol.handleNextCharade({ exclude: [] }, 'bob')
+    const firstRound = dataOf<CharadeMessage>(messagesOfType(sent, 'charade')[0])
+    const correctIndex = firstRound.answers.indexOf(
+      DECK.find((phrase) => phrase.id === state.getCharade(firstRound.id)!.phraseId)!.text
+    )
+    const wrongIndex = (correctIndex + 1) % firstRound.answers.length
+    await protocol.handleRoundGuess(
+      { charadeId: firstRound.id, answerIndex: wrongIndex, requestId: 'alice-wrong' },
+      'alice'
+    )
+    await protocol.handleRoundGuess(
+      { charadeId: firstRound.id, answerIndex: wrongIndex, requestId: 'bob-wrong' },
+      'bob'
+    )
+    expect(protocol.rounds.isSettled).toBe(true)
+    sent.length = 0
+
+    await protocol.handleNextCharade({ exclude: [firstRound.id] }, 'alice')
+    await protocol.handleNextCharade({ exclude: [firstRound.id] }, 'bob')
+
+    const nextRound = messagesOfType(sent, 'charade').map((message) => dataOf<CharadeMessage>(message).id)
+    expect(nextRound).toHaveLength(2)
+    expect(nextRound.every((id) => id !== firstRound.id)).toBe(true)
+  })
+
+  it('serves a fresh charade to a player who already guessed while the partner is idle', async () => {
+    const snapshotLook = async (address: string) => makeLook(address, address)
+    const { state, sent, protocol } = await createHarness({ snapshotLook })
+    state.upsertCharade(makeCharade('live-a', { author: { address: 'outside-a' } }))
+    state.upsertCharade(makeCharade('live-b', { author: { address: 'outside-b' } }))
+    await protocol.handleEnter('alice')
+    await protocol.handleEnter('bob')
+    sent.length = 0
+
+    await protocol.handleNextCharade({ exclude: [] }, 'alice')
+    const firstRound = dataOf<CharadeMessage>(messagesOfType(sent, 'charade')[0])
+    const correctIndex = firstRound.answers.indexOf(
+      DECK.find((phrase) => phrase.id === state.getCharade(firstRound.id)!.phraseId)!.text
+    )
+    await protocol.handleRoundGuess(
+      {
+        charadeId: firstRound.id,
+        answerIndex: (correctIndex + 1) % firstRound.answers.length,
+        requestId: 'alice-wrong'
+      },
+      'alice'
+    )
+    sent.length = 0
+
+    await protocol.handleNextCharade({ exclude: [firstRound.id] }, 'alice')
+
+    expect(dataOf<CharadeMessage>(messagesOfType(sent, 'charade')[0]).id).not.toBe(firstRound.id)
+    expect(protocol.rounds.current).toMatchObject({ charadeId: firstRound.id, guessed: ['alice'], winner: null })
+  })
+
   it("accepts a survivor's round guess as a plain guess after the other player leaves", async () => {
     const snapshotLook = async (address: string) => makeLook(address, address === 'alice' ? 'Alice' : 'Bob')
     const { state, sent, protocol } = await createHarness({ snapshotLook })

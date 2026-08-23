@@ -186,7 +186,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
   function ensureRound() {
     if (!rounds.isLive) return null
     const current = rounds.current
-    if (current && !current.winner) return options.state.getCharade(current.charadeId) ?? HOUSE_CHARADE
+    if (current && !rounds.isSettled) return options.state.getCharade(current.charadeId) ?? HOUSE_CHARADE
     const charade = selectRoundCharade()
     rounds.start(charade.id)
     return charade
@@ -323,8 +323,9 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     const look = looks.get(key)
     const stats = await options.state.getOrCreateStats(key, playerName(key), !(look?.isGuest ?? true))
     const liveCharade = ensureRound()
+    const requesterGuessed = rounds.current?.guessed.includes(key) ?? false
     const selected =
-      liveCharade ??
+      (requesterGuessed ? null : liveCharade) ??
       chooseCharadeFor(key, [...stats.seen, ...data.exclude], options.state.getPool(), lastAuthors.get(key)) ??
       HOUSE_CHARADE
     await sendCharade(address, selected)

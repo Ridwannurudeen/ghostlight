@@ -41,6 +41,12 @@ export class LiveRounds {
     return this.players.size >= 2
   }
 
+  get isSettled() {
+    const active = this.active
+    if (!active) return false
+    return active.winner !== null || [...this.players.keys()].every((address) => active.guessed.has(address))
+  }
+
   get current(): RoundSnapshot | null {
     if (!this.active) return null
     return {
@@ -52,7 +58,7 @@ export class LiveRounds {
 
   start(charadeId: string) {
     if (!this.isLive) return false
-    if (this.active?.charadeId === charadeId && !this.active.winner) return false
+    if (this.active?.charadeId === charadeId && !this.isSettled) return false
     this.active = { charadeId, guessed: new Set(), winner: null }
     void this.send('roundStart', { charadeId })
     return true
