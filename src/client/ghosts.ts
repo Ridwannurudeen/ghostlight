@@ -10,6 +10,7 @@ export type AudienceReaction = 'clap' | 'shrug' | 'laugh' | 'confused' | 'genius
 type GhostSlot = {
   entity: Entity
   active: boolean
+  address: string
   sequence: GhostEmotes | null
   emoteIndex: number
   elapsed: number
@@ -71,12 +72,40 @@ export function clearPerformer() {
 
 export function setAudience(looks: readonly Look[]) {
   initializeGhosts()
-  clearAudience()
-  audienceQueue = looks.slice(0, AUDIENCE_SEATS).map((look, index) => ({
-    look,
-    slotIndex: AUDIENCE_START_INDEX + index
-  }))
-  audienceSpawnClock = 0
+  const wanted = looks.slice(0, AUDIENCE_SEATS)
+  const wantedAddresses = new Set(wanted.map((look) => canonicalAddress(look.address)))
+
+  audienceQueue = audienceQueue.filter((queued) => wantedAddresses.has(canonicalAddress(queued.look.address)))
+  for (let index = AUDIENCE_START_INDEX; index < PREVIEW_INDEX; index += 1) {
+    const slot = slots[index]
+    if (slot.active && !wantedAddresses.has(slot.address)) hideGhost(slot)
+  }
+
+  const occupiedAddresses = new Set(
+    slots
+      .slice(AUDIENCE_START_INDEX, PREVIEW_INDEX)
+      .filter((slot) => slot.active)
+      .map((slot) => slot.address)
+  )
+  for (const queued of audienceQueue) occupiedAddresses.add(canonicalAddress(queued.look.address))
+
+  const queuedSlots = new Set(audienceQueue.map((queued) => queued.slotIndex))
+  const availableSlots = slots
+    .slice(AUDIENCE_START_INDEX, PREVIEW_INDEX)
+    .map((slot, index) => ({ slot, slotIndex: AUDIENCE_START_INDEX + index }))
+    .filter(({ slot, slotIndex }) => !slot.active && !queuedSlots.has(slotIndex))
+    .map(({ slotIndex }) => slotIndex)
+
+  const queueWasEmpty = audienceQueue.length === 0
+  for (const look of wanted) {
+    const address = canonicalAddress(look.address)
+    if (occupiedAddresses.has(address)) continue
+    const slotIndex = availableSlots.shift()
+    if (slotIndex === undefined) break
+    audienceQueue.push({ look, slotIndex })
+    occupiedAddresses.add(address)
+  }
+  if (queueWasEmpty && audienceQueue.length > 0) audienceSpawnClock = 0
 }
 
 export function clearAudience() {
@@ -111,10 +140,6 @@ export function getPerformerEntity() {
   return slots[0].entity
 }
 
-export function getActiveGhostCount() {
-  return slots.reduce((count, slot) => count + (slot.active ? 1 : 0), 0)
-}
-
 function ghostSystem(dt: number) {
   spawnNextAudienceGhost(dt)
   for (const slot of slots) {
@@ -139,6 +164,7 @@ function spawnNextAudienceGhost(dt: number) {
 
 function showGhost(slot: GhostSlot, look: Look, sequence: GhostEmotes | null) {
   slot.active = true
+  slot.address = canonicalAddress(look.address)
   slot.sequence = sequence
   slot.emoteIndex = 0
   slot.elapsed = 0
@@ -161,6 +187,7 @@ function showGhost(slot: GhostSlot, look: Look, sequence: GhostEmotes | null) {
 function hideGhost(slot: GhostSlot) {
   if (slot.active) AvatarShape.deleteFrom(slot.entity)
   slot.active = false
+  slot.address = ''
   slot.sequence = null
   slot.emoteIndex = 0
   slot.elapsed = 0
@@ -180,9 +207,14 @@ function createSlot(position: Vector3Type, rotation: QuaternionType): GhostSlot 
   return {
     entity,
     active: false,
+    address: '',
     sequence: null,
     emoteIndex: 0,
     elapsed: 0,
     lamport: 0
   }
+}
+
+function canonicalAddress(address: string) {
+  return address.toLowerCase()
 }
