@@ -607,6 +607,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
       state.screen === 'decode' &&
       state.roundCharadeId &&
       state.charade?.id !== state.roundCharadeId &&
+      !roundMismatchRefetchAttempted &&
       !guessPending
     ) {
       requestNextCharade()

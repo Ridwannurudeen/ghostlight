@@ -109,10 +109,12 @@ describe('live rounds', () => {
   })
 
   it('ends the active round when attendance falls below two', () => {
-    const rounds = new LiveRounds()
+    const send = vi.fn()
+    const rounds = new LiveRounds(send)
     rounds.enter({ address: 'alice', name: 'Alice' })
     rounds.enter({ address: 'bob', name: 'Bob' })
     rounds.start('charade')
+    send.mockClear()
 
     rounds.leave('BOB')
 
@@ -120,5 +122,7 @@ describe('live rounds', () => {
     expect(rounds.isLive).toBe(false)
     expect(rounds.current).toBeNull()
     expect(rounds.guess('alice', 'charade', true)).toEqual({ accepted: false, winner: null })
+    expect(send).toHaveBeenCalledOnce()
+    expect(send).toHaveBeenCalledWith('roundStart', { charadeId: '' })
   })
 })

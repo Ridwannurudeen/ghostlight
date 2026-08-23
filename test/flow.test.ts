@@ -322,6 +322,8 @@ describe('audience and rounds', () => {
     expect(runtime.getState().charade?.id).toBe('old')
 
     runtime.receive({ type: 'charade', data: makeDecodeCharade('plain-2') })
+    runtime.receive({ type: 'pong', data: { seq: 1 } })
+    runtime.receive({ type: 'pong', data: { seq: 2 } })
     expect(messagesOfType(sent, 'nextCharade')).toHaveLength(2)
     expect(runtime.getState()).toMatchObject({ screen: 'decode', charade: { id: 'plain-2' } })
     expect(runtime.guess(0)).toBe(true)

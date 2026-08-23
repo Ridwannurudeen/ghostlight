@@ -32,8 +32,10 @@ export class LiveRounds {
     const key = address.toLowerCase()
     this.players.delete(key)
     const active = this.active
-    if (this.players.size < 2) this.active = null
-    else if (active && [...this.players.keys()].every((player) => active.guessed.has(player))) {
+    if (this.players.size < 2) {
+      this.active = null
+      if (active) void this.send('roundStart', { charadeId: '' })
+    } else if (active && [...this.players.keys()].every((player) => active.guessed.has(player))) {
       active.settled = true
     }
   }
