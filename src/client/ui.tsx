@@ -1,4 +1,3 @@
-import { isMobile } from '@dcl/sdk/platform'
 import { Color4 } from '@dcl/sdk/math'
 import ReactEcs, { Button, Label, ReactEcsRenderer, UiEntity } from '@dcl/sdk/react-ecs'
 import { copyToClipboard } from '~system/RestrictedActions'
@@ -8,8 +7,8 @@ const INVITE = 'Can you decode my ghost? https://decentraland.org/jump/?realm=gh
 
 let copied = ''
 
-export function setupUi() {
-  ReactEcsRenderer.setUiRenderer(uiComponent, { screenInset: isMobile() ? 'interactable' : 'device' })
+export function setupUi(platform: string) {
+  ReactEcsRenderer.setUiRenderer(uiComponent, { screenInset: platform === 'mobile' ? 'interactable' : 'device' })
 }
 
 const uiComponent = () => (

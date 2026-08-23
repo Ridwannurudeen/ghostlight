@@ -11,6 +11,5 @@ export function main() {
     startServer()
     return
   }
-  startClient()
-  setupUi()
+  startClient({ onPlatformKnown: setupUi })
 }

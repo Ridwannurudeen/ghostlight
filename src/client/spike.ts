@@ -34,7 +34,10 @@ let pingClock = 0
 let pingSeq = 0
 let platformKnown = false
 
-export function startClient() {
+let onPlatformKnown: (platform: string) => void = () => {}
+
+export function startClient(opts: { onPlatformKnown: (platform: string) => void }) {
+  onPlatformKnown = opts.onPlatformKnown
   room.onMessage('pong', (data) => {
     spike.serverReady = true
     spike.visits = data.visits
@@ -66,6 +69,8 @@ function spikeSystem(dt: number) {
         // Joystick stays; every native gamepad button goes. All actions are UI buttons.
         TouchScreenControls.hideAll()
       }
+      // getPlatform() is null on the first frames, so anything platform-dependent (the UI inset) waits for this.
+      onPlatformKnown(platform)
     }
   }
 
