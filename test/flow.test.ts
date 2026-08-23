@@ -479,6 +479,29 @@ describe('audience and rounds', () => {
     }
   )
 
+  it.each(['foyer', 'since', 'decode', 'author'] as const)(
+    'clears an abandoned round on %s without changing screens or fetching',
+    (screen) => {
+      const { runtime, sent } = createFlowHarness()
+      runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+      if (screen === 'since') {
+        runtime.receive({ type: 'since', data: { triedYou: 2, gotYou: 1, rank: 4 } })
+      } else if (screen === 'decode') {
+        runtime.receive({ type: 'charade', data: makeDecodeCharade('mismatched') })
+      } else if (screen === 'author') {
+        runtime.beginAuthoring()
+      }
+      runtime.dispatch({ type: 'roundStart', charadeId: 'live' })
+      sent.length = 0
+
+      runtime.receive({ type: 'roundStart', data: { charadeId: '' } })
+
+      expect(runtime.getState()).toMatchObject({ screen, roundCharadeId: '' })
+      if (screen === 'decode') expect(runtime.getState().charade?.id).toBe('mismatched')
+      expect(messagesOfType(sent, 'nextCharade')).toHaveLength(0)
+    }
+  )
+
   it('drops stale decode and round state when a new server instance is ready', () => {
     const { runtime } = createFlowHarness()
     runtime.receive({ type: 'ready', data: { instanceId: 'one', serverTime: FIXED_NOW } })
