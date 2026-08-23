@@ -2,7 +2,15 @@ import { describe, expect, it, vi } from 'vitest'
 import { AUDIENCE_SEATS, HYDRATION_DAYS } from '../src/shared/config'
 import { HOUSE_CHARADE } from '../src/shared/deck'
 import { STORAGE_SCHEMA_VERSION } from '../src/shared/types'
-import { GhostCharadesState, dayKey, migrateCharade, migrateLook, migratePlayerStats } from '../src/server/state'
+import {
+  GhostCharadesState,
+  computeProgress,
+  computeTitle,
+  dayKey,
+  migrateCharade,
+  migrateLook,
+  migratePlayerStats
+} from '../src/server/state'
 import {
   PLAYER_STATS_KEY,
   RECENT_VISITORS_KEY,
@@ -75,6 +83,45 @@ describe('state migrations', () => {
 
     expect(migrated.daily).toEqual({ day: '2026-08-23', decoded: 0, authored: 0, stamped: false })
     expect(migrated.stampedDays).toEqual(['2026-08-20'])
+  })
+
+  it('recomputes titles from verified participation and excludes duplicate and house authored ids', () => {
+    const migrated = migratePlayerStats(
+      makeStats({
+        authored: [HOUSE_CHARADE.id, 'player-charade', 'player-charade'],
+        title: 'Ghostlight Legend'
+      }),
+      'Player',
+      FIXED_NOW
+    )
+
+    expect(migrated.authored).toEqual(['player-charade'])
+    expect(migrated.title).toBe('Understudy')
+  })
+})
+
+describe('title progression', () => {
+  it('uses the exact verified thresholds and reports progress toward the next title', () => {
+    expect(computeTitle({ correct: 0, authored: 0, stamps: 0 })).toBe('')
+    expect(computeTitle({ correct: 0, authored: 1, stamps: 0 })).toBe('Understudy')
+    expect(computeTitle({ correct: 10, authored: 1, stamps: 0 })).toBe('Scene Stealer')
+    expect(computeTitle({ correct: 0, authored: 5, stamps: 0 })).toBe('Scene Stealer')
+    expect(computeTitle({ correct: 25, authored: 5, stamps: 2 })).toBe('Scene Stealer')
+    expect(computeTitle({ correct: 24, authored: 5, stamps: 3 })).toBe('Scene Stealer')
+    expect(computeTitle({ correct: 25, authored: 5, stamps: 3 })).toBe('Ghostlight Legend')
+
+    expect(computeProgress({ correct: 4, authored: 2, stamps: 0 })).toEqual({
+      title: 'Understudy',
+      nextUnlock: {
+        nextTitle: 'Scene Stealer',
+        requirement: '10 correct decodes or 5 posts',
+        progress: 0.4
+      }
+    })
+    expect(computeProgress({ correct: 20, authored: 5, stamps: 2 })).toMatchObject({
+      title: 'Scene Stealer',
+      nextUnlock: { nextTitle: 'Ghostlight Legend', progress: 2 / 3 }
+    })
   })
 })
 
@@ -232,6 +279,37 @@ describe('state mutations', () => {
     changingState.recordDecoder('bob', 'Bob', false)
 
     expect(changingState.boards.decoders).toEqual([{ address: 'bob', name: 'Bob', correct: 0, total: 1 }])
+  })
+
+  it('builds the playbill from the latest six real performances and selects the hardest ghost of the night', async () => {
+    const { state } = setup()
+    for (let index = 0; index < 7; index += 1) {
+      state.upsertCharade(
+        makeCharade(`show-${index}`, {
+          createdAt: FIXED_NOW - (7 - index) * 1_000,
+          guesses: { total: index + 1, correct: index === 0 ? 0 : index },
+          author: { address: `performer-${index}`, name: `Performer ${index}` }
+        })
+      )
+    }
+    state.upsertCharade(HOUSE_CHARADE)
+    const latestStats = await state.getOrCreateStats('performer-6', 'Performer 6')
+    latestStats.authored.push('show-6')
+
+    const playbill = await state.getRecentPerformers()
+    const ghost = await state.getGhostOfNight()
+
+    expect(playbill.map((performer) => performer.name)).toEqual([
+      'Performer 6',
+      'Performer 5',
+      'Performer 4',
+      'Performer 3',
+      'Performer 2',
+      'Performer 1'
+    ])
+    expect(playbill[0].title).toBe('Understudy')
+    expect(playbill.some((performer) => performer.name === 'House')).toBe(false)
+    expect(ghost).toMatchObject({ charade: { id: 'show-0', isHouse: false }, title: '' })
   })
 })
 

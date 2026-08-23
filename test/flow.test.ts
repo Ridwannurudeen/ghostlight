@@ -44,7 +44,8 @@ function makeDecodeCharade(id = 'charade-1'): DecodeCharade {
     emotes: ['wave', 'clap', 'dab'],
     answers: ['Answer one', 'Answer two', 'Answer three'],
     createdAt: FIXED_NOW,
-    isHouse: false
+    isHouse: false,
+    authorTitle: ''
   }
 }
 
@@ -60,6 +61,8 @@ function createFlowHarness(
     showPerformer: vi.fn(),
     replayPerformer: vi.fn(),
     showPreview: vi.fn(),
+    showReward: vi.fn(),
+    showGhostOfNight: vi.fn(),
     beginReveal: vi.fn(),
     resolveReveal: vi.fn(),
     skipReveal: vi.fn(),
@@ -159,6 +162,109 @@ describe('flow reducer', () => {
 })
 
 describe('flow lifecycle', () => {
+  it('stores the real show theme, authoritative progression, visible titles, playbill, and Ghost of the Night', () => {
+    const { runtime, effects } = createFlowHarness()
+    runtime.receive({
+      type: 'ready',
+      data: {
+        instanceId: 'server-1',
+        serverTime: FIXED_NOW + 5_000,
+        theme: 'food',
+        themeLabel: 'Kitchen Capers'
+      }
+    })
+    runtime.receive({
+      type: 'progress',
+      data: {
+        daily: { day: '2026-08-23', decoded: 2, authored: 1, stamped: false },
+        title: 'Understudy',
+        nextUnlock: { nextTitle: 'Scene Stealer', requirement: '10 correct decodes or 5 posts', progress: 0.4 }
+      }
+    })
+    runtime.receive({ type: 'playerTitle', data: { address: '0xAuthor', title: 'Scene Stealer' } })
+    runtime.receive({
+      type: 'boards',
+      data: {
+        topDecoders: [],
+        hardestGhosts: [],
+        playbill: [
+          {
+            address: '0xAuthor',
+            name: 'Author',
+            isGuest: false,
+            title: 'Scene Stealer',
+            performedAt: FIXED_NOW - 3_600_000
+          }
+        ],
+        ghostOfNightId: 'hardest'
+      }
+    })
+    const ghost = {
+      charadeId: 'hardest',
+      address: '0xAuthor',
+      name: 'Author',
+      title: 'Scene Stealer',
+      look: makeLook('0xAuthor', 'Author'),
+      total: 5,
+      correct: 1
+    }
+    runtime.receive({ type: 'ghostOfNight', data: ghost })
+
+    expect(runtime.getState()).toMatchObject({
+      theme: 'food',
+      themeLabel: 'Kitchen Capers',
+      serverClockOffset: 5_000,
+      playerName: 'Player',
+      progress: { title: 'Understudy', nextUnlock: { progress: 0.4 } },
+      playerTitles: { '0xauthor': 'Scene Stealer' },
+      boards: { playbill: [{ name: 'Author' }], ghostOfNightId: 'hardest' },
+      ghostOfNight: ghost
+    })
+    expect(effects.showReward).toHaveBeenCalledWith('0xPlayer', 'Understudy')
+    expect(effects.showReward).toHaveBeenCalledWith('0xAuthor', 'Scene Stealer')
+    expect(effects.showGhostOfNight).toHaveBeenCalledWith(ghost)
+  })
+
+  it('queues simultaneous stamp and title notices once from an idempotent reveal', () => {
+    const { runtime } = createFlowHarness()
+    runtime.receive({
+      type: 'ready',
+      data: {
+        instanceId: 'server',
+        serverTime: FIXED_NOW,
+        theme: 'everyday',
+        themeLabel: 'Everyday Escapades'
+      }
+    })
+    const charade = makeDecodeCharade()
+    runtime.receive({ type: 'charade', data: { ...charade, authorTitle: '' } })
+    const reveal = {
+      charadeId: charade.id,
+      correct: true,
+      phrase: 'Answer one',
+      stats: { total: 10, correct: 4 },
+      yourScore: 10,
+      daily: { day: '2026-08-23', decoded: 3, authored: 1, stamped: true },
+      stampAwarded: true,
+      title: 'Scene Stealer',
+      nextUnlock: {
+        nextTitle: 'Ghostlight Legend',
+        requirement: '3 daily stamps and 25 correct decodes',
+        progress: 0.4
+      },
+      titleUnlocked: true
+    } as const
+
+    runtime.receive({ type: 'reveal', data: reveal })
+    runtime.receive({ type: 'reveal', data: reveal })
+
+    expect(runtime.getState().progress).toMatchObject({ title: 'Scene Stealer', daily: { stamped: true } })
+    expect(runtime.getState().notices).toEqual([
+      { id: `${charade.id}:stamp`, kind: 'stamp' },
+      { id: `${charade.id}:title:Scene Stealer`, kind: 'title', title: 'Scene Stealer' }
+    ])
+  })
+
   it('closes waking to ready to decode to reveal to author to posted', () => {
     const { runtime, sent, effects } = createFlowHarness()
     expect(runtime.getState().screen).toBe('waking')
@@ -190,7 +296,7 @@ describe('flow lifecycle', () => {
     }
     runtime.receive({ type: 'reveal', data: reveal })
     expect(runtime.getState()).toMatchObject({ screen: 'reveal', reveal })
-    expect(effects.resolveReveal).toHaveBeenCalledWith(reveal, charade)
+    expect(effects.resolveReveal).toHaveBeenCalledWith(expect.objectContaining(reveal), charade)
 
     expect(runtime.beginAuthoring()).toBe(true)
     const draft = runtime.getState().author!

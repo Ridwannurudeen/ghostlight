@@ -30,6 +30,8 @@ export type RevealViewState = {
   verdictText: string
   stats: RevealStats | null
   titleProgress: number
+  unlockedTitle: string
+  stampAwarded: boolean
   complete: boolean
 }
 
@@ -45,6 +47,8 @@ const EMPTY_REVEAL_VIEW: RevealViewState = {
   verdictText: '',
   stats: null,
   titleProgress: 0,
+  unlockedTitle: '',
+  stampAwarded: false,
   complete: false
 }
 
@@ -62,6 +66,8 @@ export function getRevealViewState() {
 export function createSceneRevealController(audio: RevealAudioPort, clock?: RevealClock) {
   let floatingEntity: Entity | null = null
   let floatingSecondsRemaining = 0
+  let titleProgressTarget = 0
+  let titleProgressElapsed = TITLE_PROGRESS_SECONDS
 
   function ensureFloatingEntity() {
     if (floatingEntity !== null) return floatingEntity
@@ -82,10 +88,11 @@ export function createSceneRevealController(audio: RevealAudioPort, clock?: Reve
       }
     }
 
-    if (revealView.titleProgress > 0 && revealView.titleProgress < 1) {
+    if (titleProgressElapsed < TITLE_PROGRESS_SECONDS) {
+      titleProgressElapsed = Math.min(TITLE_PROGRESS_SECONDS, titleProgressElapsed + deltaSeconds)
       revealView = {
         ...revealView,
-        titleProgress: Math.min(1, revealView.titleProgress + deltaSeconds / TITLE_PROGRESS_SECONDS)
+        titleProgress: titleProgressTarget * (titleProgressElapsed / TITLE_PROGRESS_SECONDS)
       }
     }
   }
@@ -133,13 +140,18 @@ export function createSceneRevealController(audio: RevealAudioPort, clock?: Reve
     showStats: (stats) => {
       revealView = { ...revealView, stats }
     },
-    animateTitleProgress: () => {
-      revealView = { ...revealView, titleProgress: 0.01 }
+    animateTitleProgress: (progress, unlockedTitle) => {
+      titleProgressTarget = progress
+      titleProgressElapsed = 0
+      revealView = { ...revealView, titleProgress: 0, unlockedTitle }
+      if (unlockedTitle) audio.play('unlock')
+      if (revealView.stampAwarded) audio.play('stamp')
     },
     resetRevealVisuals: () => {
       hideFloatingVerdict()
       resumePerformer()
-      revealView = { ...revealView, wrongAnswersFaded: false, titleProgress: Math.max(1, revealView.titleProgress) }
+      titleProgressElapsed = TITLE_PROGRESS_SECONDS
+      revealView = { ...revealView, wrongAnswersFaded: false, titleProgress: titleProgressTarget }
     },
     restoreAudio: audio.restore,
     complete: () => {
@@ -151,6 +163,8 @@ export function createSceneRevealController(audio: RevealAudioPort, clock?: Reve
 
   return {
     begin(charade: DecodeCharade, answerIndex: number) {
+      titleProgressTarget = 0
+      titleProgressElapsed = TITLE_PROGRESS_SECONDS
       revealView = {
         ...EMPTY_REVEAL_VIEW,
         active: true,
@@ -164,13 +178,17 @@ export function createSceneRevealController(audio: RevealAudioPort, clock?: Reve
         ...revealView,
         answers: charade.answers,
         phrase: reveal.phrase,
-        correct: reveal.correct
+        correct: reveal.correct,
+        stampAwarded: reveal.stampAwarded
       }
       return controller.resolve({
         correct: reveal.correct,
         authorName: charade.authorName,
         phrase: reveal.phrase,
-        stats: reveal.stats
+        stats: reveal.stats,
+        titleProgress: reveal.nextUnlock.progress,
+        unlockedTitle: reveal.titleUnlocked ? reveal.title : '',
+        stampAwarded: reveal.stampAwarded
       })
     },
     skipToEnd: controller.skipToEnd,

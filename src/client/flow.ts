@@ -1,10 +1,18 @@
 import { engine } from '@dcl/sdk/ecs'
 import { getPlayer } from '@dcl/sdk/src/players'
 import { DECK, type Emote, type Phrase } from '../shared/deck'
-import { AUDIENCE_SEATS, HEARTBEAT_SECONDS, PROTOCOL_VERSION } from '../shared/config'
+import {
+  AUDIENCE_SEATS,
+  HEARTBEAT_SECONDS,
+  PROTOCOL_VERSION,
+  THEMES,
+  TITLES,
+  type PlayerTitle,
+  type ThemeId
+} from '../shared/config'
 import { room } from '../shared/messages'
 import { dealPhrase, offerEmotes } from '../shared/pick'
-import type { Look } from '../shared/types'
+import type { DailyProgress, Look, NextUnlock, PlaybillPerformer } from '../shared/types'
 
 export type FlowScreen = 'waking' | 'foyer' | 'since' | 'decode' | 'reveal' | 'author' | 'posted' | 'boards' | 'invite'
 
@@ -20,9 +28,16 @@ export type DecodeCharade = {
   answers: [string, string, string]
   createdAt: number
   isHouse: boolean
+  authorTitle: PlayerTitle
 }
 
-export type RevealResult = {
+export type ProgressView = {
+  daily: DailyProgress
+  title: PlayerTitle
+  nextUnlock: NextUnlock
+}
+
+export type RevealResult = ProgressView & {
   charadeId: string
   correct: boolean
   phrase: string
@@ -31,9 +46,11 @@ export type RevealResult = {
     correct: number
   }
   yourScore: number
+  stampAwarded: boolean
+  titleUnlocked: boolean
 }
 
-export type SinceSummary = {
+export type SinceSummary = ProgressView & {
   triedYou: number
   gotYou: number
   rank: number
@@ -52,7 +69,23 @@ export type BoardsView = {
     total: number
     correct: number
   }>
+  playbill: PlaybillPerformer[]
+  ghostOfNightId: string
 }
+
+export type GhostOfNightView = {
+  charadeId: string
+  address: string
+  name: string
+  title: PlayerTitle
+  look: Look
+  total: number
+  correct: number
+}
+
+export type ProgressNotice =
+  | { id: string; kind: 'stamp' }
+  | { id: string; kind: 'title'; title: Exclude<PlayerTitle, ''> }
 
 export type AuthorDraft = {
   phrase: Phrase
@@ -77,12 +110,21 @@ export type ClientFlowState = {
   transportReady: boolean
   instanceId: string
   lastHeartbeatAt: number
+  serverClockOffset: number
+  theme: ThemeId
+  themeLabel: string
+  playerAddress: string
+  playerName: string
+  progress: ProgressView
+  playerTitles: Record<string, PlayerTitle>
+  notices: ProgressNotice[]
   charade: DecodeCharade | null
   reveal: RevealResult | null
   author: AuthorDraft | null
   dealtPhraseIds: string[]
   postedCharadeId: string
   boards: BoardsView
+  ghostOfNight: GhostOfNightView | null
   since: SinceSummary | null
   sinceShown: boolean
   audience: Look[]
@@ -107,7 +149,16 @@ export type ClientFlowState = {
 
 export type FlowAction =
   | { type: 'transport'; ready: boolean }
-  | { type: 'ready'; instanceId: string; serverTime: number; now: number }
+  | {
+      type: 'ready'
+      instanceId: string
+      serverTime: number
+      now: number
+      theme: ThemeId
+      themeLabel: string
+      playerAddress: string
+      playerName: string
+    }
   | { type: 'pong'; now: number }
   | { type: 'heartbeatTimeout' }
   | { type: 'charade'; charade: DecodeCharade }
@@ -115,11 +166,14 @@ export type FlowAction =
   | { type: 'author'; draft: AuthorDraft }
   | { type: 'authorSelect'; emote: Emote }
   | { type: 'authorBack' }
-  | { type: 'posted'; charadeId: string }
+  | { type: 'progress'; progress: ProgressView }
+  | { type: 'playerTitle'; address: string; title: PlayerTitle }
+  | { type: 'posted'; result: { charadeId: string } & ProgressView & { stampAwarded: boolean; titleUnlocked: boolean } }
   | { type: 'since'; summary: SinceSummary }
   | { type: 'dismissSince' }
   | { type: 'audience'; looks: Look[] }
   | { type: 'boards'; boards: BoardsView }
+  | { type: 'ghostOfNight'; ghost: GhostOfNightView }
   | { type: 'roundStart'; charadeId: string }
   | { type: 'roundWinner'; address: string; name: string; now: number }
   | { type: 'reaction'; kind: ReactionKind; from: string }
@@ -130,9 +184,11 @@ export type FlowAction =
   | { type: 'requestTimedOut'; requestId: string }
   | { type: 'inviteStatus'; status: ClientFlowState['inviteStatus'] }
   | { type: 'clearToast' }
+  | { type: 'dismissNotice'; id: string }
   | { type: 'error'; code: string }
 
 export function createInitialFlowState(): ClientFlowState {
+  const initialTheme = THEMES[0]
   return {
     screen: 'waking',
     resumeScreen: null,
@@ -140,12 +196,25 @@ export function createInitialFlowState(): ClientFlowState {
     transportReady: false,
     instanceId: '',
     lastHeartbeatAt: 0,
+    serverClockOffset: 0,
+    theme: initialTheme.id,
+    themeLabel: initialTheme.label,
+    playerAddress: '',
+    playerName: '',
+    progress: {
+      daily: { day: '', decoded: 0, authored: 0, stamped: false },
+      title: '',
+      nextUnlock: { nextTitle: 'Understudy', requirement: 'Post your first charade', progress: 0 }
+    },
+    playerTitles: {},
+    notices: [],
     charade: null,
     reveal: null,
     author: null,
     dealtPhraseIds: [],
     postedCharadeId: '',
-    boards: { topDecoders: [], hardestGhosts: [] },
+    boards: { topDecoders: [], hardestGhosts: [], playbill: [], ghostOfNightId: '' },
+    ghostOfNight: null,
     since: null,
     sinceShown: false,
     audience: [],
@@ -157,6 +226,20 @@ export function createInitialFlowState(): ClientFlowState {
     inviteStatus: 'idle',
     errorCode: ''
   }
+}
+
+function appendProgressNotices(
+  notices: ProgressNotice[],
+  id: string,
+  result: { stampAwarded: boolean; titleUnlocked: boolean; title: PlayerTitle }
+) {
+  const incoming: ProgressNotice[] = []
+  if (result.stampAwarded) incoming.push({ id: `${id}:stamp`, kind: 'stamp' })
+  if (result.titleUnlocked && result.title !== '') {
+    incoming.push({ id: `${id}:title:${result.title}`, kind: 'title', title: result.title })
+  }
+  const known = new Set(notices.map((notice) => notice.id))
+  return [...notices, ...incoming.filter((notice) => !known.has(notice.id))]
 }
 
 function mergeAudience(current: Look[], incoming: Look[]) {
@@ -197,6 +280,11 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
         transportReady: true,
         instanceId: action.instanceId,
         lastHeartbeatAt: action.now,
+        serverClockOffset: action.serverTime - action.now,
+        theme: action.theme,
+        themeLabel: action.themeLabel,
+        playerAddress: action.playerAddress,
+        playerName: action.playerName,
         screen,
         resumeScreen: null,
         charade: newInstance ? null : state.charade,
@@ -238,6 +326,12 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
         ...state,
         screen: state.screen === 'author' ? 'author' : 'reveal',
         reveal: action.reveal,
+        progress: {
+          daily: action.reveal.daily,
+          title: action.reveal.title,
+          nextUnlock: action.reveal.nextUnlock
+        },
+        notices: appendProgressNotices(state.notices, action.reveal.charadeId, action.reveal),
         roundCharadeId: state.roundCharadeId === action.reveal.charadeId ? '' : state.roundCharadeId,
         errorCode: '',
         pending: state.pending.filter((request) => request.kind !== 'guess' && request.kind !== 'roundGuess')
@@ -264,11 +358,24 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
     }
     case 'authorBack':
       return { ...state, screen: state.reveal ? 'reveal' : 'foyer' }
+    case 'progress':
+      return { ...state, progress: action.progress }
+    case 'playerTitle':
+      return {
+        ...state,
+        playerTitles: { ...state.playerTitles, [action.address.toLowerCase()]: action.title }
+      }
     case 'posted':
       return {
         ...state,
         screen: 'posted',
-        postedCharadeId: action.charadeId,
+        postedCharadeId: action.result.charadeId,
+        progress: {
+          daily: action.result.daily,
+          title: action.result.title,
+          nextUnlock: action.result.nextUnlock
+        },
+        notices: appendProgressNotices(state.notices, action.result.charadeId, action.result),
         errorCode: '',
         pending: state.pending.filter((request) => request.kind !== 'post')
       }
@@ -276,6 +383,11 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
       return {
         ...state,
         since: action.summary,
+        progress: {
+          daily: action.summary.daily,
+          title: action.summary.title,
+          nextUnlock: action.summary.nextUnlock
+        },
         screen:
           state.ready && !state.sinceShown && (state.screen === 'foyer' || state.screen === 'waking')
             ? 'since'
@@ -286,7 +398,13 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
     case 'audience':
       return { ...state, audience: mergeAudience(state.audience, action.looks) }
     case 'boards':
-      return { ...state, boards: action.boards }
+      return {
+        ...state,
+        boards: action.boards,
+        ghostOfNight: state.ghostOfNight?.charadeId === action.boards.ghostOfNightId ? state.ghostOfNight : null
+      }
+    case 'ghostOfNight':
+      return action.ghost.charadeId === state.boards.ghostOfNightId ? { ...state, ghostOfNight: action.ghost } : state
     case 'roundStart':
       return { ...state, roundCharadeId: action.charadeId, roundWinner: null }
     case 'roundWinner':
@@ -330,6 +448,8 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
       return { ...state, inviteStatus: action.status }
     case 'clearToast':
       return { ...state, toast: null }
+    case 'dismissNotice':
+      return { ...state, notices: state.notices.filter((notice) => notice.id !== action.id) }
     case 'error':
       return {
         ...state,
@@ -349,18 +469,39 @@ export type OutboundMessage =
   | { type: 'roundGuess'; data: { charadeId: string; answerIndex: number; requestId: string } }
   | { type: 'post'; data: { phraseId: string; emotes: string[]; requestId: string } }
 
+type ServerProgress = {
+  daily?: DailyProgress
+  title?: string
+  nextUnlock?: NextUnlock
+}
+
+type ServerReveal = Omit<RevealResult, keyof ProgressView | 'stampAwarded' | 'titleUnlocked'> &
+  ServerProgress & { stampAwarded?: boolean; titleUnlocked?: boolean }
+
+type ServerPosted = { charadeId: string } & ServerProgress & { stampAwarded?: boolean; titleUnlocked?: boolean }
+
 export type ServerMessage =
-  | { type: 'ready'; data: { instanceId: string; serverTime: number } }
+  | {
+      type: 'ready'
+      data: { instanceId: string; serverTime: number; theme?: string; themeLabel?: string }
+    }
   | { type: 'pong'; data: { seq: number } }
+  | { type: 'progress'; data: ProgressView }
+  | { type: 'playerTitle'; data: { address: string; title: string } }
   | {
       type: 'charade'
-      data: Omit<DecodeCharade, 'emotes' | 'answers'> & { emotes: string[]; answers: string[] }
+      data: Omit<DecodeCharade, 'emotes' | 'answers' | 'authorTitle'> & {
+        emotes: string[]
+        answers: string[]
+        authorTitle?: string
+      }
     }
-  | { type: 'reveal'; data: RevealResult }
-  | { type: 'posted'; data: { charadeId: string } }
-  | { type: 'since'; data: SinceSummary }
+  | { type: 'reveal'; data: ServerReveal }
+  | { type: 'posted'; data: ServerPosted }
+  | { type: 'since'; data: Pick<SinceSummary, 'triedYou' | 'gotYou' | 'rank'> & ServerProgress }
   | { type: 'audience'; data: { looks: Look[] } }
   | { type: 'boards'; data: BoardsView }
+  | { type: 'ghostOfNight'; data: GhostOfNightView }
   | { type: 'roundStart'; data: { charadeId: string } }
   | { type: 'roundWinner'; data: { address: string; name: string } }
   | { type: 'react'; data: { kind: string }; from: string }
@@ -370,6 +511,8 @@ export type FlowEffects = {
   showPerformer?: (look: Look, emotes: GhostEmotes) => void
   replayPerformer?: () => void
   showPreview?: (look: Look, emotes: GhostEmotes) => void
+  showReward?: (address: string, title: PlayerTitle) => void
+  showGhostOfNight?: (ghost: GhostOfNightView | null) => void
   beginReveal?: (charade: DecodeCharade, answerIndex: number) => void
   resolveReveal?: (reveal: RevealResult, charade: DecodeCharade) => void
   skipReveal?: () => void
@@ -395,6 +538,15 @@ const REQUEST_RETRY_MILLISECONDS = 5_000
 const CONNECTED_HEARTBEAT_SECONDS = 10
 const HEARTBEAT_TIMEOUT_MILLISECONDS = 20_000
 const TOAST_MILLISECONDS = 4_000
+
+function isPlayerTitle(value: string): value is PlayerTitle {
+  return value === '' || TITLES.some((title) => title === value)
+}
+
+function progressFrom(data: ServerProgress, fallback: ProgressView): ProgressView {
+  if (!data.daily || !data.nextUnlock || typeof data.title !== 'string' || !isPlayerTitle(data.title)) return fallback
+  return { daily: data.daily, title: data.title, nextUnlock: data.nextUnlock }
+}
 
 export function createFlowRuntime(options: FlowRuntimeOptions) {
   let state = createInitialFlowState()
@@ -455,17 +607,37 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     switch (message.type) {
       case 'ready': {
         const instanceChanged = state.instanceId !== message.data.instanceId
+        const theme =
+          THEMES.find((candidate) => candidate.id === message.data.theme) ??
+          THEMES.find((candidate) => candidate.id === state.theme)!
+        const profile = options.getProfile?.()
         if (instanceChanged) roundMismatchRefetchAttempted = false
         dispatch({
           type: 'ready',
           instanceId: message.data.instanceId,
           serverTime: message.data.serverTime,
-          now: now()
+          now: now(),
+          theme: theme.id,
+          themeLabel: message.data.themeLabel || theme.label,
+          playerAddress: profile?.address ?? state.playerAddress,
+          playerName: profile?.name ?? state.playerName
         })
         if (instanceChanged || lastHelloInstance !== message.data.instanceId) sendHello(true)
         requestRoundCharadeIfNeeded()
         break
       }
+      case 'progress': {
+        const progress = progressFrom(message.data, state.progress)
+        dispatch({ type: 'progress', progress })
+        if (state.playerAddress) effects.showReward?.(state.playerAddress, progress.title)
+        break
+      }
+      case 'playerTitle':
+        if (isPlayerTitle(message.data.title)) {
+          dispatch({ type: 'playerTitle', address: message.data.address, title: message.data.title })
+          effects.showReward?.(message.data.address, message.data.title)
+        }
+        break
       case 'pong':
         const wasReady = state.ready
         dispatch({ type: 'pong', now: now() })
@@ -483,7 +655,11 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         const charade: DecodeCharade = {
           ...message.data,
           emotes: [first, second, third],
-          answers: [firstAnswer, secondAnswer, thirdAnswer]
+          answers: [firstAnswer, secondAnswer, thirdAnswer],
+          authorTitle:
+            typeof message.data.authorTitle === 'string' && isPlayerTitle(message.data.authorTitle)
+              ? message.data.authorTitle
+              : ''
         }
         resolveRequests('nextCharade')
         if (state.roundCharadeId && state.roundCharadeId !== charade.id && !roundMismatchRefetchAttempted) {
@@ -495,27 +671,61 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         effects.cancelReveal?.()
         dispatch({ type: 'charade', charade })
         effects.showPerformer?.(charade.look, charade.emotes)
+        effects.showReward?.(charade.authorAddress, charade.authorTitle)
         break
       }
       case 'reveal':
         const revealedCharade = state.charade
+        const revealProgress = progressFrom(message.data, state.progress)
+        const reveal: RevealResult = {
+          ...message.data,
+          ...revealProgress,
+          stampAwarded: message.data.stampAwarded === true,
+          titleUnlocked: message.data.titleUnlocked === true
+        }
         if (state.roundCharadeId === message.data.charadeId) roundMismatchRefetchAttempted = false
         resolveRequests('guess', 'roundGuess')
-        dispatch({ type: 'reveal', reveal: message.data })
-        if (revealedCharade?.id === message.data.charadeId) effects.resolveReveal?.(message.data, revealedCharade)
+        dispatch({ type: 'reveal', reveal })
+        if (state.playerAddress) effects.showReward?.(state.playerAddress, reveal.title)
+        if (revealedCharade?.id === message.data.charadeId) effects.resolveReveal?.(reveal, revealedCharade)
         break
-      case 'posted':
+      case 'posted': {
+        const postedProgress = progressFrom(message.data, state.progress)
+        const result = {
+          charadeId: message.data.charadeId,
+          ...postedProgress,
+          stampAwarded: message.data.stampAwarded === true,
+          titleUnlocked: message.data.titleUnlocked === true
+        }
         resolveRequests('post')
-        dispatch({ type: 'posted', charadeId: message.data.charadeId })
+        dispatch({ type: 'posted', result })
+        if (state.playerAddress) effects.showReward?.(state.playerAddress, result.title)
         break
-      case 'since':
-        dispatch({ type: 'since', summary: message.data })
+      }
+      case 'since': {
+        const sinceProgress = progressFrom(message.data, state.progress)
+        dispatch({ type: 'since', summary: { ...message.data, ...sinceProgress } })
+        if (state.playerAddress) effects.showReward?.(state.playerAddress, sinceProgress.title)
         break
+      }
       case 'audience':
         dispatch({ type: 'audience', looks: message.data.looks })
         break
-      case 'boards':
-        dispatch({ type: 'boards', boards: message.data })
+      case 'boards': {
+        const boards = {
+          ...message.data,
+          playbill: message.data.playbill ?? [],
+          ghostOfNightId: message.data.ghostOfNightId ?? ''
+        }
+        if (state.ghostOfNight?.charadeId !== boards.ghostOfNightId) effects.showGhostOfNight?.(null)
+        dispatch({ type: 'boards', boards })
+        break
+      }
+      case 'ghostOfNight':
+        if (message.data.charadeId === state.boards.ghostOfNightId && isPlayerTitle(message.data.title)) {
+          dispatch({ type: 'ghostOfNight', ghost: message.data })
+          effects.showGhostOfNight?.(message.data)
+        }
         break
       case 'roundStart': {
         if (state.roundCharadeId !== message.data.charadeId) roundMismatchRefetchAttempted = false
@@ -753,6 +963,9 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     setInviteStatus(status: ClientFlowState['inviteStatus']) {
       dispatch({ type: 'inviteStatus', status })
     },
+    dismissNotice(id: string) {
+      dispatch({ type: 'dismissNotice', id })
+    },
     reportError(code: string, error?: unknown) {
       if (error !== undefined) console.error(`Ghost Charades ${code}`, error)
       requests.clear()
@@ -814,12 +1027,22 @@ export function startClientFlow() {
   room.onReady((ready) => clientFlow.dispatch({ type: 'transport', ready }))
   room.onMessage('ready', (data) => clientFlow.receive({ type: 'ready', data }))
   room.onMessage('pong', (data) => clientFlow.receive({ type: 'pong', data }))
+  room.onMessage('progress', (data) => clientFlow.receive({ type: 'progress', data: data as unknown as ProgressView }))
+  room.onMessage('playerTitle', (data) => clientFlow.receive({ type: 'playerTitle', data }))
   room.onMessage('charade', (data) => clientFlow.receive({ type: 'charade', data }))
-  room.onMessage('reveal', (data) => clientFlow.receive({ type: 'reveal', data }))
-  room.onMessage('posted', (data) => clientFlow.receive({ type: 'posted', data }))
-  room.onMessage('since', (data) => clientFlow.receive({ type: 'since', data }))
+  room.onMessage('reveal', (data) => clientFlow.receive({ type: 'reveal', data: data as unknown as ServerReveal }))
+  room.onMessage('posted', (data) => clientFlow.receive({ type: 'posted', data: data as unknown as ServerPosted }))
+  room.onMessage('since', (data) =>
+    clientFlow.receive({
+      type: 'since',
+      data: data as unknown as Pick<SinceSummary, 'triedYou' | 'gotYou' | 'rank'> & ServerProgress
+    })
+  )
   room.onMessage('audience', (data) => clientFlow.receive({ type: 'audience', data }))
-  room.onMessage('boards', (data) => clientFlow.receive({ type: 'boards', data }))
+  room.onMessage('boards', (data) => clientFlow.receive({ type: 'boards', data: data as unknown as BoardsView }))
+  room.onMessage('ghostOfNight', (data) =>
+    clientFlow.receive({ type: 'ghostOfNight', data: data as unknown as GhostOfNightView })
+  )
   room.onMessage('roundStart', (data) => clientFlow.receive({ type: 'roundStart', data }))
   room.onMessage('roundWinner', (data) => clientFlow.receive({ type: 'roundWinner', data }))
   room.onMessage('react', (data, context) => clientFlow.receive({ type: 'react', data, from: context?.from ?? '' }))

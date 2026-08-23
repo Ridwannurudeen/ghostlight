@@ -46,7 +46,10 @@ const CORRECT_OUTCOME: RevealOutcome = {
   correct: true,
   authorName: 'Maya',
   phrase: 'Flying a kite',
-  stats: { correct: 7, total: 11 }
+  stats: { correct: 7, total: 11 },
+  titleProgress: 0.4,
+  unlockedTitle: '',
+  stampAwarded: false
 }
 
 function createHarness() {

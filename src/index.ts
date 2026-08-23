@@ -1,19 +1,25 @@
 import { engine } from '@dcl/sdk/ecs'
 import { isServer } from '@dcl/sdk/network'
+import { onLeaveScene } from '@dcl/sdk/src/players'
+import { THEMES } from './shared/config'
 import { clientFlow, startClientFlow } from './client/flow'
 import {
   clearPerformer,
+  clearGhostOfNight,
   clearPreview,
   react as reactAudience,
   replayPerformer,
   setAudience,
   showPerformer,
+  showGhostOfNight,
   showPreview
 } from './client/ghosts'
 import { createSceneOpeningController } from './client/opening-scene'
 import { createSceneRevealController } from './client/reveal-scene'
 import { startClientSetup } from './client/setup'
 import { duckForReveal, play, restoreAfterReveal } from './client/sound'
+import { removeRewardProp, setRewardProp } from './client/rewards'
+import { lights, marquee } from './client/theater'
 import { uiComponent } from './client/ui'
 import { startServer } from './server/server'
 
@@ -41,6 +47,16 @@ export function main() {
       }
     }
   )
+  let pedestalGhost: Parameters<typeof showGhostOfNight>[0] | null = null
+
+  function syncPedestalGhost() {
+    const screen = clientFlow.getState().screen
+    if (pedestalGhost && (screen === 'foyer' || screen === 'since' || screen === 'boards' || screen === 'invite')) {
+      showGhostOfNight(pedestalGhost)
+    } else {
+      clearGhostOfNight()
+    }
+  }
 
   clientFlow.setEffects({
     showPerformer: (look, emotes) => {
@@ -52,6 +68,11 @@ export function main() {
     },
     replayPerformer,
     showPreview,
+    showReward: setRewardProp,
+    showGhostOfNight: (ghost) => {
+      pedestalGhost = ghost?.look ?? null
+      syncPedestalGhost()
+    },
     beginReveal: reveal.begin,
     resolveReveal: reveal.resolve,
     skipReveal: reveal.skipToEnd,
@@ -61,9 +82,26 @@ export function main() {
   let audience = clientFlow.getState().audience
   let reactionSequence = 0
   let screen = clientFlow.getState().screen
+  let theme = ''
+  const playedNotices = new Set<string>()
   clientFlow.subscribe((state) => {
-    if (state.ready && state.screen === 'foyer' && !opening.hasPlayed() && opening.start('OPENING NIGHT')) {
+    if (state.theme !== theme) {
+      theme = state.theme
+      const accent = THEMES.find((candidate) => candidate.id === theme)?.accent
+      if (accent) lights.setThemeAccent(accent)
+      marquee.setText(`TONIGHT'S SHOW: ${state.themeLabel}`)
+    }
+
+    if (state.ready && state.screen === 'foyer' && !opening.hasPlayed() && opening.start(state.themeLabel)) {
       clientFlow.requestNextCharade()
+    }
+
+    if (state.screen !== 'reveal') {
+      for (const notice of state.notices) {
+        if (playedNotices.has(notice.id)) continue
+        playedNotices.add(notice.id)
+        play(notice.kind === 'stamp' ? 'stamp' : 'unlock')
+      }
     }
 
     if (state.audience !== audience) {
@@ -81,8 +119,11 @@ export function main() {
       screen = state.screen
       if (screen === 'author') clearPerformer()
       if (screen === 'decode' || screen === 'foyer' || screen === 'posted') clearPreview()
+      syncPedestalGhost()
     }
   })
+
+  onLeaveScene((address) => removeRewardProp(address))
 
   startClientSetup(uiComponent)
   engine.addSystem((deltaSeconds) => opening.tick(deltaSeconds), undefined, 'ghost-charades::opening')

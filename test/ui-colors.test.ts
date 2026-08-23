@@ -38,7 +38,7 @@ vi.mock('../src/client/flow', () => ({
   }
 }))
 
-import { COLORS, uiComponent } from '../src/client/ui'
+import { COLORS, formatPerformedAgo, performerPortraitBackground, uiComponent } from '../src/client/ui'
 
 type ElementNode = {
   type: string | ((props: Record<string, unknown>) => unknown)
@@ -125,6 +125,27 @@ describe('UI colors', () => {
     render(uiComponent())
 
     expect(COLORS.ink.a).toBe(inkAlpha)
+  })
+})
+
+describe('playbill time', () => {
+  it('formats recent performances against the server-aligned clock', () => {
+    const now = Date.UTC(2026, 7, 23, 12)
+    expect(formatPerformedAgo(now - 20_000, now)).toBe('JUST NOW')
+    expect(formatPerformedAgo(now - 3 * 60_000, now)).toBe('3M AGO')
+    expect(formatPerformedAgo(now - 3 * 3_600_000, now)).toBe('3H AGO')
+    expect(formatPerformedAgo(now - 2 * 86_400_000, now)).toBe('2D AGO')
+  })
+
+  it('uses avatarTexture for players and a real local texture for guests', () => {
+    expect(performerPortraitBackground({ address: '0xPlayer', isGuest: false })).toMatchObject({
+      avatarTexture: { userId: '0xPlayer' },
+      textureMode: 'stretch'
+    })
+    expect(performerPortraitBackground({ address: 'guest-session', isGuest: true })).toMatchObject({
+      texture: { src: 'assets/ui/card_selected.png' },
+      textureMode: 'stretch'
+    })
   })
 })
 

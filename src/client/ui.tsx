@@ -1,7 +1,7 @@
 import { Color4 } from '@dcl/sdk/math'
 import ReactEcs, { Button, Label, UiEntity, type UiTransformProps } from '@dcl/sdk/react-ecs'
 import { copyToClipboard } from '~system/RestrictedActions'
-import { INVITE_URL } from '../shared/config'
+import { INVITE_URL, THEMES } from '../shared/config'
 import type { Emote } from '../shared/deck'
 import { clientFlow, type ClientFlowState } from './flow'
 import { getOpeningViewState, skipOpening, type OpeningViewState } from './opening-scene'
@@ -41,8 +41,32 @@ const UI_TEXTURES = {
   card: 'assets/ui/card.png',
   cardSelected: 'assets/ui/card_selected.png',
   marquee: 'assets/ui/marquee.png',
-  ribbon: 'assets/ui/ribbon.png'
+  ribbon: 'assets/ui/ribbon.png',
+  stamp: 'assets/ui/stamp.png'
 } as const
+
+function accentFor(state: ClientFlowState) {
+  const accent = THEMES.find((theme) => theme.id === state.theme)?.accent ?? THEMES[0].accent
+  return Color4.create(accent.r, accent.g, accent.b, 1)
+}
+
+export function formatPerformedAgo(performedAt: number, now: number) {
+  const elapsed = Math.max(0, now - performedAt)
+  if (elapsed < 60_000) return 'JUST NOW'
+  if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)}M AGO`
+  if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)}H AGO`
+  return `${Math.floor(elapsed / 86_400_000)}D AGO`
+}
+
+export function performerPortraitBackground(performer: { address: string; isGuest: boolean }) {
+  return performer.isGuest
+    ? { texture: { src: UI_TEXTURES.cardSelected }, textureMode: 'stretch' as const, color: COLORS.raised }
+    : {
+        avatarTexture: { userId: performer.address },
+        textureMode: 'stretch' as const,
+        color: COLORS.bone
+      }
+}
 
 function actionButton(
   value: string,
@@ -70,14 +94,15 @@ function canDecodeInCurrentRegion() {
 }
 
 function screenShell(sentence: string, body: ReactEcs.JSX.Element, state: ClientFlowState) {
+  const accent = accentFor(state)
   return (
     <UiEntity
-      uiTransform={PANEL}
+      uiTransform={{ ...PANEL, borderColor: accent }}
       uiBackground={{ texture: { src: UI_TEXTURES.panel }, textureMode: 'stretch', color: COLORS.ink }}
     >
       <UiEntity
         uiTransform={{ width: '100%', minHeight: 92, padding: '14px 18px', borderRadius: 5 }}
-        uiBackground={{ texture: { src: UI_TEXTURES.ribbon }, textureMode: 'stretch', color: COLORS.gold }}
+        uiBackground={{ texture: { src: UI_TEXTURES.ribbon }, textureMode: 'stretch', color: accent }}
       >
         <Label value={sentence} fontSize={32} font="serif" color={COLORS.ink} textAlign="middle-left" />
       </UiEntity>
@@ -113,6 +138,19 @@ function foyerScreen(state: ClientFlowState) {
   return screenShell(
     "Tonight's ghosts are ready.",
     <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', justifyContent: 'center' }}>
+      <Label
+        value={`TONIGHT'S SHOW · ${state.themeLabel?.toUpperCase() ?? ''}`}
+        fontSize={20}
+        font="monospace"
+        color={accentFor(state)}
+        uiTransform={{ width: '100%', height: 34 }}
+      />
+      {state.progress?.daily.stamped ? (
+        <UiEntity
+          uiTransform={{ width: 88, height: 88, alignSelf: 'center' }}
+          uiBackground={{ texture: { src: UI_TEXTURES.stamp }, textureMode: 'stretch' }}
+        />
+      ) : null}
       {actionButton(
         canDecode ? 'DECODE A GHOST' : 'WALK TO THE STAGE',
         () => clientFlow.requestNextCharade(),
@@ -271,19 +309,37 @@ function revealScreen(state: ClientFlowState) {
       {presentation.stats && reveal ? (
         <UiEntity
           uiTransform={{
-            width: `${Math.round(presentation.titleProgress * 100)}%`,
-            height: 48,
-            padding: '4px 12px',
+            width: '100%',
+            height: 68,
+            positionType: 'relative',
             overflow: 'hidden'
           }}
-          uiBackground={{ texture: { src: UI_TEXTURES.ribbon }, textureMode: 'stretch', color: COLORS.gold }}
+          uiBackground={{ texture: { src: UI_TEXTURES.card }, textureMode: 'stretch', color: COLORS.surface }}
         >
+          <UiEntity
+            uiTransform={{
+              width: `${Math.round(presentation.titleProgress * 100)}%`,
+              height: '100%',
+              positionType: 'absolute',
+              position: { top: 0, left: 0 }
+            }}
+            uiBackground={{ texture: { src: UI_TEXTURES.ribbon }, textureMode: 'stretch', color: accentFor(state) }}
+          />
           <Label
-            value={`${presentation.stats.correct} OF ${presentation.stats.total} GUESSED IT · DECODER SCORE ${reveal.yourScore}`}
+            value={`${presentation.stats.correct}/${presentation.stats.total} GUESSED IT · ${(state.playerName || 'PLAYER').toUpperCase()}`}
             fontSize={18}
             font="monospace"
-            color={COLORS.ink}
-            textAlign="middle-center"
+            color={COLORS.bone}
+            textAlign="top-center"
+            uiTransform={{ width: '100%', height: 32, positionType: 'absolute', position: { top: 5, left: 0 } }}
+          />
+          <Label
+            value={`${(reveal.title || 'NO TITLE YET').toUpperCase()} · ${Math.round(reveal.nextUnlock.progress * 100)}% · ${reveal.nextUnlock.requirement.toUpperCase()}`}
+            fontSize={15}
+            font="monospace"
+            color={COLORS.bone}
+            textAlign="bottom-center"
+            uiTransform={{ width: '100%', height: 28, positionType: 'absolute', position: { bottom: 5, left: 0 } }}
           />
         </UiEntity>
       ) : null}
@@ -410,12 +466,58 @@ function boardRow(rank: number, name: string, value: string) {
   )
 }
 
+function playbillCard(performer: ClientFlowState['boards']['playbill'][number], now: number, index: number) {
+  return (
+    <UiEntity
+      key={`${performer.address}-${performer.performedAt}-${index}`}
+      uiTransform={{ width: '49%', height: 64, padding: 6, margin: '2px 0', flexDirection: 'row' }}
+      uiBackground={{ texture: { src: UI_TEXTURES.card }, textureMode: 'stretch', color: COLORS.surface }}
+    >
+      <UiEntity
+        uiTransform={{ width: 52, height: 52, margin: '0 8px 0 0', borderRadius: 26, overflow: 'hidden' }}
+        uiBackground={performerPortraitBackground(performer)}
+      />
+      <UiEntity uiTransform={{ flex: 1, height: 52, flexDirection: 'column' }}>
+        <Label
+          value={performer.name.toUpperCase()}
+          fontSize={17}
+          color={COLORS.bone}
+          textAlign="top-left"
+          uiTransform={{ width: '100%', height: 24 }}
+        />
+        <Label
+          value={`${performer.title || 'NEW GHOST'} · ${formatPerformedAgo(performer.performedAt, now)}`}
+          fontSize={13}
+          font="monospace"
+          color={COLORS.muted}
+          textAlign="bottom-left"
+          uiTransform={{ width: '100%', height: 24 }}
+        />
+      </UiEntity>
+    </UiEntity>
+  )
+}
+
 function boardsScreen(state: ClientFlowState) {
-  const decoders = state.boards.topDecoders.slice(0, 4)
-  const hardest = state.boards.hardestGhosts.slice(0, 4)
+  const decoders = state.boards.topDecoders.slice(0, 3)
+  const hardest = state.boards.hardestGhosts.slice(0, 3)
+  const playbill = state.boards.playbill ?? []
+  const alignedNow = Date.now() + state.serverClockOffset
   return screenShell(
     "Today's boards count real players and exclude the house ghost.",
     <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column' }}>
+      <Label value="PLAYBILL · RECENT PERFORMERS" fontSize={18} font="monospace" color={COLORS.muted} />
+      <UiEntity
+        uiTransform={{
+          width: '100%',
+          height: 204,
+          flexDirection: 'row',
+          flexWrap: 'wrap',
+          justifyContent: 'space-between'
+        }}
+      >
+        {playbill.map((performer, index) => playbillCard(performer, alignedNow, index))}
+      </UiEntity>
       <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'row', justifyContent: 'space-between' }}>
         <UiEntity uiTransform={{ width: '49%', flexDirection: 'column' }}>
           <Label
@@ -514,6 +616,43 @@ function openingOverlay(opening: OpeningViewState) {
   )
 }
 
+function noticeOverlay(state: ClientFlowState) {
+  const notice = state.notices?.[0]
+  if (!notice) return null
+  if (state.screen === 'reveal' && !getRevealViewState().stats) return null
+  const title = notice.kind === 'stamp' ? 'DAILY SHOW COMPLETE' : `${notice.title.toUpperCase()} UNLOCKED`
+  const copy =
+    notice.kind === 'stamp'
+      ? 'Three decodes and one performance. Your stamp is saved.'
+      : 'Your verified participation earned a new title and reward prop.'
+  return (
+    <UiEntity
+      uiTransform={{
+        width: 560,
+        maxWidth: '70%',
+        height: 250,
+        positionType: 'absolute',
+        position: { top: 190, left: '32%' },
+        padding: 18,
+        flexDirection: 'column',
+        borderWidth: 2,
+        borderColor: accentFor(state)
+      }}
+      uiBackground={{ texture: { src: UI_TEXTURES.cardSelected }, textureMode: 'stretch', color: COLORS.ink }}
+    >
+      {notice.kind === 'stamp' ? (
+        <UiEntity
+          uiTransform={{ width: 72, height: 72, alignSelf: 'center' }}
+          uiBackground={{ texture: { src: UI_TEXTURES.stamp }, textureMode: 'stretch' }}
+        />
+      ) : null}
+      <Label value={title} fontSize={24} font="monospace" color={COLORS.gold} textAlign="middle-center" />
+      <Label value={copy} fontSize={18} color={COLORS.bone} textAlign="middle-center" />
+      {actionButton('TAKE A BOW', () => clientFlow.dismissNotice(notice.id), false, 'secondary')}
+    </UiEntity>
+  )
+}
+
 function currentScreen(state: ClientFlowState) {
   switch (state.screen) {
     case 'waking':
@@ -546,6 +685,7 @@ export const uiComponent = () => {
       uiBackground={{ color: Color4.create(0.02, 0.014, 0.037, 0.08) }}
     >
       {opening.active ? openingOverlay(opening) : currentScreen(state)}
+      {!opening.active ? noticeOverlay(state) : null}
       {!opening.active && state.toast ? (
         <UiEntity
           uiTransform={{

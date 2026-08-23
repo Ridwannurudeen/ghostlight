@@ -74,9 +74,9 @@ function dataOf<T>(message: SentMessage): T {
 async function createHarness(
   overrides: Partial<
     Pick<ServerProtocolOptions, 'snapshotLook' | 'ready' | 'now' | 'lookAttempts' | 'lookRetryMilliseconds'>
-  > = {}
+  > = {},
+  storage = new FakeStorage()
 ) {
-  const storage = new FakeStorage()
   const repository = createStorageRepository(storage)
   const now = overrides.now ?? (() => FIXED_NOW)
   const state = new GhostCharadesState(repository, now)
@@ -177,15 +177,15 @@ describe('server readiness and welcome', () => {
         triedYou: 3,
         gotYou: 1,
         rank: 1,
-        daily: { day: '2026-08-23', decoded: 0, authored: 0, stamped: false }
+        daily: { day: '2026-08-23', decoded: 0, authored: 0, stamped: false },
+        title: '',
+        nextUnlock: { nextTitle: 'Understudy', requirement: 'Post your first charade', progress: 0 }
       }
     ])
     const audience = messagesOfType(sent, 'audience')
     expect(audience).toHaveLength(6)
     expect(audience.every((message) => dataOf<{ looks: unknown[] }>(message).looks.length === 1)).toBe(true)
-    const audienceLooks = audience.flatMap(
-      (message) => dataOf<{ looks: ReturnType<typeof makeLook>[] }>(message).looks
-    )
+    const audienceLooks = audience.flatMap((message) => dataOf<{ looks: ReturnType<typeof makeLook>[] }>(message).looks)
     expect(audienceLooks).toHaveLength(6)
     expect(audienceLooks.every((look) => look.wearables.length === 20)).toBe(true)
     expect(sent.every((message) => message.to?.[0] === '0xPlayer')).toBe(true)
@@ -263,7 +263,9 @@ describe('server readiness and welcome', () => {
         triedYou: 2,
         gotYou: 1,
         rank: 0,
-        daily: { day: '2026-08-23', decoded: 0, authored: 0, stamped: false }
+        daily: { day: '2026-08-23', decoded: 0, authored: 0, stamped: false },
+        title: '',
+        nextUnlock: { nextTitle: 'Understudy', requirement: 'Post your first charade', progress: 0 }
       }
     ])
     expect(messagesOfType(sent, 'audience')).toHaveLength(1)
@@ -474,6 +476,41 @@ describe('authoring protocol', () => {
     expect(snapshotLook).toHaveBeenCalledTimes(2)
     expect(checkpoint).toHaveBeenCalledOnce()
     expect(sent.every((message) => message.to?.[0] === '0xPlayer')).toBe(true)
+  })
+
+  it('persists a title unlock through a server restart and restores its reward state on reconnect', async () => {
+    const storage = new FakeStorage()
+    const first = await createHarness({}, storage)
+    await first.protocol.handleEnter('player')
+    first.sent.length = 0
+
+    await first.protocol.handlePost(
+      { phraseId: DECK[0].id, emotes: [...DECK[0].suggested], requestId: 'first-performance' },
+      'player'
+    )
+
+    expect(dataOf<Record<string, unknown>>(messagesOfType(first.sent, 'posted')[0])).toMatchObject({
+      title: 'Understudy',
+      titleUnlocked: true,
+      nextUnlock: { nextTitle: 'Scene Stealer', progress: 0.2 }
+    })
+    await first.repository.flushNow()
+
+    const second = await createHarness({}, storage)
+    await second.protocol.handleEnter('player')
+
+    expect(dataOf<Record<string, unknown>>(messagesOfType(second.sent, 'progress')[0])).toMatchObject({
+      title: 'Understudy',
+      nextUnlock: { nextTitle: 'Scene Stealer', progress: 0.2 }
+    })
+    expect(messagesOfType(second.sent, 'playerTitle').map((message) => message.data)).toContainEqual({
+      address: 'player',
+      title: 'Understudy'
+    })
+    expect(second.state.playerStats.get('player')).toMatchObject({
+      authored: [expect.any(String)],
+      title: 'Understudy'
+    })
   })
 
   it('coalesces concurrent copies of the same post into one charade and one authored id', async () => {
@@ -718,10 +755,7 @@ describe('live protocol', () => {
     const phrase = DECK.find((candidate) => candidate.id === live.phraseId)!
     const correctIndex = served.answers.indexOf(phrase.text)
     const wrongIndex = (correctIndex + 1) % served.answers.length
-    await protocol.handleRoundGuess(
-      { charadeId: live.id, answerIndex: wrongIndex, requestId: 'alice-wrong' },
-      'alice'
-    )
+    await protocol.handleRoundGuess({ charadeId: live.id, answerIndex: wrongIndex, requestId: 'alice-wrong' }, 'alice')
     await protocol.handleRoundGuess({ charadeId: live.id, answerIndex: wrongIndex, requestId: 'bob-wrong' }, 'bob')
 
     expect(protocol.rounds.isSettled).toBe(true)
@@ -762,10 +796,7 @@ describe('live protocol', () => {
 
     const phrase = DECK.find((candidate) => candidate.id === live.phraseId)!
     const wrongIndex = (liveMessage.answers.indexOf(phrase.text) + 1) % liveMessage.answers.length
-    await protocol.handleRoundGuess(
-      { charadeId: live.id, answerIndex: wrongIndex, requestId: 'alice-wrong' },
-      'alice'
-    )
+    await protocol.handleRoundGuess({ charadeId: live.id, answerIndex: wrongIndex, requestId: 'alice-wrong' }, 'alice')
     expect(protocol.rounds.isSettled).toBe(false)
     await protocol.handleRoundGuess({ charadeId: live.id, answerIndex: wrongIndex, requestId: 'bob-wrong' }, 'bob')
 

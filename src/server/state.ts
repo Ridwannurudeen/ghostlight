@@ -1,6 +1,16 @@
 import { AUDIENCE_SEATS, HYDRATION_DAYS } from '../shared/config'
+import type { PlayerTitle } from '../shared/config'
 import { HOUSE_CHARADE } from '../shared/deck'
-import type { Boards, Charade, Color, DailyProgress, Look, PlayerStats } from '../shared/types'
+import type {
+  Boards,
+  Charade,
+  Color,
+  DailyProgress,
+  Look,
+  PlaybillPerformer,
+  PlayerProgress,
+  PlayerStats
+} from '../shared/types'
 import { STORAGE_SCHEMA_VERSION } from '../shared/types'
 import {
   PLAYER_STATS_KEY,
@@ -46,6 +56,10 @@ function asStringArray(value: unknown, limit?: number) {
   return limit === undefined ? strings : strings.slice(-limit)
 }
 
+function normalizeAuthored(value: unknown) {
+  return [...new Set(asStringArray(value).filter((id) => id !== HOUSE_CHARADE.id))]
+}
+
 function isDayKey(value: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/u.test(value)) return false
   const timestamp = Date.parse(`${value}T00:00:00.000Z`)
@@ -64,6 +78,48 @@ function migrateDaily(value: unknown, now: number): DailyProgress {
     decoded: asNonNegativeInt(stored.decoded),
     authored: asNonNegativeInt(stored.authored),
     stamped: stored.stamped === true
+  }
+}
+
+function clampProgress(value: number) {
+  return Math.max(0, Math.min(1, value))
+}
+
+export function computeTitle(counts: { correct: number; authored: number; stamps: number }): PlayerTitle {
+  if (counts.correct >= 25 && counts.stamps >= 3) return 'Ghostlight Legend'
+  if (counts.correct >= 10 || counts.authored >= 5) return 'Scene Stealer'
+  if (counts.authored >= 1) return 'Understudy'
+  return ''
+}
+
+export function computeProgress(counts: { correct: number; authored: number; stamps: number }): PlayerProgress {
+  const title = computeTitle(counts)
+  if (title === 'Ghostlight Legend') {
+    return { title, nextUnlock: { nextTitle: '', requirement: 'All titles unlocked', progress: 1 } }
+  }
+  if (title === 'Scene Stealer') {
+    return {
+      title,
+      nextUnlock: {
+        nextTitle: 'Ghostlight Legend',
+        requirement: '3 daily stamps and 25 correct decodes',
+        progress: clampProgress(Math.min(counts.stamps / 3, counts.correct / 25))
+      }
+    }
+  }
+  if (title === 'Understudy') {
+    return {
+      title,
+      nextUnlock: {
+        nextTitle: 'Scene Stealer',
+        requirement: '10 correct decodes or 5 posts',
+        progress: clampProgress(Math.max(counts.correct / 10, counts.authored / 5))
+      }
+    }
+  }
+  return {
+    title,
+    nextUnlock: { nextTitle: 'Understudy', requirement: 'Post your first charade', progress: 0 }
   }
 }
 
@@ -153,7 +209,8 @@ export function migratePlayerStats(value: unknown, name: string, now: number): P
       lastSeenAt: now,
       pending: { triedYou: 0, gotYou: 0 },
       daily: emptyDaily(dayKey(now)),
-      stampedDays: []
+      stampedDays: [],
+      title: ''
     }
   }
 
@@ -162,20 +219,23 @@ export function migratePlayerStats(value: unknown, name: string, now: number): P
   const daily = migrateDaily(stored.daily, now)
   const stampedDays = [...new Set(asStringArray(stored.stampedDays).filter(isDayKey))]
   if (daily.stamped && !stampedDays.includes(daily.day)) stampedDays.push(daily.day)
+  const authored = normalizeAuthored(stored.authored)
+  const correct = Math.min(asNonNegativeInt(stored.correct), decoded)
   return {
     v: STORAGE_SCHEMA_VERSION,
     name: typeof stored.name === 'string' && stored.name ? stored.name : name,
     decoded,
-    correct: Math.min(asNonNegativeInt(stored.correct), decoded),
+    correct,
     seen: asStringArray(stored.seen, 200),
-    authored: asStringArray(stored.authored),
+    authored,
     lastSeenAt: asNonNegativeInt(stored.lastSeenAt, now),
     pending: {
       triedYou: asNonNegativeInt(pending?.triedYou),
       gotYou: asNonNegativeInt(pending?.gotYou)
     },
     daily,
-    stampedDays: stampedDays.slice(-MAX_STAMPED_DAYS)
+    stampedDays: stampedDays.slice(-MAX_STAMPED_DAYS),
+    title: computeTitle({ correct, authored: authored.length, stamps: stampedDays.length })
   }
 }
 
@@ -312,6 +372,33 @@ export class GhostCharadesState {
       .sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id))
   }
 
+  async getRecentPerformers(limit = 6): Promise<PlaybillPerformer[]> {
+    const charades = this.getPool().slice(-limit).reverse()
+    return Promise.all(
+      charades.map(async (charade) => {
+        const stats = await this.getOrCreateStats(charade.author.address, charade.author.name, !charade.author.isGuest)
+        const progress = this.getPlayerProgress(stats)
+        return {
+          address: charade.author.address,
+          name: charade.author.name,
+          isGuest: charade.author.isGuest,
+          title: progress.title,
+          performedAt: charade.createdAt
+        }
+      })
+    )
+  }
+
+  async getGhostOfNight() {
+    this.recomputeBoards(false)
+    const row = this.boards.hardest[0]
+    if (!row) return null
+    const charade = this.charades.get(row.charadeId)
+    if (!charade || charade.isHouse) return null
+    const stats = await this.getOrCreateStats(charade.author.address, charade.author.name, !charade.author.isGuest)
+    return { charade, title: this.getPlayerProgress(stats).title }
+  }
+
   upsertCharade(charade: Charade) {
     this.charades.set(charade.id, charade)
     if (charade.isHouse) return
@@ -437,9 +524,21 @@ export class GhostCharadesState {
     const stats = this.playerStats.get(key)
     if (!stats) return
     stats.seen = [...new Set(stats.seen)].slice(-200)
+    stats.authored = normalizeAuthored(stats.authored)
     stats.stampedDays = [...new Set(stats.stampedDays)].slice(-MAX_STAMPED_DAYS)
+    this.getPlayerProgress(stats)
     stats.lastSeenAt = this.now()
     if (persist) this.storage.markPlayerDirty(key, PLAYER_STATS_KEY, stats)
+  }
+
+  getPlayerProgress(stats: PlayerStats) {
+    const progress = computeProgress({
+      correct: stats.correct,
+      authored: stats.authored.length,
+      stamps: stats.stampedDays.length
+    })
+    stats.title = progress.title
+    return progress
   }
 
   getDaily(stats: PlayerStats) {

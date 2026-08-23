@@ -39,6 +39,20 @@ const daily = Schemas.Map({
   stamped: Schemas.Boolean
 })
 
+const nextUnlock = Schemas.Map({
+  nextTitle: Schemas.String,
+  requirement: Schemas.String,
+  progress: Schemas.Number
+})
+
+const performer = Schemas.Map({
+  address: Schemas.String,
+  name: Schemas.String,
+  isGuest: Schemas.Boolean,
+  title: Schemas.String,
+  performedAt: Schemas.Int64
+})
+
 export const Messages = {
   hello: Schemas.Map({
     displayName: Schemas.String,
@@ -53,7 +67,15 @@ export const Messages = {
   }),
   ping: Schemas.Map({ seq: Schemas.Int }),
   pong: Schemas.Map({ seq: Schemas.Int }),
-  progress: Schemas.Map({ daily }),
+  progress: Schemas.Map({
+    daily,
+    title: Schemas.String,
+    nextUnlock
+  }),
+  playerTitle: Schemas.Map({
+    address: Schemas.String,
+    title: Schemas.String
+  }),
   nextCharade: Schemas.Map({ exclude: Schemas.Array(Schemas.String) }),
   charade: Schemas.Map({
     id: Schemas.String,
@@ -63,7 +85,8 @@ export const Messages = {
     emotes: Schemas.Array(Schemas.String),
     answers: Schemas.Array(Schemas.String),
     createdAt: Schemas.Int64,
-    isHouse: Schemas.Boolean
+    isHouse: Schemas.Boolean,
+    authorTitle: Schemas.String
   }),
   guess: Schemas.Map({
     charadeId: Schemas.String,
@@ -80,7 +103,10 @@ export const Messages = {
     }),
     yourScore: Schemas.Int,
     daily,
-    stampAwarded: Schemas.Boolean
+    stampAwarded: Schemas.Boolean,
+    title: Schemas.String,
+    nextUnlock,
+    titleUnlocked: Schemas.Boolean
   }),
   post: Schemas.Map({
     phraseId: Schemas.String,
@@ -90,18 +116,34 @@ export const Messages = {
   posted: Schemas.Map({
     charadeId: Schemas.String,
     daily,
-    stampAwarded: Schemas.Boolean
+    stampAwarded: Schemas.Boolean,
+    title: Schemas.String,
+    nextUnlock,
+    titleUnlocked: Schemas.Boolean
   }),
   since: Schemas.Map({
     triedYou: Schemas.Int,
     gotYou: Schemas.Int,
     rank: Schemas.Int,
-    daily
+    daily,
+    title: Schemas.String,
+    nextUnlock
   }),
   audience: Schemas.Map({ looks: Schemas.Array(look) }),
   boards: Schemas.Map({
     topDecoders: Schemas.Array(decoder),
-    hardestGhosts: Schemas.Array(hardestGhost)
+    hardestGhosts: Schemas.Array(hardestGhost),
+    playbill: Schemas.Array(performer),
+    ghostOfNightId: Schemas.String
+  }),
+  ghostOfNight: Schemas.Map({
+    charadeId: Schemas.String,
+    address: Schemas.String,
+    name: Schemas.String,
+    title: Schemas.String,
+    look,
+    total: Schemas.Int,
+    correct: Schemas.Int
   }),
   roundStart: Schemas.Map({ charadeId: Schemas.String }),
   roundGuess: Schemas.Map({

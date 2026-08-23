@@ -7,7 +7,11 @@ const harness = vi.hoisted(() => {
     charade: null,
     pending: [],
     audience: [],
-    reactionEvent: null
+    reactionEvent: null,
+    themeLabel: 'Kitchen Capers',
+    theme: 'food',
+    ghostOfNight: null,
+    notices: []
   }
   return {
     state,
@@ -22,6 +26,7 @@ const harness = vi.hoisted(() => {
 
 vi.mock('@dcl/sdk/ecs', () => ({ engine: { addSystem: vi.fn() } }))
 vi.mock('@dcl/sdk/network', () => ({ isServer: vi.fn(() => false) }))
+vi.mock('@dcl/sdk/src/players', () => ({ onLeaveScene: vi.fn() }))
 
 const flow = vi.hoisted(() => ({
   requestNextCharade: vi.fn(),
@@ -44,11 +49,13 @@ vi.mock('../src/client/flow', () => ({
 
 const ghosts = vi.hoisted(() => ({
   clearPerformer: vi.fn(),
+  clearGhostOfNight: vi.fn(),
   clearPreview: vi.fn(),
   react: vi.fn(),
   replayPerformer: vi.fn(),
   setAudience: vi.fn(),
   showPerformer: vi.fn(),
+  showGhostOfNight: vi.fn(),
   showPreview: vi.fn()
 }))
 
@@ -83,11 +90,13 @@ vi.mock('../src/client/opening-scene', () => ({
 
 const setup = vi.hoisted(() => ({ startClientSetup: vi.fn() }))
 vi.mock('../src/client/setup', () => setup)
-vi.mock('../src/client/sound', () => ({
-  duckForReveal: vi.fn(),
-  play: vi.fn(),
-  restoreAfterReveal: vi.fn()
+const sound = vi.hoisted(() => ({ duckForReveal: vi.fn(), play: vi.fn(), restoreAfterReveal: vi.fn() }))
+vi.mock('../src/client/rewards', () => ({ removeRewardProp: vi.fn(), setRewardProp: vi.fn() }))
+vi.mock('../src/client/theater', () => ({
+  lights: { setThemeAccent: vi.fn() },
+  marquee: { setText: vi.fn() }
 }))
+vi.mock('../src/client/sound', () => sound)
 vi.mock('../src/client/ui', () => ({ uiComponent: vi.fn() }))
 vi.mock('../src/server/server', () => ({ startServer: vi.fn() }))
 
@@ -117,7 +126,13 @@ describe('client presentation integration', () => {
 
     Object.assign(harness.state, { ready: true, screen: 'foyer' })
     harness.listener!(harness.state)
-    expect(opening.start).toHaveBeenCalledWith('OPENING NIGHT')
+    expect(opening.start).toHaveBeenCalledWith('Kitchen Capers')
     expect(flow.requestNextCharade).toHaveBeenCalledTimes(1)
+
+    Object.assign(harness.state, { screen: 'posted', notices: [{ id: 'daily-1', kind: 'stamp' }] })
+    harness.listener!(harness.state)
+    harness.listener!(harness.state)
+    expect(sound.play).toHaveBeenCalledTimes(1)
+    expect(sound.play).toHaveBeenCalledWith('stamp')
   })
 })

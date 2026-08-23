@@ -3,7 +3,7 @@ export const REVEAL_DURATION_SECONDS = 8
 const REVEAL_RESET_SECONDS = 7.5
 
 export type RevealLightMood = 'house' | 'tension' | 'hit' | 'miss'
-export type RevealSoundName = 'tick' | 'drumroll' | 'sting' | 'hit' | 'miss' | 'applause' | 'gasp'
+export type RevealSoundName = 'tick' | 'drumroll' | 'sting' | 'hit' | 'miss' | 'applause' | 'gasp' | 'unlock' | 'stamp'
 export type RevealCamera = 'push-in' | 'stage'
 export type RevealAudienceReaction = 'clap' | 'shrug'
 export type RevealStatus = 'idle' | 'running' | 'complete'
@@ -18,6 +18,9 @@ export type RevealOutcome = {
   authorName: string
   phrase: string
   stats: RevealStats
+  titleProgress: number
+  unlockedTitle: string
+  stampAwarded: boolean
 }
 
 export type RevealEffects = {
@@ -35,7 +38,7 @@ export type RevealEffects = {
   reactAudience: (reaction: RevealAudienceReaction) => void
   playPerformerEmote: (emote: 'wave') => void
   showStats: (stats: RevealStats) => void
-  animateTitleProgress: () => void
+  animateTitleProgress: (progress: number, unlockedTitle: string) => void
   resetRevealVisuals: () => void
   restoreAudio: () => void
   complete: () => void
@@ -116,7 +119,7 @@ export const REVEAL_TIMELINE: readonly RevealTimelineEntry[] = [
     run(effects, outcome) {
       if (!outcome) return
       effects.showStats(outcome.stats)
-      effects.animateTitleProgress()
+      effects.animateTitleProgress(outcome.titleProgress, outcome.unlockedTitle)
     }
   },
   {

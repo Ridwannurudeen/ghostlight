@@ -2,7 +2,12 @@ import { AvatarShape, Transform, engine, type Entity } from '@dcl/sdk/ecs'
 import { Quaternion, type Quaternion as QuaternionType, type Vector3 as Vector3Type } from '@dcl/sdk/math'
 import { AUDIENCE_SEATS, EMOTE_STEP_SECONDS, MAX_GHOSTS } from '../shared/config'
 import type { Look } from '../shared/types'
-import { AUDIENCE_POSITIONS, STAGE_PERFORMER_POSITION, STAGE_PREVIEW_POSITION } from './theater'
+import {
+  AUDIENCE_POSITIONS,
+  GHOST_OF_NIGHT_POSITION,
+  STAGE_PERFORMER_POSITION,
+  STAGE_PREVIEW_POSITION
+} from './theater'
 
 export type GhostEmotes = readonly [string, string, string]
 export type AudienceReaction = 'clap' | 'shrug' | 'laugh' | 'confused' | 'genius'
@@ -25,6 +30,7 @@ type QueuedAudienceGhost = {
 
 const AUDIENCE_START_INDEX = 1
 const PREVIEW_INDEX = AUDIENCE_START_INDEX + AUDIENCE_SEATS
+const GHOST_OF_NIGHT_INDEX = PREVIEW_INDEX - 1
 const REQUIRED_GHOST_SLOTS = PREVIEW_INDEX + 1
 const AUDIENCE_SPAWN_INTERVAL_SECONDS = 1 / 3
 
@@ -35,6 +41,8 @@ let initialized = false
 let slots: GhostSlot[] = []
 let audienceQueue: QueuedAudienceGhost[] = []
 let audienceSpawnClock = 0
+let wantedAudience: Look[] = []
+let ghostOfNightActive = false
 
 export function initializeGhosts() {
   if (initialized) return
@@ -89,11 +97,21 @@ export function clearPerformer() {
 
 export function setAudience(looks: readonly Look[]) {
   initializeGhosts()
-  const wanted = looks.slice(0, AUDIENCE_SEATS)
+  wantedAudience = looks.slice(0, AUDIENCE_SEATS)
+  syncAudience()
+}
+
+function syncAudience() {
+  const wanted = wantedAudience.slice(0, ghostOfNightActive ? AUDIENCE_SEATS - 1 : AUDIENCE_SEATS)
   const wantedAddresses = new Set(wanted.map((look) => canonicalAddress(look.address)))
 
-  audienceQueue = audienceQueue.filter((queued) => wantedAddresses.has(canonicalAddress(queued.look.address)))
+  audienceQueue = audienceQueue.filter(
+    (queued) =>
+      wantedAddresses.has(canonicalAddress(queued.look.address)) &&
+      (!ghostOfNightActive || queued.slotIndex !== GHOST_OF_NIGHT_INDEX)
+  )
   for (let index = AUDIENCE_START_INDEX; index < PREVIEW_INDEX; index += 1) {
+    if (ghostOfNightActive && index === GHOST_OF_NIGHT_INDEX) continue
     const slot = slots[index]
     if (slot.active && !wantedAddresses.has(slot.address)) hideGhost(slot)
   }
@@ -101,7 +119,9 @@ export function setAudience(looks: readonly Look[]) {
   const occupiedAddresses = new Set(
     slots
       .slice(AUDIENCE_START_INDEX, PREVIEW_INDEX)
-      .filter((slot) => slot.active)
+      .filter(
+        (slot, index) => slot.active && (!ghostOfNightActive || AUDIENCE_START_INDEX + index !== GHOST_OF_NIGHT_INDEX)
+      )
       .map((slot) => slot.address)
   )
   for (const queued of audienceQueue) occupiedAddresses.add(canonicalAddress(queued.look.address))
@@ -110,7 +130,10 @@ export function setAudience(looks: readonly Look[]) {
   const availableSlots = slots
     .slice(AUDIENCE_START_INDEX, PREVIEW_INDEX)
     .map((slot, index) => ({ slot, slotIndex: AUDIENCE_START_INDEX + index }))
-    .filter(({ slot, slotIndex }) => !slot.active && !queuedSlots.has(slotIndex))
+    .filter(
+      ({ slot, slotIndex }) =>
+        !slot.active && !queuedSlots.has(slotIndex) && (!ghostOfNightActive || slotIndex !== GHOST_OF_NIGHT_INDEX)
+    )
     .map(({ slotIndex }) => slotIndex)
 
   const queueWasEmpty = audienceQueue.length === 0
@@ -123,6 +146,30 @@ export function setAudience(looks: readonly Look[]) {
     occupiedAddresses.add(address)
   }
   if (queueWasEmpty && audienceQueue.length > 0) audienceSpawnClock = 0
+}
+
+export function showGhostOfNight(look: Look) {
+  initializeGhosts()
+  ghostOfNightActive = true
+  audienceQueue = audienceQueue.filter((queued) => queued.slotIndex !== GHOST_OF_NIGHT_INDEX)
+  const slot = slots[GHOST_OF_NIGHT_INDEX]
+  hideGhost(slot)
+  Transform.createOrReplace(slot.entity, { position: GHOST_OF_NIGHT_POSITION, rotation: FACE_STAGE })
+  showGhost(slot, look, null)
+  syncAudience()
+}
+
+export function clearGhostOfNight() {
+  initializeGhosts()
+  if (!ghostOfNightActive) return
+  ghostOfNightActive = false
+  const slot = slots[GHOST_OF_NIGHT_INDEX]
+  hideGhost(slot)
+  Transform.createOrReplace(slot.entity, {
+    position: AUDIENCE_POSITIONS[AUDIENCE_SEATS - 1],
+    rotation: FACE_STAGE
+  })
+  syncAudience()
 }
 
 export function showPreview(look: Look, emotes: GhostEmotes) {

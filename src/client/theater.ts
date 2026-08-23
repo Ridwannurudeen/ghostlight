@@ -26,6 +26,7 @@ export type SpotlightColor = 'white'
 export const STAGE_PERFORMER_POSITION = Vector3.create(8, 0.8, 13.25)
 export const STAGE_PREVIEW_POSITION = Vector3.create(11.6, 0.8, 12.9)
 export const STAGE_CAMERA_POSITION = Vector3.create(8, 3.2, 7.25)
+export const GHOST_OF_NIGHT_POSITION = Vector3.create(13.6, 0.8, 5.05)
 
 export const AUDIENCE_POSITIONS = [
   Vector3.create(3.3, 0, 9.45),
@@ -78,6 +79,7 @@ let foyerDoorsEntity: Entity | null = null
 let marqueeEntity: Entity | null = null
 let marqueeTextEntity: Entity | null = null
 let spotlightEntity: Entity | null = null
+let currentMood: LightMood = 'house'
 const lightEntities: Entity[] = []
 
 export const curtains = {
@@ -143,9 +145,14 @@ export const marquee = {
 export const lights = {
   set(mood: LightMood) {
     createTheater()
+    currentMood = mood
     const settings = MOODS[mood]
     for (const entity of lightEntities) setEmissiveMaterial(entity, settings, false)
     if (spotlightEntity !== null) setEmissiveMaterial(spotlightEntity, settings, true)
+  },
+  setThemeAccent(accent: { r: number; g: number; b: number }) {
+    MOODS.house.color = Color3.create(accent.r, accent.g, accent.b)
+    if (currentMood === 'house') this.set('house')
   },
   setSpotlightColor(color: SpotlightColor) {
     createTheater()

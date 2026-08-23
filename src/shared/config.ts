@@ -21,6 +21,16 @@ export const THEMES = [
 
 export type ThemeId = (typeof THEMES)[number]['id']
 
+export const TITLES = ['Understudy', 'Scene Stealer', 'Ghostlight Legend'] as const
+
+export type PlayerTitle = '' | (typeof TITLES)[number]
+
+export const REWARD_PROPS: Record<Exclude<PlayerTitle, ''>, string> = {
+  Understudy: 'assets/models/prop_tophat.glb',
+  'Scene Stealer': 'assets/models/prop_mask.glb',
+  'Ghostlight Legend': 'assets/models/prop_trophy.glb'
+}
+
 const DAY_MILLISECONDS = 24 * 60 * 60 * 1000
 
 export function themeForTimestamp(timestamp: number) {

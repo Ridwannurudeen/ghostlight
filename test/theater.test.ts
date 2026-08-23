@@ -52,6 +52,10 @@ describe('generated theater rig', () => {
     expect(GltfNodeModifiers.createOrReplace).toHaveBeenCalledTimes(14)
     lights.setSpotlightColor('white')
     expect(GltfNodeModifiers.createOrReplace).toHaveBeenCalledTimes(15)
+    lights.setThemeAccent({ r: 0.9, g: 0.2, b: 0.4 })
+    expect(GltfNodeModifiers.createOrReplace).toHaveBeenCalledTimes(15)
+    lights.set('house')
+    expect(GltfNodeModifiers.createOrReplace).toHaveBeenCalledTimes(22)
 
     curtains.close()
     curtains.open()

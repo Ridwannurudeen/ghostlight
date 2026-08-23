@@ -4,7 +4,7 @@ import { AUTHOR_COOLDOWN_SECONDS, PROTOCOL_VERSION, themeForTimestamp } from '..
 import { DECK, EMOTE_VOCABULARY, HOUSE_CHARADE } from '../shared/deck'
 import { Messages, room } from '../shared/messages'
 import { chooseCharadeFor, pickDecoys, shuffleSeeded } from '../shared/pick'
-import type { Charade, Look } from '../shared/types'
+import type { Charade, Look, PlayerProgress } from '../shared/types'
 import { STORAGE_SCHEMA_VERSION } from '../shared/types'
 import { LiveRounds } from './rounds'
 import { GhostCharadesState, gameState } from './state'
@@ -25,6 +25,18 @@ type RevealPayload = {
   yourScore: number
   daily: ReturnType<GhostCharadesState['getDaily']>
   stampAwarded: boolean
+  title: PlayerProgress['title']
+  nextUnlock: PlayerProgress['nextUnlock']
+  titleUnlocked: boolean
+}
+
+type PostedPayload = {
+  charadeId: string
+  daily: ReturnType<GhostCharadesState['getDaily']>
+  stampAwarded: boolean
+  title: PlayerProgress['title']
+  nextUnlock: PlayerProgress['nextUnlock']
+  titleUnlocked: boolean
 }
 
 export type ProtocolSend = (type: string, data: unknown, to?: string[]) => void | Promise<void>
@@ -118,13 +130,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     string,
     {
       type: 'reveal' | 'posted'
-      data:
-        | RevealPayload
-        | {
-            charadeId: string
-            daily: ReturnType<GhostCharadesState['getDaily']>
-            stampAwarded: boolean
-          }
+      data: RevealPayload | PostedPayload
     }
   >()
   const rounds = new LiveRounds((type, data) => options.send(type, data))
@@ -169,10 +175,58 @@ export function createServerProtocol(options: ServerProtocolOptions) {
   }
 
   async function sendBoards(address: string) {
+    const [playbill, ghostOfNight] = await Promise.all([
+      options.state.getRecentPerformers(),
+      options.state.getGhostOfNight()
+    ])
     await sendTo(address, 'boards', {
       topDecoders: options.state.boards.decoders,
-      hardestGhosts: options.state.boards.hardest
+      hardestGhosts: options.state.boards.hardest,
+      playbill,
+      ghostOfNightId: ghostOfNight?.charade.id ?? ''
     })
+    if (ghostOfNight) {
+      await sendTo(address, 'ghostOfNight', {
+        charadeId: ghostOfNight.charade.id,
+        address: ghostOfNight.charade.author.address,
+        name: ghostOfNight.charade.author.name,
+        title: ghostOfNight.title,
+        look: withoutLastSeen(ghostOfNight.charade.author),
+        total: ghostOfNight.charade.guesses.total,
+        correct: ghostOfNight.charade.guesses.correct
+      })
+    }
+  }
+
+  async function refreshBoards() {
+    await Promise.all([...looks.values()].map((look) => sendBoards(look.address)))
+  }
+
+  function progressFor(stats: Awaited<ReturnType<GhostCharadesState['getOrCreateStats']>>) {
+    const progress = options.state.getPlayerProgress(stats)
+    return { title: progress.title, nextUnlock: { ...progress.nextUnlock } }
+  }
+
+  async function sendVisibleTitles(address: string) {
+    const key = canonicalAddress(address)
+    for (const [visibleAddress, look] of looks) {
+      const stats = options.state.playerStats.get(visibleAddress)
+      if (!stats) continue
+      await sendTo(address, 'playerTitle', { address: look.address, title: progressFor(stats).title })
+    }
+    const ownStats = options.state.playerStats.get(key)
+    if (!ownStats) return
+    const recipients = [...looks.entries()]
+      .filter(([visibleAddress]) => visibleAddress !== key)
+      .map(([, look]) => look.address)
+    if (recipients.length > 0) {
+      await options.send('playerTitle', { address, title: progressFor(ownStats).title }, recipients)
+    }
+  }
+
+  async function broadcastTitleUnlock(address: string, title: PlayerProgress['title']) {
+    const recipients = [...looks.values()].map((look) => look.address)
+    if (recipients.length > 0) await options.send('playerTitle', { address, title }, recipients)
   }
 
   function readyPayload() {
@@ -193,18 +247,16 @@ export function createServerProtocol(options: ServerProtocolOptions) {
           charade.id !== previous &&
           ![...present].some((address) => options.state.playerStats.get(address)?.seen.includes(charade.id))
       )
-      .sort(
-        (left, right) => {
-          const leftPreferred = DECK.find((phrase) => phrase.id === left.phraseId)?.theme === theme ? 0 : 1
-          const rightPreferred = DECK.find((phrase) => phrase.id === right.phraseId)?.theme === theme ? 0 : 1
-          return (
-            leftPreferred - rightPreferred ||
-            left.guesses.total - right.guesses.total ||
-            left.createdAt - right.createdAt ||
-            left.id.localeCompare(right.id)
-          )
-        }
-      )
+      .sort((left, right) => {
+        const leftPreferred = DECK.find((phrase) => phrase.id === left.phraseId)?.theme === theme ? 0 : 1
+        const rightPreferred = DECK.find((phrase) => phrase.id === right.phraseId)?.theme === theme ? 0 : 1
+        return (
+          leftPreferred - rightPreferred ||
+          left.guesses.total - right.guesses.total ||
+          left.createdAt - right.createdAt ||
+          left.id.localeCompare(right.id)
+        )
+      })
     return eligible[0] ?? HOUSE_CHARADE
   }
 
@@ -233,19 +285,23 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     if (welcomePromises.get(key) !== owner) return false
     const rankIndex = options.state.boards.decoders.findIndex((row) => canonicalAddress(row.address) === key)
     const pending = { ...stats.pending }
+    const progress = progressFor(stats)
 
-    await sendTo(address, 'progress', { daily: { ...options.state.getDaily(stats) } })
+    await sendTo(address, 'progress', { daily: { ...options.state.getDaily(stats) }, ...progress })
     if (welcomePromises.get(key) !== owner) return false
     if (pending.triedYou > 0) {
       await sendTo(address, 'since', {
         triedYou: pending.triedYou,
         gotYou: pending.gotYou,
         rank: rankIndex < 0 ? 0 : rankIndex + 1,
-        daily: { ...options.state.getDaily(stats) }
+        daily: { ...options.state.getDaily(stats) },
+        ...progress
       })
       if (welcomePromises.get(key) !== owner) return false
     }
     options.state.consumePending(key, !look.isGuest)
+    await sendVisibleTitles(address)
+    if (welcomePromises.get(key) !== owner) return false
     await sendAudience(address, previousVisitors)
     if (welcomePromises.get(key) !== owner) return false
     await sendBoards(address)
@@ -347,6 +403,11 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     const key = `${canonicalAddress(address)}:${charade.id}`
     answerIndexes.set(key, answers.correctIndex)
     lastAuthors.set(canonicalAddress(address), charade.author.address)
+    const authorTitle = charade.isHouse
+      ? ''
+      : progressFor(
+          await options.state.getOrCreateStats(charade.author.address, charade.author.name, !charade.author.isGuest)
+        ).title
     await sendTo(address, 'charade', {
       id: charade.id,
       authorName: charade.author.name,
@@ -355,7 +416,8 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       emotes: [...charade.emotes],
       answers: answers.answers,
       createdAt: charade.createdAt,
-      isHouse: charade.isHouse
+      isHouse: charade.isHouse,
+      authorTitle
     })
     return true
   }
@@ -423,6 +485,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
 
     const look = looks.get(key)
     const stats = await options.state.getOrCreateStats(key, playerName(key), !(look?.isGuest ?? true))
+    const previousTitle = progressFor(stats).title
     if (!charade.isHouse && stats.seen.includes(charade.id)) {
       await sendError(address, 'already-guessed')
       return
@@ -449,6 +512,8 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       options.state.saveStats(charade.author.address, !charade.author.isGuest)
     }
     options.state.saveStats(key, !(look?.isGuest ?? true))
+    const progress = progressFor(stats)
+    const titleUnlocked = progress.title !== previousTitle && progress.title !== ''
 
     const updated = options.state.getCharade(charade.id) ?? charade
     const phrase = DECK.find((candidate) => candidate.id === charade.phraseId)
@@ -463,10 +528,14 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       stats: { ...updated.guesses },
       yourScore: stats.correct,
       daily: { ...options.state.getDaily(stats) },
-      stampAwarded
+      stampAwarded,
+      ...progress,
+      titleUnlocked
     }
     completedRequests.set(idempotencyKey, { type: 'reveal', data: reveal })
     await sendTo(address, 'reveal', reveal)
+    if (titleUnlocked) await broadcastTitleUnlock(address, progress.title)
+    if (!charade.isHouse) await refreshBoards()
     await checkpoint()
   }
 
@@ -493,7 +562,13 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     if (options.state.getCharade(id)) {
       const look = looks.get(key)
       const stats = await options.state.getOrCreateStats(key, playerName(key), !(look?.isGuest ?? true))
-      const posted = { charadeId: id, daily: { ...options.state.getDaily(stats) }, stampAwarded: false }
+      const posted: PostedPayload = {
+        charadeId: id,
+        daily: { ...options.state.getDaily(stats) },
+        stampAwarded: false,
+        ...progressFor(stats),
+        titleUnlocked: false
+      }
       completedRequests.set(idempotencyKey, { type: 'posted', data: posted })
       await sendTo(address, 'posted', posted)
       return
@@ -526,7 +601,18 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     }
     if (options.state.getCharade(id)) {
       const stats = await options.state.getOrCreateStats(key, look.name, !look.isGuest)
-      const posted = { charadeId: id, daily: { ...options.state.getDaily(stats) }, stampAwarded: false }
+      const replay = completedRequests.get(idempotencyKey)
+      if (replay) {
+        await sendTo(address, replay.type, replay.data)
+        return
+      }
+      const posted: PostedPayload = {
+        charadeId: id,
+        daily: { ...options.state.getDaily(stats) },
+        stampAwarded: false,
+        ...progressFor(stats),
+        titleUnlocked: false
+      }
       completedRequests.set(idempotencyKey, { type: 'posted', data: posted })
       await sendTo(address, 'posted', posted)
       return
@@ -550,14 +636,25 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     }
     options.state.upsertCharade(charade)
     const stats = await options.state.getOrCreateStats(key, look.name, !look.isGuest)
+    const previousTitle = progressFor(stats).title
     stats.authored.push(id)
     const stampAwarded = options.state.recordDailyAuthor(stats)
     options.state.saveStats(key, !look.isGuest)
     lastPosts.set(key, currentTime)
 
-    const posted = { charadeId: id, daily: { ...options.state.getDaily(stats) }, stampAwarded }
+    const progress = progressFor(stats)
+    const titleUnlocked = progress.title !== previousTitle && progress.title !== ''
+    const posted: PostedPayload = {
+      charadeId: id,
+      daily: { ...options.state.getDaily(stats) },
+      stampAwarded,
+      ...progress,
+      titleUnlocked
+    }
     completedRequests.set(idempotencyKey, { type: 'posted', data: posted })
     await sendTo(address, 'posted', posted)
+    if (titleUnlocked) await broadcastTitleUnlock(address, progress.title)
+    await refreshBoards()
     await checkpoint()
   }
 

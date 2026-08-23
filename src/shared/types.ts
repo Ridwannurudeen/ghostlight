@@ -1,3 +1,5 @@
+import type { PlayerTitle } from './config'
+
 export const STORAGE_SCHEMA_VERSION = 1
 
 export type Color = {
@@ -53,6 +55,26 @@ export type PlayerStats = {
   }
   daily: DailyProgress
   stampedDays: string[]
+  title: PlayerTitle
+}
+
+export type NextUnlock = {
+  nextTitle: PlayerTitle
+  requirement: string
+  progress: number
+}
+
+export type PlayerProgress = {
+  title: PlayerTitle
+  nextUnlock: NextUnlock
+}
+
+export type PlaybillPerformer = {
+  address: string
+  name: string
+  isGuest: boolean
+  title: PlayerTitle
+  performedAt: number
 }
 
 export type Boards = {

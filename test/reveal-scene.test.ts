@@ -46,7 +46,8 @@ const charade: DecodeCharade = {
   emotes: ['wave', 'clap', 'dab'],
   answers: ['Flying a kite', 'Walking a dog', 'Missing a train'],
   createdAt: 1,
-  isHouse: false
+  isHouse: false,
+  authorTitle: ''
 }
 
 describe('scene reveal adapter', () => {
@@ -71,7 +72,16 @@ describe('scene reveal adapter', () => {
         correct: false,
         phrase: 'Flying a kite',
         stats: { correct: 7, total: 11 },
-        yourScore: 2
+        yourScore: 2,
+        daily: { day: '2026-08-23', decoded: 10, authored: 1, stamped: false },
+        stampAwarded: false,
+        title: 'Scene Stealer',
+        nextUnlock: {
+          nextTitle: 'Ghostlight Legend',
+          requirement: '3 daily stamps and 25 correct decodes',
+          progress: 0.4
+        },
+        titleUnlocked: true
       },
       charade
     )
@@ -83,8 +93,10 @@ describe('scene reveal adapter', () => {
     expect(getRevealViewState()).toMatchObject({
       verdict: 'miss',
       stats: { correct: 7, total: 11 },
-      titleProgress: 1
+      titleProgress: 0.4,
+      unlockedTitle: 'Scene Stealer'
     })
     expect(audio.play).toHaveBeenCalledWith('gasp')
+    expect(audio.play).toHaveBeenCalledWith('unlock')
   })
 })
