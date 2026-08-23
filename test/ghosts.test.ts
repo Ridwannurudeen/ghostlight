@@ -2,10 +2,13 @@ import { AvatarShape, engine } from '@dcl/sdk/ecs'
 import { describe, expect, it, vi } from 'vitest'
 import {
   clearGhostOfNight,
+  clearPerformer,
   freezePerformer,
   playPerformerEmote,
+  replayPerformer,
   resumePerformer,
   setAudience,
+  showDuet,
   showGhostOfNight,
   showPerformer
 } from '../src/client/ghosts'
@@ -83,6 +86,64 @@ describe('audience ghosts', () => {
     resumePerformer()
     system(10)
     expect(AvatarShape.getMutable).toHaveBeenCalledTimes(mutationsBeforeFreeze + 2)
+  })
+
+  it('alternates complete author and reply sequences in the existing performer and preview slots', () => {
+    const system = vi.mocked(engine.addSystem).mock.calls[0][0]
+    vi.mocked(AvatarShape.getMutable).mockClear()
+
+    showDuet(
+      { look: makeLook('0xAuthor'), emotes: ['wave', 'clap', 'dab'] },
+      { look: makeLook('0xReply'), emotes: ['shrug', 'kiss', 'headexplode'] }
+    )
+    for (let index = 0; index < 6; index += 1) system(2.5)
+
+    expect(vi.mocked(AvatarShape.getMutable).mock.calls.map(([entity]) => entity)).toEqual([1, 1, 1, 8, 8, 8, 1])
+    expect(engine.addEntity).toHaveBeenCalledTimes(8)
+  })
+
+  it('pauses duet playback for reveal and replays from the author', () => {
+    const system = vi.mocked(engine.addSystem).mock.calls[0][0]
+    vi.mocked(AvatarShape.getMutable).mockClear()
+    showDuet(
+      { look: makeLook('0xAuthor'), emotes: ['wave', 'clap', 'dab'] },
+      { look: makeLook('0xReply'), emotes: ['shrug', 'kiss', 'headexplode'] }
+    )
+    system(2.5)
+
+    freezePerformer()
+    const mutationsBeforePause = vi.mocked(AvatarShape.getMutable).mock.calls.length
+    system(10)
+    expect(AvatarShape.getMutable).toHaveBeenCalledTimes(mutationsBeforePause)
+
+    resumePerformer()
+    replayPerformer()
+    system(2.5)
+    expect(
+      vi
+        .mocked(AvatarShape.getMutable)
+        .mock.calls.slice(-2)
+        .map(([entity]) => entity)
+    ).toEqual([1, 1])
+  })
+
+  it('cancels duet playback and hides the stale reply on performer clear paths', () => {
+    showDuet(
+      { look: makeLook('0xAuthor'), emotes: ['wave', 'clap', 'dab'] },
+      { look: makeLook('0xReply'), emotes: ['shrug', 'kiss', 'headexplode'] }
+    )
+    vi.mocked(AvatarShape.deleteFrom).mockClear()
+
+    showPerformer(makeLook('0xNext'), ['dance', 'wave', 'clap'])
+    expect(AvatarShape.deleteFrom).toHaveBeenCalledWith(8)
+
+    showDuet(
+      { look: makeLook('0xAuthor'), emotes: ['wave', 'clap', 'dab'] },
+      { look: makeLook('0xReply'), emotes: ['shrug', 'kiss', 'headexplode'] }
+    )
+    vi.mocked(AvatarShape.deleteFrom).mockClear()
+    clearPerformer()
+    expect(vi.mocked(AvatarShape.deleteFrom).mock.calls.map(([entity]) => entity)).toEqual([8, 1])
   })
 
   it('reuses one of the eight ghost slots for Ghost of the Night and restores the audience seat', () => {

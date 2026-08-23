@@ -14,12 +14,13 @@ type HelloPayload = { displayName: string; isGuest: boolean; protocolVersion: nu
 type PingPayload = { seq: number }
 type NextCharadePayload = { exclude: string[] }
 type GuessPayload = { charadeId: string; answerIndex: number; requestId: string }
-type PostPayload = { phraseId: string; emotes: string[]; requestId: string }
+type PostPayload = { phraseId: string; emotes: string[]; requestId: string; replyTo?: string }
 type ReactPayload = { kind: string }
 
 type RevealPayload = {
   charadeId: string
   correct: boolean
+  phraseId: string
   phrase: string
   stats: { total: number; correct: number }
   yourScore: number
@@ -32,6 +33,7 @@ type RevealPayload = {
 
 type PostedPayload = {
   charadeId: string
+  replyTo?: string
   daily: ReturnType<GhostCharadesState['getDaily']>
   stampAwarded: boolean
   title: PlayerProgress['title']
@@ -56,22 +58,63 @@ export type ServerProtocolOptions = {
 const REACTION_KINDS = new Set(['laugh', 'confused', 'genius'])
 const EMOTES = new Set<string>(EMOTE_VOCABULARY)
 const MAX_WEARABLE_URNS = 20
+const MAX_WIRE_ADDRESS_BYTES = 48
+const MAX_WIRE_NAME_BYTES = 32
+const MAX_WIRE_ID_BYTES = 64
+const MAX_WIRE_URN_BYTES = 512
+const MAX_WIRE_LOOK_BYTES = 2_800
+const DEFAULT_BODY_SHAPE = 'urn:decentraland:off-chain:base-avatars:BaseMale'
 
 function canonicalAddress(address: string) {
   return address.toLowerCase()
 }
 
-function withoutLastSeen(look: Look) {
-  return {
-    address: look.address,
-    name: look.name,
+function utf8Bytes(value: string) {
+  let bytes = 0
+  for (const character of value) {
+    const codePoint = character.codePointAt(0)!
+    bytes += codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4
+  }
+  return bytes
+}
+
+function encodedBytes(value: unknown) {
+  return utf8Bytes(JSON.stringify(value))
+}
+
+function encodedStringBytes(value: string) {
+  return encodedBytes(value) - 2
+}
+
+function limitText(value: string, maxBytes: number) {
+  if (encodedStringBytes(value) <= maxBytes) return value
+  const kept: string[] = []
+  let bytes = 0
+  for (const character of value) {
+    const characterBytes = encodedStringBytes(character)
+    if (bytes + characterBytes > maxBytes) break
+    kept.push(character)
+    bytes += characterBytes
+  }
+  return kept.join('')
+}
+
+function withoutLastSeen(look: Look): Look {
+  const bodyShape = encodedStringBytes(look.bodyShape) <= MAX_WIRE_URN_BYTES ? look.bodyShape : DEFAULT_BODY_SHAPE
+  const bounded: Look = {
+    address: limitText(look.address, MAX_WIRE_ADDRESS_BYTES),
+    name: limitText(look.name, MAX_WIRE_NAME_BYTES),
     isGuest: look.isGuest,
-    bodyShape: look.bodyShape,
+    bodyShape,
     skinColor: look.skinColor,
     hairColor: look.hairColor,
     eyeColor: look.eyeColor,
-    wearables: look.wearables.slice(0, MAX_WEARABLE_URNS)
+    wearables: look.wearables
+      .filter((wearable) => encodedStringBytes(wearable) <= MAX_WIRE_URN_BYTES)
+      .slice(0, MAX_WEARABLE_URNS)
   }
+  while (bounded.wearables.length > 0 && encodedBytes(bounded) > MAX_WIRE_LOOK_BYTES) bounded.wearables.pop()
+  return bounded
 }
 
 function hashText(value: string, salt: number) {
@@ -179,19 +222,42 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       options.state.getRecentPerformers(),
       options.state.getGhostOfNight()
     ])
-    await sendTo(address, 'boards', {
-      topDecoders: options.state.boards.decoders,
-      hardestGhosts: options.state.boards.hardest,
-      playbill,
-      ghostOfNightId: ghostOfNight?.charade.id ?? ''
-    })
+    const topDecoders = options.state.boards.decoders.map((entry) => ({
+      ...entry,
+      address: limitText(entry.address, MAX_WIRE_ADDRESS_BYTES),
+      name: limitText(entry.name, MAX_WIRE_NAME_BYTES)
+    }))
+    const hardestGhosts = options.state.boards.hardest.map((entry) => ({
+      ...entry,
+      charadeId: limitText(entry.charadeId, MAX_WIRE_ID_BYTES),
+      authorName: limitText(entry.authorName, MAX_WIRE_NAME_BYTES)
+    }))
+    const wirePlaybill = playbill.map((entry) => ({
+      ...entry,
+      address: limitText(entry.address, MAX_WIRE_ADDRESS_BYTES),
+      name: limitText(entry.name, MAX_WIRE_NAME_BYTES)
+    }))
+    const boardsPayload = {
+      topDecoders,
+      hardestGhosts,
+      playbill: wirePlaybill,
+      ghostOfNightId: limitText(ghostOfNight?.charade.id ?? '', MAX_WIRE_ID_BYTES)
+    }
+    while (encodedBytes(boardsPayload) >= 4_000) {
+      if (boardsPayload.hardestGhosts.length > 0) boardsPayload.hardestGhosts.pop()
+      else if (boardsPayload.topDecoders.length > 0) boardsPayload.topDecoders.pop()
+      else if (boardsPayload.playbill.length > 0) boardsPayload.playbill.pop()
+      else break
+    }
+    await sendTo(address, 'boards', boardsPayload)
     if (ghostOfNight) {
+      const ghostLook = withoutLastSeen(ghostOfNight.charade.author)
       await sendTo(address, 'ghostOfNight', {
-        charadeId: ghostOfNight.charade.id,
-        address: ghostOfNight.charade.author.address,
-        name: ghostOfNight.charade.author.name,
+        charadeId: limitText(ghostOfNight.charade.id, MAX_WIRE_ID_BYTES),
+        address: ghostLook.address,
+        name: ghostLook.name,
         title: ghostOfNight.title,
-        look: withoutLastSeen(ghostOfNight.charade.author),
+        look: ghostLook,
         total: ghostOfNight.charade.guesses.total,
         correct: ghostOfNight.charade.guesses.correct
       })
@@ -289,10 +355,11 @@ export function createServerProtocol(options: ServerProtocolOptions) {
 
     await sendTo(address, 'progress', { daily: { ...options.state.getDaily(stats) }, ...progress })
     if (welcomePromises.get(key) !== owner) return false
-    if (pending.triedYou > 0) {
+    if (pending.triedYou > 0 || pending.replies > 0) {
       await sendTo(address, 'since', {
         triedYou: pending.triedYou,
         gotYou: pending.gotYou,
+        replies: pending.replies,
         rank: rankIndex < 0 ? 0 : rankIndex + 1,
         daily: { ...options.state.getDaily(stats) },
         ...progress
@@ -408,17 +475,29 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       : progressFor(
           await options.state.getOrCreateStats(charade.author.address, charade.author.name, !charade.author.isGuest)
         ).title
+    const authorLook = withoutLastSeen(charade.author)
     await sendTo(address, 'charade', {
       id: charade.id,
-      authorName: charade.author.name,
-      authorAddress: charade.author.address,
-      look: withoutLastSeen(charade.author),
+      authorName: authorLook.name,
+      authorAddress: authorLook.address,
+      look: authorLook,
       emotes: [...charade.emotes],
       answers: answers.answers,
       createdAt: charade.createdAt,
       isHouse: charade.isHouse,
       authorTitle
     })
+    if (charade.reply) {
+      const replyLook = withoutLastSeen(charade.reply.look)
+      await sendTo(address, 'charadeReply', {
+        charadeId: charade.id,
+        address: replyLook.address,
+        name: replyLook.name,
+        look: replyLook,
+        emotes: [...charade.reply.emotes],
+        createdAt: charade.reply.createdAt
+      })
+    }
     return true
   }
 
@@ -524,6 +603,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     const reveal: RevealPayload = {
       charadeId: charade.id,
       correct,
+      phraseId: phrase.id,
       phrase: phrase.text,
       stats: { ...updated.guesses },
       yourScore: stats.correct,
@@ -550,6 +630,88 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     const completed = completedRequests.get(idempotencyKey)
     if (completed) {
       await sendTo(address, completed.type, completed.data)
+      return
+    }
+    if (data.replyTo !== undefined) {
+      if (
+        !data.requestId ||
+        !data.replyTo ||
+        !data.phraseId ||
+        data.emotes.length !== 3 ||
+        data.emotes.some((emote) => !EMOTES.has(emote))
+      ) {
+        await sendError(address, 'invalid-reply')
+        return
+      }
+      const target = options.state.getCharade(data.replyTo)
+      const look = looks.get(key)
+      const stats = await options.state.getOrCreateStats(key, playerName(key), !(look?.isGuest ?? true))
+      if (
+        !target ||
+        target.isHouse ||
+        canonicalAddress(target.author.address) === key ||
+        !stats.seen.includes(target.id) ||
+        target.phraseId !== data.phraseId
+      ) {
+        await sendError(address, 'reply-not-eligible')
+        return
+      }
+      const existingReply = target.reply
+      if (existingReply) {
+        if (canonicalAddress(existingReply.address) !== key) {
+          await sendError(address, 'reply-taken')
+          return
+        }
+        const posted: PostedPayload = {
+          charadeId: target.id,
+          replyTo: target.id,
+          daily: { ...options.state.getDaily(stats) },
+          stampAwarded: false,
+          ...progressFor(stats),
+          titleUnlocked: false
+        }
+        completedRequests.set(idempotencyKey, { type: 'posted', data: posted })
+        await sendTo(address, 'posted', posted)
+        return
+      }
+      const replyLook = await waitForLook(address)
+      if (!replyLook) {
+        await sendError(address, 'look-not-ready')
+        return
+      }
+      const authorStats = await options.state.getOrCreateStats(
+        target.author.address,
+        target.author.name,
+        !target.author.isGuest
+      )
+      const attached = options.state.attachReply(target.id, {
+        address: replyLook.address,
+        name: replyLook.name,
+        look: replyLook,
+        emotes: [data.emotes[0], data.emotes[1], data.emotes[2]],
+        createdAt: now()
+      })
+      if (!attached) {
+        const winner = options.state.getCharade(target.id)?.reply
+        if (!winner || canonicalAddress(winner.address) !== key) {
+          await sendError(address, 'reply-taken')
+          return
+        }
+      } else {
+        authorStats.pending.replies += 1
+        options.state.saveStats(target.author.address, !target.author.isGuest)
+      }
+      const posted: PostedPayload = {
+        charadeId: target.id,
+        replyTo: target.id,
+        daily: { ...options.state.getDaily(stats) },
+        stampAwarded: false,
+        ...progressFor(stats),
+        titleUnlocked: false
+      }
+      completedRequests.set(idempotencyKey, { type: 'posted', data: posted })
+      await sendTo(address, 'posted', posted)
+      await checkpoint()
       return
     }
     const phrase = DECK.find((candidate) => candidate.id === data.phraseId)

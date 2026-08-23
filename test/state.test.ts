@@ -19,7 +19,7 @@ import {
   createStorageRepository,
   indexKey
 } from '../src/server/storage'
-import { FIXED_NOW, FakeStorage, emptyBoards, makeCharade, makeLook, makeStats } from './test-helpers'
+import { FIXED_NOW, FakeStorage, emptyBoards, makeCharade, makeLook, makeReply, makeStats } from './test-helpers'
 
 vi.mock('@dcl/sdk/server', () => ({
   Storage: {
@@ -48,16 +48,34 @@ describe('state migrations', () => {
     expect(migrateLook({ ...look, skinColor: { r: 1, g: 1 } })).toBeNull()
   })
 
-  it('migrates v0 charades and rejects unsupported or malformed records', () => {
+  it('migrates v0 and v1 charades and rejects unsupported or malformed records', () => {
     const legacy = { ...makeCharade('legacy'), v: 0, lastGuessAt: undefined }
     expect(migrateCharade(legacy)).toMatchObject({
       v: STORAGE_SCHEMA_VERSION,
       id: 'legacy',
       lastGuessAt: FIXED_NOW
     })
+    const v1 = { ...makeCharade('v1'), v: 1 }
+    expect(migrateCharade(v1)).toEqual({ ...v1, v: STORAGE_SCHEMA_VERSION })
+    expect(migrateCharade(v1)?.reply).toBeUndefined()
     expect(migrateCharade({ ...legacy, v: 99 })).toBeNull()
     expect(migrateCharade({ ...legacy, emotes: ['wave', 'clap'] })).toBeNull()
     expect(migrateCharade('{bad json')).toBeNull()
+  })
+
+  it('restores valid v2 replies while isolating a malformed optional reply', () => {
+    const reply = makeReply('replier', 'Replier')
+    const charade = makeCharade('with-reply', { reply })
+
+    expect(migrateCharade(charade)?.reply).toEqual(reply)
+    const migrated = migrateCharade({
+      ...charade,
+      reply: { ...reply, emotes: ['wave', 'clap'] }
+    })
+    expect(migrated).toMatchObject({ id: charade.id, v: STORAGE_SCHEMA_VERSION })
+    expect(migrated?.reply).toBeUndefined()
+    expect(migrateCharade({ ...charade, reply: { ...reply, address: 'different-player' } })?.reply).toBeUndefined()
+    expect(migrateCharade({ ...charade, reply: { ...reply, name: 'Different name' } })?.reply).toBeUndefined()
   })
 
   it('migrates and bounds player stats while defaulting garbage', () => {
@@ -69,6 +87,16 @@ describe('state migrations', () => {
     })
 
     expect(migratePlayerStats({ v: 'bad' }, 'Fresh name', FIXED_NOW)).toEqual(makeStats({ name: 'Fresh name' }))
+  })
+
+  it('defaults the additive reply notification count when loading v1 player stats', () => {
+    const v1 = {
+      ...makeStats(),
+      v: 1,
+      pending: { triedYou: 2, gotYou: 1 }
+    }
+
+    expect(migratePlayerStats(v1, 'Player', FIXED_NOW).pending).toEqual({ triedYou: 2, gotYou: 1, replies: 0 })
   })
 
   it('rejects invalid daily keys and keeps only valid stamped UTC days', () => {
@@ -228,6 +256,23 @@ describe('state mutations', () => {
     })
   })
 
+  it('attaches exactly one reply atomically and persists the winning reply', async () => {
+    const { storage, repository, state } = setup()
+    const charade = makeCharade('reply-target')
+    const first = makeReply('first', 'First')
+    const second = makeReply('second', 'Second')
+    state.upsertCharade(charade)
+
+    expect(state.attachReply(charade.id, first)).toBe(true)
+    expect(state.attachReply(charade.id, second)).toBe(false)
+    expect(state.attachReply(HOUSE_CHARADE.id, first)).toBe(false)
+    expect(state.attachReply('missing', first)).toBe(false)
+    expect(state.getCharade(charade.id)?.reply).toEqual(first)
+    await repository.flushNow()
+
+    expect(storage.readJSON<typeof charade>(charadeKey(charade.id))?.reply).toEqual(first)
+  })
+
   it('moves a returning visitor to the front and caps the audience at six distinct addresses', () => {
     const { state } = setup()
     for (let index = 0; index < 7; index += 1) state.touchVisitor(makeLook(`address-${index}`))
@@ -317,7 +362,11 @@ describe('player stats', () => {
   it('loads once, caps and deduplicates seen ids, consumes pending counts, and persists the reset', async () => {
     const { storage, repository, state } = setup()
     const seen = Array.from({ length: 205 }, (_, index) => `seen-${index}`)
-    storage.putPlayerJSON('player', PLAYER_STATS_KEY, makeStats({ seen, pending: { triedYou: 5, gotYou: 2 } }))
+    storage.putPlayerJSON(
+      'player',
+      PLAYER_STATS_KEY,
+      makeStats({ seen, pending: { triedYou: 5, gotYou: 2, replies: 3 } })
+    )
 
     const stats = await state.getOrCreateStats('player', 'Current name')
     expect(stats.seen).toEqual(seen.slice(-200))
@@ -325,8 +374,8 @@ describe('player stats', () => {
     expect(storage.playerGets).toHaveLength(1)
     stats.seen.push('seen-100', 'seen-205')
 
-    expect(state.consumePending('player')).toEqual({ triedYou: 5, gotYou: 2 })
-    expect(stats.pending).toEqual({ triedYou: 0, gotYou: 0 })
+    expect(state.consumePending('player')).toEqual({ triedYou: 5, gotYou: 2, replies: 3 })
+    expect(stats.pending).toEqual({ triedYou: 0, gotYou: 0, replies: 0 })
     expect(stats.seen).toHaveLength(200)
     expect(new Set(stats.seen).size).toBe(200)
     expect(stats.seen.at(-1)).toBe('seen-205')
@@ -334,7 +383,7 @@ describe('player stats', () => {
 
     expect(storage.readPlayerJSON<typeof stats>('player', PLAYER_STATS_KEY)).toMatchObject({
       name: 'Renamed',
-      pending: { triedYou: 0, gotYou: 0 },
+      pending: { triedYou: 0, gotYou: 0, replies: 0 },
       seen: stats.seen,
       lastSeenAt: FIXED_NOW
     })
@@ -375,6 +424,6 @@ describe('player stats', () => {
 
   it('returns empty pending counts for an unknown player', () => {
     const { state } = setup()
-    expect(state.consumePending('missing')).toEqual({ triedYou: 0, gotYou: 0 })
+    expect(state.consumePending('missing')).toEqual({ triedYou: 0, gotYou: 0, replies: 0 })
   })
 })

@@ -54,6 +54,7 @@ const ghosts = vi.hoisted(() => ({
   react: vi.fn(),
   replayPerformer: vi.fn(),
   setAudience: vi.fn(),
+  showDuet: vi.fn(),
   showPerformer: vi.fn(),
   showGhostOfNight: vi.fn(),
   showPreview: vi.fn()
@@ -111,7 +112,8 @@ describe('client presentation integration', () => {
       beginReveal: reveal.begin,
       resolveReveal: reveal.resolve,
       skipReveal: reveal.skipToEnd,
-      cancelReveal: reveal.cancel
+      cancelReveal: reveal.cancel,
+      clearPreview: ghosts.clearPreview
     })
     expect(setup.startClientSetup).toHaveBeenCalledTimes(1)
     expect(flow.startClientFlow).toHaveBeenCalledTimes(1)
@@ -123,6 +125,9 @@ describe('client presentation integration', () => {
     expect(ghosts.showPerformer).not.toHaveBeenCalled()
     harness.enterPerformer!()
     expect(ghosts.showPerformer).toHaveBeenCalledWith(look, emotes)
+    const reply = { look: { address: '0xReply' }, emotes: ['dance', 'wave', 'clap'] }
+    harness.effects!.showDuet({ look, emotes }, reply)
+    expect(ghosts.showDuet).toHaveBeenCalledWith({ look, emotes }, reply)
 
     Object.assign(harness.state, { ready: true, screen: 'foyer' })
     harness.listener!(harness.state)
@@ -134,5 +139,17 @@ describe('client presentation integration', () => {
     harness.listener!(harness.state)
     expect(sound.play).toHaveBeenCalledTimes(1)
     expect(sound.play).toHaveBeenCalledWith('stamp')
+
+    ghosts.clearPerformer.mockClear()
+    Object.assign(harness.state, { screen: 'reveal', author: null })
+    harness.listener!(harness.state)
+    Object.assign(harness.state, { screen: 'author', author: { replyTo: 'charade-1' } })
+    harness.listener!(harness.state)
+    expect(ghosts.clearPerformer).not.toHaveBeenCalled()
+    Object.assign(harness.state, { screen: 'reveal', author: null })
+    harness.listener!(harness.state)
+    Object.assign(harness.state, { screen: 'author', author: {} })
+    harness.listener!(harness.state)
+    expect(ghosts.clearPerformer).toHaveBeenCalledTimes(1)
   })
 })

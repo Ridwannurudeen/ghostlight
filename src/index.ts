@@ -10,6 +10,7 @@ import {
   react as reactAudience,
   replayPerformer,
   setAudience,
+  showDuet,
   showPerformer,
   showGhostOfNight,
   showPreview
@@ -31,11 +32,16 @@ export function main() {
 
   const reveal = createSceneRevealController({ play, duck: duckForReveal, restore: restoreAfterReveal })
   let stagedPerformer: Parameters<typeof showPerformer> | null = null
+  let stagedDuet: Parameters<typeof showDuet> | null = null
   let openingReadyForPerformer = false
   const opening = createSceneOpeningController(
     () => {
       openingReadyForPerformer = true
-      if (stagedPerformer) {
+      if (stagedDuet) {
+        showDuet(...stagedDuet)
+        stagedDuet = null
+        stagedPerformer = null
+      } else if (stagedPerformer) {
         showPerformer(...stagedPerformer)
         stagedPerformer = null
       }
@@ -62,12 +68,22 @@ export function main() {
     showPerformer: (look, emotes) => {
       if (opening.isRunning() && !openingReadyForPerformer) {
         stagedPerformer = [look, emotes]
+        stagedDuet = null
         return
       }
       showPerformer(look, emotes)
     },
+    showDuet: (author, reply) => {
+      if (opening.isRunning() && !openingReadyForPerformer) {
+        stagedDuet = [author, reply]
+        stagedPerformer = null
+        return
+      }
+      showDuet(author, reply)
+    },
     replayPerformer,
     showPreview,
+    clearPreview,
     showReward: setRewardProp,
     showGhostOfNight: (ghost) => {
       pedestalGhost = ghost?.look ?? null
@@ -117,7 +133,7 @@ export function main() {
 
     if (state.screen !== screen) {
       screen = state.screen
-      if (screen === 'author') clearPerformer()
+      if (screen === 'author' && !state.author?.replyTo) clearPerformer()
       if (screen === 'decode' || screen === 'foyer' || screen === 'posted') clearPreview()
       syncPedestalGhost()
     }

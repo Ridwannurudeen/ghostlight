@@ -4,6 +4,7 @@ import { HOUSE_CHARADE } from '../shared/deck'
 import type {
   Boards,
   Charade,
+  CharadeReply,
   Color,
   DailyProgress,
   Look,
@@ -40,6 +41,7 @@ const EMPTY_BOARDS: Boards = { decoders: [], hardest: [] }
 const DAY_MILLISECONDS = 24 * 60 * 60 * 1000
 const MAX_CONCURRENT_READS = 8
 const MAX_STAMPED_DAYS = 100
+const SUPPORTED_STORAGE_VERSIONS = new Set([0, 1, STORAGE_SCHEMA_VERSION])
 
 function asObject(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -160,17 +162,46 @@ export function migrateLook(value: unknown): Look | null {
   }
 }
 
+export function migrateReply(value: unknown): CharadeReply | null {
+  const stored = asObject(value)
+  if (!stored) return null
+  const look = migrateLook(stored.look)
+  const emotes = asStringArray(stored.emotes)
+  if (
+    typeof stored.address !== 'string' ||
+    typeof stored.name !== 'string' ||
+    !look ||
+    stored.address.toLowerCase() !== look.address.toLowerCase() ||
+    stored.name !== look.name ||
+    emotes.length !== 3 ||
+    emotes.some((emote) => emote.length > 64) ||
+    typeof stored.createdAt !== 'number' ||
+    !Number.isFinite(stored.createdAt)
+  ) {
+    return null
+  }
+  return {
+    address: stored.address,
+    name: stored.name,
+    look,
+    emotes: [emotes[0], emotes[1], emotes[2]],
+    createdAt: stored.createdAt
+  }
+}
+
 export function migrateCharade(value: unknown): Charade | null {
   const stored = asObject(value)
-  if (!stored || (stored.v !== 0 && stored.v !== STORAGE_SCHEMA_VERSION)) return null
+  if (!stored || typeof stored.v !== 'number' || !SUPPORTED_STORAGE_VERSIONS.has(stored.v)) return null
   const author = migrateLook(stored.author)
   const emotes = asStringArray(stored.emotes)
   const guesses = asObject(stored.guesses)
   if (
     !author ||
     typeof stored.id !== 'string' ||
+    stored.id.length > 128 ||
     typeof stored.phraseId !== 'string' ||
     emotes.length !== 3 ||
+    emotes.some((emote) => emote.length > 64) ||
     typeof stored.createdAt !== 'number' ||
     !Number.isFinite(stored.createdAt) ||
     !guesses ||
@@ -180,7 +211,7 @@ export function migrateCharade(value: unknown): Charade | null {
   }
 
   const total = asNonNegativeInt(guesses.total)
-  return {
+  const migrated: Charade = {
     v: STORAGE_SCHEMA_VERSION,
     id: stored.id,
     author,
@@ -194,11 +225,16 @@ export function migrateCharade(value: unknown): Charade | null {
     lastGuessAt: asNonNegativeInt(stored.lastGuessAt, stored.createdAt),
     isHouse: stored.isHouse
   }
+  if (stored.v === STORAGE_SCHEMA_VERSION && !stored.isHouse) {
+    const reply = migrateReply(stored.reply)
+    if (reply) migrated.reply = reply
+  }
+  return migrated
 }
 
 export function migratePlayerStats(value: unknown, name: string, now: number): PlayerStats {
   const stored = asObject(value)
-  if (!stored || (stored.v !== 0 && stored.v !== STORAGE_SCHEMA_VERSION)) {
+  if (!stored || typeof stored.v !== 'number' || !SUPPORTED_STORAGE_VERSIONS.has(stored.v)) {
     return {
       v: STORAGE_SCHEMA_VERSION,
       name,
@@ -207,7 +243,7 @@ export function migratePlayerStats(value: unknown, name: string, now: number): P
       seen: [],
       authored: [],
       lastSeenAt: now,
-      pending: { triedYou: 0, gotYou: 0 },
+      pending: { triedYou: 0, gotYou: 0, replies: 0 },
       daily: emptyDaily(dayKey(now)),
       stampedDays: [],
       title: ''
@@ -231,7 +267,8 @@ export function migratePlayerStats(value: unknown, name: string, now: number): P
     lastSeenAt: asNonNegativeInt(stored.lastSeenAt, now),
     pending: {
       triedYou: asNonNegativeInt(pending?.triedYou),
-      gotYou: asNonNegativeInt(pending?.gotYou)
+      gotYou: asNonNegativeInt(pending?.gotYou),
+      replies: asNonNegativeInt(pending?.replies)
     },
     daily,
     stampedDays: stampedDays.slice(-MAX_STAMPED_DAYS),
@@ -414,6 +451,15 @@ export class GhostCharadesState {
     this.recomputeBoards()
   }
 
+  attachReply(charadeId: string, reply: CharadeReply) {
+    const current = this.charades.get(charadeId)
+    if (!current || current.isHouse || current.reply) return false
+    const updated: Charade = { ...current, reply }
+    this.charades.set(charadeId, updated)
+    this.storage.markDirty(charadeKey(charadeId), updated)
+    return true
+  }
+
   recordGuess(charadeId: string, correct: boolean) {
     const current = this.charades.get(charadeId)
     if (!current || current.isHouse) return current ?? null
@@ -569,9 +615,9 @@ export class GhostCharadesState {
 
   consumePending(address: string, persist = true) {
     const stats = this.playerStats.get(address.toLowerCase())
-    if (!stats) return { triedYou: 0, gotYou: 0 }
+    if (!stats) return { triedYou: 0, gotYou: 0, replies: 0 }
     const pending = { ...stats.pending }
-    stats.pending = { triedYou: 0, gotYou: 0 }
+    stats.pending = { triedYou: 0, gotYou: 0, replies: 0 }
     this.saveStats(address, persist)
     return pending
   }

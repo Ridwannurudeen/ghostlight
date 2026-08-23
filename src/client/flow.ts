@@ -19,6 +19,14 @@ export type FlowScreen = 'waking' | 'foyer' | 'since' | 'decode' | 'reveal' | 'a
 export type ReactionKind = 'laugh' | 'confused' | 'genius'
 export type GhostEmotes = [string, string, string]
 
+export type DecodeReply = {
+  address: string
+  name: string
+  look: Look
+  emotes: GhostEmotes
+  createdAt: number
+}
+
 export type DecodeCharade = {
   id: string
   authorName: string
@@ -29,6 +37,7 @@ export type DecodeCharade = {
   createdAt: number
   isHouse: boolean
   authorTitle: PlayerTitle
+  reply: DecodeReply | null
 }
 
 export type ProgressView = {
@@ -40,6 +49,7 @@ export type ProgressView = {
 export type RevealResult = ProgressView & {
   charadeId: string
   correct: boolean
+  phraseId: string
   phrase: string
   stats: {
     total: number
@@ -53,6 +63,7 @@ export type RevealResult = ProgressView & {
 export type SinceSummary = ProgressView & {
   triedYou: number
   gotYou: number
+  replies: number
   rank: number
 }
 
@@ -92,6 +103,7 @@ export type AuthorDraft = {
   offeredEmotes: Emote[]
   selectedEmotes: Emote[]
   shufflesRemaining: number
+  replyTo?: string
 }
 
 export type PendingRequestKind = 'nextCharade' | 'guess' | 'roundGuess' | 'post'
@@ -123,6 +135,7 @@ export type ClientFlowState = {
   author: AuthorDraft | null
   dealtPhraseIds: string[]
   postedCharadeId: string
+  postedReplyTo: string
   boards: BoardsView
   ghostOfNight: GhostOfNightView | null
   since: SinceSummary | null
@@ -162,13 +175,20 @@ export type FlowAction =
   | { type: 'pong'; now: number }
   | { type: 'heartbeatTimeout' }
   | { type: 'charade'; charade: DecodeCharade }
+  | { type: 'charadeReply'; charadeId: string; reply: DecodeReply }
   | { type: 'reveal'; reveal: RevealResult }
   | { type: 'author'; draft: AuthorDraft }
   | { type: 'authorSelect'; emote: Emote }
   | { type: 'authorBack' }
   | { type: 'progress'; progress: ProgressView }
   | { type: 'playerTitle'; address: string; title: PlayerTitle }
-  | { type: 'posted'; result: { charadeId: string } & ProgressView & { stampAwarded: boolean; titleUnlocked: boolean } }
+  | {
+      type: 'posted'
+      result: { charadeId: string; replyTo?: string } & ProgressView & {
+          stampAwarded: boolean
+          titleUnlocked: boolean
+        }
+    }
   | { type: 'since'; summary: SinceSummary }
   | { type: 'dismissSince' }
   | { type: 'audience'; looks: Look[] }
@@ -213,6 +233,7 @@ export function createInitialFlowState(): ClientFlowState {
     author: null,
     dealtPhraseIds: [],
     postedCharadeId: '',
+    postedReplyTo: '',
     boards: { topDecoders: [], hardestGhosts: [], playbill: [], ghostOfNightId: '' },
     ghostOfNight: null,
     since: null,
@@ -321,6 +342,10 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
         errorCode: '',
         pending: state.pending.filter((request) => request.kind !== 'nextCharade')
       }
+    case 'charadeReply':
+      return state.charade?.id === action.charadeId
+        ? { ...state, charade: { ...state.charade, reply: action.reply } }
+        : state
     case 'reveal':
       return {
         ...state,
@@ -370,6 +395,7 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
         ...state,
         screen: 'posted',
         postedCharadeId: action.result.charadeId,
+        postedReplyTo: action.result.replyTo ?? '',
         progress: {
           daily: action.result.daily,
           title: action.result.title,
@@ -467,7 +493,7 @@ export type OutboundMessage =
   | { type: 'nextCharade'; data: { exclude: string[] } }
   | { type: 'guess'; data: { charadeId: string; answerIndex: number; requestId: string } }
   | { type: 'roundGuess'; data: { charadeId: string; answerIndex: number; requestId: string } }
-  | { type: 'post'; data: { phraseId: string; emotes: string[]; requestId: string } }
+  | { type: 'post'; data: { phraseId: string; emotes: string[]; requestId: string; replyTo?: string } }
 
 type ServerProgress = {
   daily?: DailyProgress
@@ -475,10 +501,15 @@ type ServerProgress = {
   nextUnlock?: NextUnlock
 }
 
-type ServerReveal = Omit<RevealResult, keyof ProgressView | 'stampAwarded' | 'titleUnlocked'> &
-  ServerProgress & { stampAwarded?: boolean; titleUnlocked?: boolean }
+type ServerReveal = Omit<RevealResult, keyof ProgressView | 'stampAwarded' | 'titleUnlocked' | 'phraseId'> &
+  ServerProgress & { phraseId?: string; stampAwarded?: boolean; titleUnlocked?: boolean }
 
-type ServerPosted = { charadeId: string } & ServerProgress & { stampAwarded?: boolean; titleUnlocked?: boolean }
+type ServerPosted = { charadeId: string; replyTo?: string } & ServerProgress & {
+    stampAwarded?: boolean
+    titleUnlocked?: boolean
+  }
+
+type ServerReply = Omit<DecodeReply, 'emotes'> & { charadeId: string; emotes: string[] }
 
 export type ServerMessage =
   | {
@@ -490,15 +521,19 @@ export type ServerMessage =
   | { type: 'playerTitle'; data: { address: string; title: string } }
   | {
       type: 'charade'
-      data: Omit<DecodeCharade, 'emotes' | 'answers' | 'authorTitle'> & {
+      data: Omit<DecodeCharade, 'emotes' | 'answers' | 'authorTitle' | 'reply'> & {
         emotes: string[]
         answers: string[]
         authorTitle?: string
       }
     }
+  | { type: 'charadeReply'; data: ServerReply }
   | { type: 'reveal'; data: ServerReveal }
   | { type: 'posted'; data: ServerPosted }
-  | { type: 'since'; data: Pick<SinceSummary, 'triedYou' | 'gotYou' | 'rank'> & ServerProgress }
+  | {
+      type: 'since'
+      data: Pick<SinceSummary, 'triedYou' | 'gotYou' | 'rank'> & { replies?: number } & ServerProgress
+    }
   | { type: 'audience'; data: { looks: Look[] } }
   | { type: 'boards'; data: BoardsView }
   | { type: 'ghostOfNight'; data: GhostOfNightView }
@@ -509,8 +544,10 @@ export type ServerMessage =
 
 export type FlowEffects = {
   showPerformer?: (look: Look, emotes: GhostEmotes) => void
+  showDuet?: (author: { look: Look; emotes: GhostEmotes }, reply: DecodeReply) => void
   replayPerformer?: () => void
   showPreview?: (look: Look, emotes: GhostEmotes) => void
+  clearPreview?: () => void
   showReward?: (address: string, title: PlayerTitle) => void
   showGhostOfNight?: (ghost: GhostOfNightView | null) => void
   beginReveal?: (charade: DecodeCharade, answerIndex: number) => void
@@ -548,6 +585,24 @@ function progressFrom(data: ServerProgress, fallback: ProgressView): ProgressVie
   return { daily: data.daily, title: data.title, nextUnlock: data.nextUnlock }
 }
 
+function canonicalAddress(address: string) {
+  return address.toLowerCase()
+}
+
+export function canAnswerBack(state: ClientFlowState) {
+  return (
+    state.ready &&
+    state.screen === 'reveal' &&
+    !!state.playerAddress &&
+    !!state.charade &&
+    !state.charade.isHouse &&
+    !state.charade.reply &&
+    canonicalAddress(state.charade.authorAddress) !== canonicalAddress(state.playerAddress) &&
+    state.reveal?.charadeId === state.charade.id &&
+    !!state.reveal.phraseId
+  )
+}
+
 export function createFlowRuntime(options: FlowRuntimeOptions) {
   let state = createInitialFlowState()
   let effects = options.effects ?? {}
@@ -558,6 +613,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
   let lastHelloInstance = ''
   let roundMismatchRefetchAttempted = false
   const requests = new Map<string, StoredRequest>()
+  const pendingReplies = new Map<string, DecodeReply>()
   const listeners = new Set<(nextState: ClientFlowState) => void>()
   const now = options.now ?? Date.now
   const createRequestId = options.createRequestId ?? (() => `${Math.floor(now())}-${++requestSequence}`)
@@ -659,8 +715,10 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           authorTitle:
             typeof message.data.authorTitle === 'string' && isPlayerTitle(message.data.authorTitle)
               ? message.data.authorTitle
-              : ''
+              : '',
+          reply: pendingReplies.get(message.data.id) ?? null
         }
+        pendingReplies.delete(message.data.id)
         resolveRequests('nextCharade')
         if (state.roundCharadeId && state.roundCharadeId !== charade.id && !roundMismatchRefetchAttempted) {
           if (requestNextCharade()) {
@@ -670,8 +728,37 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         }
         effects.cancelReveal?.()
         dispatch({ type: 'charade', charade })
-        effects.showPerformer?.(charade.look, charade.emotes)
+        if (charade.reply) {
+          effects.showDuet?.({ look: charade.look, emotes: charade.emotes }, charade.reply)
+        } else {
+          effects.showPerformer?.(charade.look, charade.emotes)
+        }
         effects.showReward?.(charade.authorAddress, charade.authorTitle)
+        break
+      }
+      case 'charadeReply': {
+        if (
+          !message.data.charadeId ||
+          message.data.emotes.length !== 3 ||
+          canonicalAddress(message.data.address) !== canonicalAddress(message.data.look.address)
+        ) {
+          break
+        }
+        const [first, second, third] = message.data.emotes
+        const reply: DecodeReply = {
+          address: message.data.address,
+          name: message.data.name,
+          look: message.data.look,
+          emotes: [first, second, third],
+          createdAt: message.data.createdAt
+        }
+        if (state.charade?.id === message.data.charadeId) {
+          dispatch({ type: 'charadeReply', charadeId: message.data.charadeId, reply })
+          effects.showDuet?.({ look: state.charade.look, emotes: state.charade.emotes }, reply)
+        } else {
+          pendingReplies.set(message.data.charadeId, reply)
+          if (pendingReplies.size > 20) pendingReplies.delete(pendingReplies.keys().next().value!)
+        }
         break
       }
       case 'reveal':
@@ -680,6 +767,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         const reveal: RevealResult = {
           ...message.data,
           ...revealProgress,
+          phraseId: message.data.phraseId ?? '',
           stampAwarded: message.data.stampAwarded === true,
           titleUnlocked: message.data.titleUnlocked === true
         }
@@ -693,6 +781,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         const postedProgress = progressFrom(message.data, state.progress)
         const result = {
           charadeId: message.data.charadeId,
+          replyTo: message.data.replyTo,
           ...postedProgress,
           stampAwarded: message.data.stampAwarded === true,
           titleUnlocked: message.data.titleUnlocked === true
@@ -704,7 +793,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
       }
       case 'since': {
         const sinceProgress = progressFrom(message.data, state.progress)
-        dispatch({ type: 'since', summary: { ...message.data, ...sinceProgress } })
+        dispatch({ type: 'since', summary: { ...message.data, replies: message.data.replies ?? 0, ...sinceProgress } })
         if (state.playerAddress) effects.showReward?.(state.playerAddress, sinceProgress.title)
         break
       }
@@ -871,6 +960,29 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     return true
   }
 
+  function beginAnswerBack() {
+    if (!canAnswerBack(state)) return false
+    const charade = state.charade!
+    const phrase = DECK.find((candidate) => candidate.id === state.reveal!.phraseId)
+    if (!phrase) {
+      dispatch({ type: 'error', code: 'invalid_reply_phrase' })
+      return false
+    }
+    effects.cancelReveal?.()
+    const seed = createRequestId()
+    dispatch({
+      type: 'author',
+      draft: {
+        phrase,
+        offeredEmotes: offerEmotes(phrase, seed),
+        selectedEmotes: [],
+        shufflesRemaining: 0,
+        replyTo: charade.id
+      }
+    })
+    return true
+  }
+
   function shuffleAuthorPhrase() {
     if (!state.author || state.author.shufflesRemaining <= 0) return false
     const seed = createRequestId()
@@ -914,7 +1026,12 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
       'post',
       {
         type: 'post',
-        data: { phraseId: state.author.phrase.id, emotes: [...state.author.selectedEmotes], requestId }
+        data: {
+          phraseId: state.author.phrase.id,
+          emotes: [...state.author.selectedEmotes],
+          requestId,
+          ...(state.author.replyTo ? { replyTo: state.author.replyTo } : {})
+        }
       },
       requestId
     )
@@ -941,11 +1058,14 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
       return true
     },
     beginAuthoring,
+    beginAnswerBack,
+    canAnswerBack: () => canAnswerBack(state),
     shuffleAuthorPhrase,
     selectAuthorEmote,
     previewAuthor,
     postAuthor,
     backFromAuthor() {
+      effects.clearPreview?.()
       dispatch({ type: 'authorBack' })
     },
     dismissSince() {
@@ -1030,12 +1150,17 @@ export function startClientFlow() {
   room.onMessage('progress', (data) => clientFlow.receive({ type: 'progress', data: data as unknown as ProgressView }))
   room.onMessage('playerTitle', (data) => clientFlow.receive({ type: 'playerTitle', data }))
   room.onMessage('charade', (data) => clientFlow.receive({ type: 'charade', data }))
+  room.onMessage('charadeReply', (data) =>
+    clientFlow.receive({ type: 'charadeReply', data: data as unknown as ServerReply })
+  )
   room.onMessage('reveal', (data) => clientFlow.receive({ type: 'reveal', data: data as unknown as ServerReveal }))
   room.onMessage('posted', (data) => clientFlow.receive({ type: 'posted', data: data as unknown as ServerPosted }))
   room.onMessage('since', (data) =>
     clientFlow.receive({
       type: 'since',
-      data: data as unknown as Pick<SinceSummary, 'triedYou' | 'gotYou' | 'rank'> & ServerProgress
+      data: data as unknown as Pick<SinceSummary, 'triedYou' | 'gotYou' | 'rank'> & {
+        replies?: number
+      } & ServerProgress
     })
   )
   room.onMessage('audience', (data) => clientFlow.receive({ type: 'audience', data }))

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const uiTest = vi.hoisted(() => ({
   region: 'house',
+  canReply: false,
   opening: { active: false, instruction: '' },
   state: {} as Record<string, unknown>
 }))
@@ -27,6 +28,7 @@ vi.mock('../src/client/opening-scene', () => ({
 }))
 
 vi.mock('../src/client/flow', () => ({
+  canAnswerBack: () => uiTest.canReply,
   clientFlow: {
     getState: () => uiTest.state,
     guess: vi.fn(),
@@ -114,6 +116,7 @@ function stateFor(screen: 'decode' | 'reveal' | 'posted') {
 describe('UI colors', () => {
   beforeEach(() => {
     uiTest.region = 'house'
+    uiTest.canReply = false
     uiTest.opening = { active: false, instruction: '' }
     uiTest.state = stateFor('decode')
   })
@@ -183,5 +186,15 @@ describe('decode region gates', () => {
 
     expect(buttons).toContainEqual({ value: expectedLabel, disabled })
     if (disabled) expect(buttons.some((button) => button.value === originalLabel)).toBe(false)
+  })
+
+  it('shows answer-back only for an eligible revealed charade', () => {
+    uiTest.region = 'stage'
+    uiTest.state = stateFor('reveal')
+    uiTest.canReply = true
+    expect(collectButtons(uiComponent())).toContainEqual({ value: 'ANSWER BACK', disabled: false })
+
+    uiTest.canReply = false
+    expect(collectButtons(uiComponent()).some((button) => button.value === 'ANSWER BACK')).toBe(false)
   })
 })

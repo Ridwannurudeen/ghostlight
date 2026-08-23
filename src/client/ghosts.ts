@@ -12,6 +12,11 @@ import {
 export type GhostEmotes = readonly [string, string, string]
 export type AudienceReaction = 'clap' | 'shrug' | 'laugh' | 'confused' | 'genius'
 
+export type DuetPerformer = {
+  look: Look
+  emotes: GhostEmotes
+}
+
 type GhostSlot = {
   entity: Entity
   active: boolean
@@ -26,6 +31,14 @@ type GhostSlot = {
 type QueuedAudienceGhost = {
   look: Look
   slotIndex: number
+}
+
+type DuetState = {
+  sequences: readonly [GhostEmotes, GhostEmotes]
+  performerIndex: 0 | 1
+  emoteIndex: number
+  elapsed: number
+  frozen: boolean
 }
 
 const AUDIENCE_START_INDEX = 1
@@ -43,6 +56,7 @@ let audienceQueue: QueuedAudienceGhost[] = []
 let audienceSpawnClock = 0
 let wantedAudience: Look[] = []
 let ghostOfNightActive = false
+let duet: DuetState | null = null
 
 export function initializeGhosts() {
   if (initialized) return
@@ -62,11 +76,34 @@ export function initializeGhosts() {
 
 export function showPerformer(look: Look, emotes: GhostEmotes) {
   initializeGhosts()
+  cancelDuet()
   showGhost(slots[0], look, emotes)
+}
+
+export function showDuet(author: DuetPerformer, reply: DuetPerformer) {
+  initializeGhosts()
+  cancelDuet()
+  showGhost(slots[0], author.look, null)
+  showGhost(slots[PREVIEW_INDEX], reply.look, null)
+  duet = {
+    sequences: [author.emotes, reply.emotes],
+    performerIndex: 0,
+    emoteIndex: 0,
+    elapsed: 0,
+    frozen: false
+  }
+  trigger(slots[0], author.emotes[0])
 }
 
 export function replayPerformer() {
   initializeGhosts()
+  if (duet) {
+    duet.performerIndex = 0
+    duet.emoteIndex = 0
+    duet.elapsed = 0
+    trigger(slots[0], duet.sequences[0][0])
+    return
+  }
   const performer = slots[0]
   if (!performer.active || performer.sequence === null) return
   performer.emoteIndex = 0
@@ -76,11 +113,16 @@ export function replayPerformer() {
 
 export function freezePerformer() {
   initializeGhosts()
+  if (duet) duet.frozen = true
   slots[0].frozen = true
 }
 
 export function resumePerformer() {
   initializeGhosts()
+  if (duet) {
+    duet.frozen = false
+    duet.elapsed = 0
+  }
   slots[0].frozen = false
   slots[0].elapsed = 0
 }
@@ -92,6 +134,7 @@ export function playPerformerEmote(emote: string) {
 
 export function clearPerformer() {
   initializeGhosts()
+  cancelDuet()
   hideGhost(slots[0])
 }
 
@@ -174,11 +217,13 @@ export function clearGhostOfNight() {
 
 export function showPreview(look: Look, emotes: GhostEmotes) {
   initializeGhosts()
+  cancelDuet()
   showGhost(slots[PREVIEW_INDEX], look, emotes)
 }
 
 export function clearPreview() {
   initializeGhosts()
+  duet = null
   hideGhost(slots[PREVIEW_INDEX])
 }
 
@@ -197,6 +242,7 @@ export function getPerformerEntity() {
 
 function ghostSystem(dt: number) {
   spawnNextAudienceGhost(dt)
+  advanceDuet(dt)
   for (const slot of slots) {
     if (!slot.active || slot.sequence === null || slot.frozen) continue
     slot.elapsed += dt
@@ -205,6 +251,23 @@ function ghostSystem(dt: number) {
     slot.emoteIndex = (slot.emoteIndex + 1) % slot.sequence.length
     trigger(slot, slot.sequence[slot.emoteIndex])
   }
+}
+
+function advanceDuet(dt: number) {
+  if (!duet || duet.frozen) return
+  duet.elapsed += dt
+  if (duet.elapsed < EMOTE_STEP_SECONDS) return
+
+  duet.elapsed = 0
+  if (duet.emoteIndex < duet.sequences[duet.performerIndex].length - 1) {
+    duet.emoteIndex += 1
+  } else {
+    duet.performerIndex = duet.performerIndex === 0 ? 1 : 0
+    duet.emoteIndex = 0
+  }
+
+  const slotIndex = duet.performerIndex === 0 ? 0 : PREVIEW_INDEX
+  trigger(slots[slotIndex], duet.sequences[duet.performerIndex][duet.emoteIndex])
 }
 
 function spawnNextAudienceGhost(dt: number) {
@@ -248,6 +311,12 @@ function hideGhost(slot: GhostSlot) {
   slot.emoteIndex = 0
   slot.elapsed = 0
   slot.frozen = false
+}
+
+function cancelDuet() {
+  if (!duet) return
+  duet = null
+  hideGhost(slots[PREVIEW_INDEX])
 }
 
 function trigger(slot: GhostSlot, emote: string) {

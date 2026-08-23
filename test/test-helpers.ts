@@ -1,6 +1,13 @@
 import type { Phrase } from '../src/shared/deck'
 import { DECK } from '../src/shared/deck'
-import { STORAGE_SCHEMA_VERSION, type Boards, type Charade, type Look, type PlayerStats } from '../src/shared/types'
+import {
+  STORAGE_SCHEMA_VERSION,
+  type Boards,
+  type Charade,
+  type CharadeReply,
+  type Look,
+  type PlayerStats
+} from '../src/shared/types'
 import type { StoragePort } from '../src/server/storage'
 
 export const FIXED_NOW = Date.UTC(2026, 7, 23, 12)
@@ -124,6 +131,17 @@ export function makeLook(address: string, name = address): Look {
   }
 }
 
+export function makeReply(address = 'replier', name = 'Replier', overrides: Partial<CharadeReply> = {}): CharadeReply {
+  return {
+    address,
+    name,
+    look: makeLook(address, name),
+    emotes: [...DECK[0].suggested],
+    createdAt: FIXED_NOW,
+    ...overrides
+  }
+}
+
 export function makeCharade(
   id: string,
   overrides: Partial<Omit<Charade, 'guesses' | 'author'>> & {
@@ -158,7 +176,7 @@ export function makeStats(overrides: Partial<PlayerStats> = {}): PlayerStats {
     seen: [],
     authored: [],
     lastSeenAt: FIXED_NOW,
-    pending: { triedYou: 0, gotYou: 0 },
+    pending: { triedYou: 0, gotYou: 0, replies: 0 },
     daily: { day: '2026-08-23', decoded: 0, authored: 0, stamped: false },
     stampedDays: [],
     title: '',

@@ -14,6 +14,7 @@ vi.mock('@dcl/sdk/ecs', () => ({
   Schemas: {
     Map: (value: unknown) => value,
     Array: (value: unknown) => value,
+    Optional: (value: unknown) => value,
     String: 'string',
     Boolean: 'boolean',
     Number: 'number',
@@ -45,7 +46,8 @@ function makeDecodeCharade(id = 'charade-1'): DecodeCharade {
     answers: ['Answer one', 'Answer two', 'Answer three'],
     createdAt: FIXED_NOW,
     isHouse: false,
-    authorTitle: ''
+    authorTitle: '',
+    reply: null
   }
 }
 
@@ -59,8 +61,10 @@ function createFlowHarness(
   const sent: OutboundMessage[] = []
   const effects = {
     showPerformer: vi.fn(),
+    showDuet: vi.fn(),
     replayPerformer: vi.fn(),
     showPreview: vi.fn(),
+    clearPreview: vi.fn(),
     showReward: vi.fn(),
     showGhostOfNight: vi.fn(),
     beginReveal: vi.fn(),
@@ -162,6 +166,129 @@ describe('flow reducer', () => {
 })
 
 describe('flow lifecycle', () => {
+  it('pairs a separate reply message with its charade even when it arrives first', () => {
+    const { runtime, effects } = createFlowHarness()
+    runtime.receive({ type: 'ready', data: { instanceId: 'server-1', serverTime: FIXED_NOW } })
+    const charade = makeDecodeCharade()
+    const reply = {
+      charadeId: charade.id,
+      address: '0xReply',
+      name: 'Reply',
+      look: makeLook('0xReply', 'Reply'),
+      emotes: ['dance', 'wave', 'clap'],
+      createdAt: FIXED_NOW + 1
+    }
+
+    runtime.receive({ type: 'charadeReply', data: reply })
+    runtime.receive({ type: 'charade', data: charade })
+
+    expect(runtime.getState().charade?.reply).toEqual({
+      address: reply.address,
+      name: reply.name,
+      look: reply.look,
+      emotes: reply.emotes,
+      createdAt: reply.createdAt
+    })
+    expect(effects.showDuet).toHaveBeenCalledWith(
+      { look: charade.look, emotes: charade.emotes },
+      expect.objectContaining({ address: '0xReply', emotes: reply.emotes })
+    )
+    expect(effects.showPerformer).not.toHaveBeenCalled()
+  })
+
+  it('uses the revealed server phrase for an answer-back and posts it without shuffle or progression changes', () => {
+    const { runtime, sent, effects } = createFlowHarness()
+    runtime.receive({ type: 'ready', data: { instanceId: 'server-1', serverTime: FIXED_NOW } })
+    const charade = makeDecodeCharade()
+    runtime.receive({ type: 'charade', data: charade })
+    runtime.receive({
+      type: 'reveal',
+      data: {
+        charadeId: charade.id,
+        correct: true,
+        phraseId: DECK[0].id,
+        phrase: DECK[0].text,
+        stats: { total: 1, correct: 1 },
+        yourScore: 1
+      }
+    })
+
+    expect(runtime.canAnswerBack()).toBe(true)
+    expect(runtime.beginAnswerBack()).toBe(true)
+    const draft = runtime.getState().author!
+    expect(draft).toMatchObject({ phrase: DECK[0], shufflesRemaining: 0, replyTo: charade.id })
+    expect(runtime.shuffleAuthorPhrase()).toBe(false)
+    draft.offeredEmotes.slice(0, 3).forEach((emote) => runtime.selectAuthorEmote(emote))
+    expect(runtime.previewAuthor()).toBe(true)
+    runtime.backFromAuthor()
+    expect(effects.clearPreview).toHaveBeenCalledTimes(1)
+    expect(runtime.beginAnswerBack()).toBe(true)
+    runtime
+      .getState()
+      .author!.offeredEmotes.slice(0, 3)
+      .forEach((emote) => runtime.selectAuthorEmote(emote))
+    expect(runtime.postAuthor()).toBe(true)
+    expect(messagesOfType(sent, 'post').at(-1)?.data).toMatchObject({
+      phraseId: DECK[0].id,
+      replyTo: charade.id
+    })
+
+    runtime.receive({ type: 'posted', data: { charadeId: charade.id, replyTo: charade.id } })
+    expect(runtime.getState()).toMatchObject({ screen: 'posted', postedReplyTo: charade.id })
+  })
+
+  it('blocks answer-backs to house, self-authored, and already-paired charades', () => {
+    const { runtime } = createFlowHarness({ address: '0xPlayer' })
+    runtime.receive({ type: 'ready', data: { instanceId: 'server-1', serverTime: FIXED_NOW } })
+    const scenarios = [
+      { ...makeDecodeCharade('house'), isHouse: true },
+      { ...makeDecodeCharade('self'), authorAddress: '0xPLAYER' }
+    ]
+    for (const charade of scenarios) {
+      runtime.receive({ type: 'charade', data: charade })
+      runtime.receive({
+        type: 'reveal',
+        data: {
+          charadeId: charade.id,
+          correct: true,
+          phraseId: DECK[0].id,
+          phrase: DECK[0].text,
+          stats: { total: 1, correct: 1 },
+          yourScore: 1
+        }
+      })
+      expect(runtime.canAnswerBack()).toBe(false)
+      expect(runtime.beginAnswerBack()).toBe(false)
+    }
+
+    const paired = makeDecodeCharade('paired')
+    runtime.receive({ type: 'charade', data: paired })
+    runtime.receive({
+      type: 'charadeReply',
+      data: {
+        charadeId: paired.id,
+        address: '0xReply',
+        name: 'Reply',
+        look: makeLook('0xReply', 'Reply'),
+        emotes: ['wave', 'clap', 'dab'],
+        createdAt: FIXED_NOW
+      }
+    })
+    runtime.receive({
+      type: 'reveal',
+      data: {
+        charadeId: paired.id,
+        correct: true,
+        phraseId: DECK[0].id,
+        phrase: DECK[0].text,
+        stats: { total: 1, correct: 1 },
+        yourScore: 1
+      }
+    })
+    expect(runtime.canAnswerBack()).toBe(false)
+    expect(runtime.beginAnswerBack()).toBe(false)
+  })
+
   it('stores the real show theme, authoritative progression, visible titles, playbill, and Ghost of the Night', () => {
     const { runtime, effects } = createFlowHarness()
     runtime.receive({

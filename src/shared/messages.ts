@@ -96,6 +96,7 @@ export const Messages = {
   reveal: Schemas.Map({
     charadeId: Schemas.String,
     correct: Schemas.Boolean,
+    phraseId: Schemas.String,
     phrase: Schemas.String,
     stats: Schemas.Map({
       total: Schemas.Int,
@@ -111,10 +112,12 @@ export const Messages = {
   post: Schemas.Map({
     phraseId: Schemas.String,
     emotes: Schemas.Array(Schemas.String),
-    requestId: Schemas.String
+    requestId: Schemas.String,
+    replyTo: Schemas.Optional(Schemas.String)
   }),
   posted: Schemas.Map({
     charadeId: Schemas.String,
+    replyTo: Schemas.Optional(Schemas.String),
     daily,
     stampAwarded: Schemas.Boolean,
     title: Schemas.String,
@@ -124,6 +127,7 @@ export const Messages = {
   since: Schemas.Map({
     triedYou: Schemas.Int,
     gotYou: Schemas.Int,
+    replies: Schemas.Int,
     rank: Schemas.Int,
     daily,
     title: Schemas.String,
@@ -144,6 +148,14 @@ export const Messages = {
     look,
     total: Schemas.Int,
     correct: Schemas.Int
+  }),
+  charadeReply: Schemas.Map({
+    charadeId: Schemas.String,
+    address: Schemas.String,
+    name: Schemas.String,
+    look,
+    emotes: Schemas.Array(Schemas.String),
+    createdAt: Schemas.Int64
   }),
   roundStart: Schemas.Map({ charadeId: Schemas.String }),
   roundGuess: Schemas.Map({

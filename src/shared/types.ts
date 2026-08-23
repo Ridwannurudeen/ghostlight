@@ -1,6 +1,6 @@
 import type { PlayerTitle } from './config'
 
-export const STORAGE_SCHEMA_VERSION = 1
+export const STORAGE_SCHEMA_VERSION = 2
 
 export type Color = {
   r: number
@@ -19,6 +19,14 @@ export type Look = {
   wearables: string[]
 }
 
+export type CharadeReply = {
+  address: string
+  name: string
+  look: Look
+  emotes: [string, string, string]
+  createdAt: number
+}
+
 export type Charade = {
   v: number
   id: string
@@ -32,6 +40,7 @@ export type Charade = {
   }
   lastGuessAt: number
   isHouse: boolean
+  reply?: CharadeReply
 }
 
 export type DailyProgress = {
@@ -52,6 +61,7 @@ export type PlayerStats = {
   pending: {
     triedYou: number
     gotYou: number
+    replies: number
   }
   daily: DailyProgress
   stampedDays: string[]

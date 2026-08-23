@@ -3,7 +3,7 @@ import ReactEcs, { Button, Label, UiEntity, type UiTransformProps } from '@dcl/s
 import { copyToClipboard } from '~system/RestrictedActions'
 import { INVITE_URL, THEMES } from '../shared/config'
 import type { Emote } from '../shared/deck'
-import { clientFlow, type ClientFlowState } from './flow'
+import { canAnswerBack, clientFlow, type ClientFlowState } from './flow'
 import { getOpeningViewState, skipOpening, type OpeningViewState } from './opening-scene'
 import { REACTION_OPTIONS, sendReaction } from './reactions'
 import { getRevealViewState, type RevealViewState } from './reveal-scene'
@@ -173,7 +173,7 @@ function foyerScreen(state: ClientFlowState) {
 function sinceScreen(state: ClientFlowState) {
   const since = state.since
   const sentence = since
-    ? `Since you left, ${since.triedYou} people tried to decode you and ${since.gotYou} got it.`
+    ? `Since you left, ${since.triedYou} people tried to decode you, ${since.gotYou} got it, and ${since.replies} answered back.`
     : 'Your returning audience report is ready.'
   return screenShell(
     sentence,
@@ -230,12 +230,13 @@ function reactions() {
 function decodeScreen(state: ClientFlowState) {
   const charade = state.charade
   if (!charade) return wakingScreen(state)
-  const label = charade.isHouse ? 'HOUSE GHOST' : `GHOST · ${charade.authorName.toUpperCase()}`
+  const performers = charade.reply ? `${charade.authorName} + ${charade.reply.name}` : charade.authorName
+  const label = charade.isHouse ? 'HOUSE GHOST' : `GHOST · ${performers.toUpperCase()}`
   const waiting = state.pending.some((request) => request.kind === 'guess' || request.kind === 'roundGuess')
   return (
     <UiEntity uiTransform={{ width: '100%', height: '100%' }}>
       {screenShell(
-        `What is ${charade.authorName} saying?`,
+        `What ${charade.reply ? 'are' : 'is'} ${performers} saying?`,
         <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column' }}>
           <Label
             value={label}
@@ -274,6 +275,7 @@ function revealScreen(state: ClientFlowState) {
   const author = state.charade?.authorName ?? 'The ghost'
   const canDecode = canDecodeInCurrentRegion()
   const presentation = getRevealViewState()
+  const canReply = canAnswerBack(state)
   const sentence = presentation.verdict
     ? reveal
       ? `${author} meant “${reveal.phrase}”.`
@@ -343,9 +345,28 @@ function revealScreen(state: ClientFlowState) {
           />
         </UiEntity>
       ) : null}
-      {actionButton(canDecode ? 'NEXT GHOST' : 'WALK TO THE STAGE', () => clientFlow.requestNextCharade(), !canDecode)}
-      {actionButton('MAKE YOUR OWN', () => clientFlow.beginAuthoring(), false, 'secondary')}
-      {actionButton("TODAY'S BOARDS", () => clientFlow.showBoards(), false, 'secondary')}
+      <UiEntity uiTransform={{ width: '100%', flexDirection: 'row', justifyContent: 'space-between' }}>
+        <UiEntity uiTransform={{ width: canReply ? '49%' : '100%' }}>
+          {actionButton(
+            canDecode ? 'NEXT GHOST' : 'WALK TO THE STAGE',
+            () => clientFlow.requestNextCharade(),
+            !canDecode
+          )}
+        </UiEntity>
+        {canReply ? (
+          <UiEntity uiTransform={{ width: '49%' }}>
+            {actionButton('ANSWER BACK', () => clientFlow.beginAnswerBack(), false, 'secondary')}
+          </UiEntity>
+        ) : null}
+      </UiEntity>
+      <UiEntity uiTransform={{ width: '100%', flexDirection: 'row', justifyContent: 'space-between' }}>
+        <UiEntity uiTransform={{ width: '49%' }}>
+          {actionButton('MAKE YOUR OWN', () => clientFlow.beginAuthoring(), false, 'secondary')}
+        </UiEntity>
+        <UiEntity uiTransform={{ width: '49%' }}>
+          {actionButton("TODAY'S BOARDS", () => clientFlow.showBoards(), false, 'secondary')}
+        </UiEntity>
+      </UiEntity>
     </UiEntity>,
     state
   )
@@ -392,8 +413,9 @@ function authorScreen(state: ClientFlowState) {
   if (!author) return foyerScreen(state)
   const readyToPost = author.selectedEmotes.length === 3
   const posting = state.pending.some((request) => request.kind === 'post')
+  const replying = !!author.replyTo
   return screenShell(
-    `Act out “${author.phrase.text}” by choosing three emotes in order.`,
+    `${replying ? 'Answer back to' : 'Act out'} “${author.phrase.text}” by choosing three emotes in order.`,
     <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column' }}>
       <UiEntity
         uiTransform={{
@@ -412,7 +434,7 @@ function authorScreen(state: ClientFlowState) {
         </UiEntity>
         <UiEntity uiTransform={{ width: '24%' }}>
           {actionButton(
-            `SHUFFLE · ${author.shufflesRemaining}`,
+            replying ? 'SAME PHRASE' : `SHUFFLE · ${author.shufflesRemaining}`,
             () => clientFlow.shuffleAuthorPhrase(),
             author.shufflesRemaining === 0 || posting,
             'secondary'
@@ -422,7 +444,7 @@ function authorScreen(state: ClientFlowState) {
           {actionButton('PREVIEW', () => clientFlow.previewAuthor(), !readyToPost || posting, 'secondary')}
         </UiEntity>
         <UiEntity uiTransform={{ width: '24%' }}>
-          {actionButton('POST', () => clientFlow.postAuthor(), !readyToPost || posting)}
+          {actionButton(replying ? 'SEND REPLY' : 'POST', () => clientFlow.postAuthor(), !readyToPost || posting)}
         </UiEntity>
       </UiEntity>
     </UiEntity>,
@@ -433,7 +455,9 @@ function authorScreen(state: ClientFlowState) {
 function postedScreen(state: ClientFlowState) {
   const canDecode = canDecodeInCurrentRegion()
   return screenShell(
-    'Your ghost is on stage for the next stranger.',
+    state.postedReplyTo
+      ? `Your answer-back joined ${state.charade?.authorName ?? 'the original performer'}.`
+      : 'Your ghost is on stage for the next stranger.',
     <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', justifyContent: 'center' }}>
       {actionButton('COPY INVITE', () => clientFlow.showInvite())}
       {actionButton("TODAY'S BOARDS", () => clientFlow.showBoards(), false, 'secondary')}
