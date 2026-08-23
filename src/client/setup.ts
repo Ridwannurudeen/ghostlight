@@ -1,4 +1,5 @@
 import { MainCamera, TouchScreenControls, Transform, VirtualCamera, engine, type Entity } from '@dcl/sdk/ecs'
+import { Vector3 } from '@dcl/sdk/math'
 import { getPlatform, isMobile, type Platform } from '@dcl/sdk/platform'
 import { ReactEcsRenderer, type UiComponent } from '@dcl/sdk/react-ecs'
 import { getPerformerEntity, initializeGhosts } from './ghosts'
@@ -6,12 +7,21 @@ import { STAGE_CAMERA_POSITION, createTheater, getTheaterRegion, isInDecodeArea,
 
 const SETUP_SYSTEM = 'ghost-charades::client-setup'
 
+export type TheaterCamera = 'foyer' | 'stage' | 'reveal'
+
+const CAMERA_POSITIONS: Record<TheaterCamera, ReturnType<typeof Vector3.create>> = {
+  foyer: Vector3.create(8, 3.55, 0.75),
+  stage: STAGE_CAMERA_POSITION,
+  reveal: Vector3.create(8, 2.25, 9.15)
+}
+
 let started = false
 let platform: Platform | null = null
 let mobile = false
 let currentRegion: TheaterRegion = 'outside'
-let stageCameraActive = false
-let cameraEntity: Entity | null = null
+let currentCamera: TheaterCamera | 'player' = 'player'
+let cameraOverride: TheaterCamera | null = null
+let cameraEntities: Partial<Record<TheaterCamera, Entity>> = {}
 let uiRenderer: UiComponent | null = null
 
 export function startClientSetup(renderer: UiComponent) {
@@ -22,23 +32,25 @@ export function startClientSetup(renderer: UiComponent) {
   createTheater()
   initializeGhosts()
 
-  cameraEntity = engine.addEntity()
-  Transform.create(cameraEntity, { position: STAGE_CAMERA_POSITION })
-  VirtualCamera.create(cameraEntity, { lookAtEntity: getPerformerEntity() })
+  const lookAtEntity = getPerformerEntity()
+  cameraEntities = {
+    foyer: createVirtualCamera('foyer', lookAtEntity),
+    stage: createVirtualCamera('stage', lookAtEntity),
+    reveal: createVirtualCamera('reveal', lookAtEntity)
+  }
+  applyRequestedCamera()
 
   engine.addSystem(clientSetupSystem, undefined, SETUP_SYSTEM)
 }
 
-function engageStageCamera() {
-  if (stageCameraActive || cameraEntity === null) return
-  MainCamera.createOrReplace(engine.CameraEntity, { virtualCameraEntity: cameraEntity })
-  stageCameraActive = true
+export function switchTheaterCamera(camera: TheaterCamera) {
+  cameraOverride = camera
+  applyRequestedCamera()
 }
 
-function releaseStageCamera() {
-  if (!stageCameraActive) return
-  MainCamera.createOrReplace(engine.CameraEntity, { virtualCameraEntity: undefined })
-  stageCameraActive = false
+export function releaseTheaterCamera() {
+  cameraOverride = null
+  applyRequestedCamera()
 }
 
 export function getCurrentTheaterRegion() {
@@ -54,10 +66,38 @@ function clientSetupSystem() {
 
   const playerTransform = Transform.getOrNull(engine.PlayerEntity)
   if (playerTransform === null) return
-  const playerPosition = playerTransform.position
-  currentRegion = getTheaterRegion(playerPosition)
-  if (isInDecodeArea(playerPosition)) engageStageCamera()
-  else releaseStageCamera()
+  currentRegion = getTheaterRegion(playerTransform.position)
+  if (cameraOverride === null) applyRequestedCamera()
+}
+
+function applyRequestedCamera() {
+  const requestedCamera = cameraOverride ?? getAutomaticCamera()
+  if (requestedCamera === currentCamera) return
+  if (requestedCamera === 'player') {
+    MainCamera.createOrReplace(engine.CameraEntity, { virtualCameraEntity: undefined })
+    currentCamera = 'player'
+    return
+  }
+
+  const entity = cameraEntities[requestedCamera]
+  if (entity === undefined) return
+  MainCamera.createOrReplace(engine.CameraEntity, { virtualCameraEntity: entity })
+  currentCamera = requestedCamera
+}
+
+function getAutomaticCamera(): TheaterCamera | 'player' {
+  const playerTransform = Transform.getOrNull(engine.PlayerEntity)
+  return playerTransform !== null && isInDecodeArea(playerTransform.position) ? 'stage' : 'player'
+}
+
+function createVirtualCamera(camera: TheaterCamera, lookAtEntity: Entity) {
+  const entity = engine.addEntity()
+  Transform.create(entity, { position: CAMERA_POSITIONS[camera] })
+  VirtualCamera.create(entity, {
+    defaultTransition: { transitionMode: VirtualCamera.Transition.Time(0.6) },
+    lookAtEntity
+  })
+  return entity
 }
 
 function configurePlatform(detectedPlatform: Platform) {
