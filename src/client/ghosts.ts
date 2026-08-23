@@ -15,6 +15,7 @@ type GhostSlot = {
   emoteIndex: number
   elapsed: number
   lamport: number
+  frozen: boolean
 }
 
 type QueuedAudienceGhost = {
@@ -63,6 +64,22 @@ export function replayPerformer() {
   performer.emoteIndex = 0
   performer.elapsed = 0
   trigger(performer, performer.sequence[0])
+}
+
+export function freezePerformer() {
+  initializeGhosts()
+  slots[0].frozen = true
+}
+
+export function resumePerformer() {
+  initializeGhosts()
+  slots[0].frozen = false
+  slots[0].elapsed = 0
+}
+
+export function playPerformerEmote(emote: string) {
+  initializeGhosts()
+  trigger(slots[0], emote)
 }
 
 export function clearPerformer() {
@@ -134,7 +151,7 @@ export function getPerformerEntity() {
 function ghostSystem(dt: number) {
   spawnNextAudienceGhost(dt)
   for (const slot of slots) {
-    if (!slot.active || slot.sequence === null) continue
+    if (!slot.active || slot.sequence === null || slot.frozen) continue
     slot.elapsed += dt
     if (slot.elapsed < EMOTE_STEP_SECONDS) continue
     slot.elapsed = 0
@@ -160,6 +177,7 @@ function showGhost(slot: GhostSlot, look: Look, sequence: GhostEmotes | null) {
   slot.emoteIndex = 0
   slot.elapsed = 0
   slot.lamport += 1
+  slot.frozen = false
 
   AvatarShape.createOrReplace(slot.entity, {
     id: look.address,
@@ -182,6 +200,7 @@ function hideGhost(slot: GhostSlot) {
   slot.sequence = null
   slot.emoteIndex = 0
   slot.elapsed = 0
+  slot.frozen = false
 }
 
 function trigger(slot: GhostSlot, emote: string) {
@@ -202,7 +221,8 @@ function createSlot(position: Vector3Type, rotation: QuaternionType): GhostSlot 
     sequence: null,
     emoteIndex: 0,
     elapsed: 0,
-    lamport: 0
+    lamport: 0,
+    frozen: false
   }
 }
 

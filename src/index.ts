@@ -22,8 +22,7 @@ export function main() {
   clientFlow.setEffects({
     showPerformer,
     replayPerformer,
-    showPreview,
-    revealAudience: (correct) => reactAudience(correct ? 'clap' : 'shrug')
+    showPreview
   })
 
   let audience = clientFlow.getState().audience

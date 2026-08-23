@@ -5,6 +5,7 @@ import { INVITE_URL } from '../shared/config'
 import type { Emote } from '../shared/deck'
 import { clientFlow, type ClientFlowState } from './flow'
 import { REACTION_OPTIONS, sendReaction } from './reactions'
+import { getRevealViewState, type RevealViewState } from './reveal-scene'
 import { getCurrentTheaterRegion } from './setup'
 
 export const COLORS = {
@@ -34,6 +35,13 @@ const PANEL = {
 
 const BUTTON = { width: '100%', minHeight: 96, height: 96, margin: '6px 0' } satisfies UiTransformProps
 
+const UI_TEXTURES = {
+  panel: 'assets/ui/panel.png',
+  card: 'assets/ui/card.png',
+  cardSelected: 'assets/ui/card_selected.png',
+  ribbon: 'assets/ui/ribbon.png'
+} as const
+
 function actionButton(
   value: string,
   onMouseDown: () => void,
@@ -61,10 +69,13 @@ function canDecodeInCurrentRegion() {
 
 function screenShell(sentence: string, body: ReactEcs.JSX.Element, state: ClientFlowState) {
   return (
-    <UiEntity uiTransform={PANEL} uiBackground={{ color: COLORS.ink }}>
+    <UiEntity
+      uiTransform={PANEL}
+      uiBackground={{ texture: { src: UI_TEXTURES.panel }, textureMode: 'stretch', color: COLORS.ink }}
+    >
       <UiEntity
         uiTransform={{ width: '100%', minHeight: 92, padding: '14px 18px', borderRadius: 5 }}
-        uiBackground={{ color: COLORS.gold }}
+        uiBackground={{ texture: { src: UI_TEXTURES.ribbon }, textureMode: 'stretch', color: COLORS.gold }}
       >
         <Label value={sentence} fontSize={32} font="serif" color={COLORS.ink} textAlign="middle-left" />
       </UiEntity>
@@ -222,28 +233,82 @@ function revealScreen(state: ClientFlowState) {
   const reveal = state.reveal
   const author = state.charade?.authorName ?? 'The ghost'
   const canDecode = canDecodeInCurrentRegion()
-  const sentence = reveal
-    ? `${author} meant “${reveal.phrase}”; ${reveal.stats.correct} of ${reveal.stats.total} got it, and your score is ${reveal.yourScore}.`
-    : 'The ghost has revealed the answer.'
+  const presentation = getRevealViewState()
+  const sentence = presentation.verdict
+    ? reveal
+      ? `${author} meant “${reveal.phrase}”.`
+      : 'The ghost has revealed the answer.'
+    : 'The house holds its breath…'
   return screenShell(
     sentence,
-    <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', justifyContent: 'center' }}>
-      <Label
-        value={reveal?.correct ? 'CORRECT' : 'NOT THIS TIME'}
-        fontSize={28}
-        font="monospace"
-        color={reveal?.correct ? COLORS.success : COLORS.alert}
-        uiTransform={{ width: '100%', height: 54 }}
-      />
-      {actionButton(
-        canDecode ? 'NEXT GHOST' : 'WALK TO THE STAGE',
-        () => clientFlow.requestNextCharade(),
-        !canDecode
-      )}
+    <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column' }}>
+      <UiEntity uiTransform={{ width: '100%', height: 222, flexDirection: 'column' }}>
+        {state.charade?.answers.map((answer, index) => revealAnswerCard(answer, index, presentation))}
+      </UiEntity>
+      <UiEntity
+        uiTransform={{ width: '100%', height: 72, padding: '8px 14px', margin: '6px 0' }}
+        uiBackground={{
+          texture: { src: presentation.verdict ? UI_TEXTURES.cardSelected : UI_TEXTURES.card },
+          textureMode: 'stretch',
+          color:
+            presentation.verdict === 'miss'
+              ? COLORS.alert
+              : presentation.verdict === 'hit'
+                ? COLORS.success
+                : COLORS.raised
+        }}
+      >
+        <Label
+          value={presentation.verdictText || 'THE VERDICT IS COMING'}
+          fontSize={25}
+          font="monospace"
+          color={COLORS.ink}
+          textAlign="middle-center"
+        />
+      </UiEntity>
+      {presentation.stats && reveal ? (
+        <UiEntity
+          uiTransform={{
+            width: `${Math.round(presentation.titleProgress * 100)}%`,
+            height: 48,
+            padding: '4px 12px',
+            overflow: 'hidden'
+          }}
+          uiBackground={{ texture: { src: UI_TEXTURES.ribbon }, textureMode: 'stretch', color: COLORS.gold }}
+        >
+          <Label
+            value={`${presentation.stats.correct} OF ${presentation.stats.total} GUESSED IT · DECODER SCORE ${reveal.yourScore}`}
+            fontSize={18}
+            font="monospace"
+            color={COLORS.ink}
+            textAlign="middle-center"
+          />
+        </UiEntity>
+      ) : null}
+      {actionButton(canDecode ? 'NEXT GHOST' : 'WALK TO THE STAGE', () => clientFlow.requestNextCharade(), !canDecode)}
       {actionButton('MAKE YOUR OWN', () => clientFlow.beginAuthoring(), false, 'secondary')}
       {actionButton("TODAY'S BOARDS", () => clientFlow.showBoards(), false, 'secondary')}
     </UiEntity>,
     state
+  )
+}
+
+function revealAnswerCard(answer: string, index: number, presentation: RevealViewState) {
+  const isCorrect = presentation.phrase === answer
+  const faded = presentation.wrongAnswersFaded && !isCorrect
+  const selected = presentation.selectedAnswerIndex === index
+  return (
+    <UiEntity
+      key={`${index}-${answer}`}
+      uiTransform={{ width: '100%', height: 68, margin: '3px 0', padding: '8px 14px', opacity: faded ? 0.18 : 1 }}
+      uiBackground={{
+        texture: { src: selected ? UI_TEXTURES.cardSelected : UI_TEXTURES.card },
+        textureMode: 'stretch',
+        color: isCorrect ? COLORS.success : selected ? COLORS.gold : COLORS.bone
+      }}
+    >
+      <Label value={answer.toUpperCase()} fontSize={22} font="monospace" color={COLORS.ink} textAlign="middle-left" />
+    </UiEntity>
   )
 }
 

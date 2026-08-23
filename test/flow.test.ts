@@ -5,7 +5,6 @@ import {
   createInitialFlowState,
   flowReducer,
   type DecodeCharade,
-  type FlowEffects,
   type OutboundMessage
 } from '../src/client/flow'
 import { FIXED_NOW, makeLook } from './test-helpers'
@@ -57,11 +56,14 @@ function createFlowHarness(
   let transportReady = overrides.transportReady ?? true
   const address = overrides.address ?? '0xPlayer'
   const sent: OutboundMessage[] = []
-  const effects: Required<FlowEffects> = {
+  const effects = {
     showPerformer: vi.fn(),
     replayPerformer: vi.fn(),
     showPreview: vi.fn(),
-    revealAudience: vi.fn()
+    beginReveal: vi.fn(),
+    resolveReveal: vi.fn(),
+    skipReveal: vi.fn(),
+    cancelReveal: vi.fn()
   }
   const runtime = createFlowRuntime({
     send: (message) => {
@@ -178,6 +180,7 @@ describe('flow lifecycle', () => {
     expect(runtime.guess(1)).toBe(true)
     expect(runtime.guess(1)).toBe(false)
     expect(messagesOfType(sent, 'guess')).toHaveLength(1)
+    expect(effects.beginReveal).toHaveBeenCalledWith(charade, 1)
     const reveal = {
       charadeId: charade.id,
       correct: true,
@@ -187,7 +190,7 @@ describe('flow lifecycle', () => {
     }
     runtime.receive({ type: 'reveal', data: reveal })
     expect(runtime.getState()).toMatchObject({ screen: 'reveal', reveal })
-    expect(effects.revealAudience).toHaveBeenCalledWith(true)
+    expect(effects.resolveReveal).toHaveBeenCalledWith(reveal, charade)
 
     expect(runtime.beginAuthoring()).toBe(true)
     const draft = runtime.getState().author!
@@ -201,6 +204,29 @@ describe('flow lifecycle', () => {
 
     runtime.receive({ type: 'posted', data: { charadeId: 'posted-1' } })
     expect(runtime.getState()).toMatchObject({ screen: 'posted', postedCharadeId: 'posted-1', pending: [] })
+  })
+
+  it('skips an active reveal cleanly before requesting the next charade', () => {
+    const { runtime, sent, effects } = createFlowHarness()
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    const charade = makeDecodeCharade()
+    runtime.receive({ type: 'charade', data: charade })
+    runtime.guess(0)
+    runtime.receive({
+      type: 'reveal',
+      data: {
+        charadeId: charade.id,
+        correct: false,
+        phrase: 'Answer two',
+        stats: { total: 4, correct: 1 },
+        yourScore: 0
+      }
+    })
+    sent.length = 0
+
+    expect(runtime.requestNextCharade()).toBe(true)
+    expect(effects.skipReveal).toHaveBeenCalledTimes(1)
+    expect(messagesOfType(sent, 'nextCharade')).toHaveLength(1)
   })
 
   it('rejects an invalid server emote array and resolves the pending fetch', () => {
@@ -243,9 +269,7 @@ describe('flow lifecycle', () => {
     expect(runtime.guess(0)).toBe(true)
     runtime.receive({ type: 'error', data: { code: 'charade-not-served' } })
 
-    expect(messagesOfType(sent, 'nextCharade')).toEqual([
-      { type: 'nextCharade', data: { exclude: ['stale'] } }
-    ])
+    expect(messagesOfType(sent, 'nextCharade')).toEqual([{ type: 'nextCharade', data: { exclude: ['stale'] } }])
     expect(runtime.getState()).toMatchObject({ screen: 'decode', pending: [{ kind: 'nextCharade' }] })
 
     runtime.receive({ type: 'charade', data: makeDecodeCharade('fresh') })

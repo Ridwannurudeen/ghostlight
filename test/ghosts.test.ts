@@ -1,6 +1,6 @@
 import { AvatarShape, engine } from '@dcl/sdk/ecs'
 import { describe, expect, it, vi } from 'vitest'
-import { setAudience } from '../src/client/ghosts'
+import { freezePerformer, playPerformerEmote, resumePerformer, setAudience, showPerformer } from '../src/client/ghosts'
 import { makeLook } from './test-helpers'
 
 vi.mock('@dcl/sdk/ecs', () => {
@@ -9,7 +9,7 @@ vi.mock('@dcl/sdk/ecs', () => {
     AvatarShape: {
       createOrReplace: vi.fn(),
       deleteFrom: vi.fn(),
-      getMutable: vi.fn()
+      getMutable: vi.fn(() => ({}))
     },
     Transform: { create: vi.fn() },
     engine: {
@@ -57,5 +57,22 @@ describe('audience ghosts', () => {
 
     expect(AvatarShape.createOrReplace).toHaveBeenCalledTimes(4)
     expect(AvatarShape.deleteFrom).toHaveBeenCalledTimes(1)
+  })
+
+  it('holds the current performer emote until the reveal bow and reset', () => {
+    showPerformer(makeLook('0xPerformer'), ['wave', 'clap', 'dab'])
+    const system = vi.mocked(engine.addSystem).mock.calls[0][0]
+    const mutationsBeforeFreeze = vi.mocked(AvatarShape.getMutable).mock.calls.length
+
+    freezePerformer()
+    system(10)
+    expect(AvatarShape.getMutable).toHaveBeenCalledTimes(mutationsBeforeFreeze)
+
+    playPerformerEmote('wave')
+    expect(AvatarShape.getMutable).toHaveBeenCalledTimes(mutationsBeforeFreeze + 1)
+
+    resumePerformer()
+    system(10)
+    expect(AvatarShape.getMutable).toHaveBeenCalledTimes(mutationsBeforeFreeze + 2)
   })
 })

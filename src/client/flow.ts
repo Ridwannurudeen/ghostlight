@@ -370,7 +370,10 @@ export type FlowEffects = {
   showPerformer?: (look: Look, emotes: GhostEmotes) => void
   replayPerformer?: () => void
   showPreview?: (look: Look, emotes: GhostEmotes) => void
-  revealAudience?: (correct: boolean) => void
+  beginReveal?: (charade: DecodeCharade, answerIndex: number) => void
+  resolveReveal?: (reveal: RevealResult, charade: DecodeCharade) => void
+  skipReveal?: () => void
+  cancelReveal?: () => void
 }
 
 export type FlowRuntimeOptions = {
@@ -489,15 +492,17 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
             break
           }
         }
+        effects.cancelReveal?.()
         dispatch({ type: 'charade', charade })
         effects.showPerformer?.(charade.look, charade.emotes)
         break
       }
       case 'reveal':
+        const revealedCharade = state.charade
         if (state.roundCharadeId === message.data.charadeId) roundMismatchRefetchAttempted = false
         resolveRequests('guess', 'roundGuess')
         dispatch({ type: 'reveal', reveal: message.data })
-        effects.revealAudience?.(message.data.correct)
+        if (revealedCharade?.id === message.data.charadeId) effects.resolveReveal?.(message.data, revealedCharade)
         break
       case 'posted':
         resolveRequests('post')
@@ -539,6 +544,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           state.charade?.id !== state.roundCharadeId &&
           state.pending.some((request) => request.kind === 'guess' || request.kind === 'roundGuess')
         if (state.screen === 'decode') roundMismatchRefetchAttempted = false
+        effects.cancelReveal?.()
         requests.clear()
         dispatch({ type: 'error', code: message.data.code })
         if (refetchUnservedCharade) requestNextCharade()
@@ -597,6 +603,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
 
   function requestNextCharade() {
     if (!state.ready || state.pending.some((request) => request.kind === 'nextCharade')) return false
+    if (state.screen === 'reveal') effects.skipReveal?.()
     const requestId = createRequestId()
     sendRequest(
       'nextCharade',
@@ -634,11 +641,13 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     const round = state.roundCharadeId === state.charade.id
     const type = round ? 'roundGuess' : 'guess'
     sendRequest(type, { type, data: { charadeId: state.charade.id, answerIndex, requestId } }, requestId)
+    effects.beginReveal?.(state.charade, answerIndex)
     return true
   }
 
   function beginAuthoring() {
     if (!state.ready) return false
+    effects.cancelReveal?.()
     const seed = createRequestId()
     const phrase = dealPhrase(DECK, state.dealtPhraseIds, seed)
     if (!phrase) {
