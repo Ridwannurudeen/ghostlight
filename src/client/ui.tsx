@@ -5,8 +5,9 @@ import { INVITE_URL } from '../shared/config'
 import type { Emote } from '../shared/deck'
 import { clientFlow, type ClientFlowState } from './flow'
 import { REACTION_OPTIONS, sendReaction } from './reactions'
+import { getCurrentTheaterRegion } from './setup'
 
-const COLORS = {
+export const COLORS = {
   ink: Color4.create(0.035, 0.027, 0.067, 0.97),
   surface: Color4.create(0.086, 0.067, 0.133, 0.97),
   raised: Color4.create(0.16, 0.118, 0.188, 0.98),
@@ -44,10 +45,10 @@ function actionButton(
       value={value}
       fontSize={26}
       font="monospace"
-      color={COLORS.ink}
+      color={{ ...COLORS.ink }}
       variant={variant}
       disabled={disabled}
-      uiTransform={{ ...BUTTON, opacity: disabled ? 0.42 : 1 }}
+      uiTransform={{ ...BUTTON }}
       onMouseDown={onMouseDown}
     />
   )
@@ -90,10 +91,16 @@ function wakingScreen(state: ClientFlowState) {
 }
 
 function foyerScreen(state: ClientFlowState) {
+  const region = getCurrentTheaterRegion()
+  const canDecode = region === 'house' || region === 'stage'
   return screenShell(
     "Tonight's ghosts are ready.",
     <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', justifyContent: 'center' }}>
-      {actionButton('DECODE A GHOST', () => clientFlow.requestNextCharade())}
+      {actionButton(
+        canDecode ? 'DECODE A GHOST' : 'WALK TO THE STAGE',
+        () => clientFlow.requestNextCharade(),
+        !canDecode
+      )}
       {actionButton('MAKE YOUR OWN', () => clientFlow.beginAuthoring(), false, 'secondary')}
       <UiEntity uiTransform={{ width: '100%', flexDirection: 'row' }}>
         <UiEntity uiTransform={{ width: '49%', margin: '0 2% 0 0' }}>
@@ -153,6 +160,7 @@ function reactions() {
           value={reaction.label}
           fontSize={18}
           font="monospace"
+          color={Color4.create(0.98, 0.17, 0.33, 1)}
           variant="secondary"
           uiTransform={{ width: '32%', minHeight: 96, height: 96, margin: index === 2 ? 0 : '0 2% 0 0' }}
           onMouseDown={() => {
@@ -190,7 +198,14 @@ function decodeScreen(state: ClientFlowState) {
               index === 0 ? 'primary' : 'secondary'
             )
           )}
-          {actionButton('REPLAY', () => clientFlow.replay(), waiting, 'secondary')}
+          <UiEntity uiTransform={{ width: '100%', flexDirection: 'row', justifyContent: 'space-between' }}>
+            <UiEntity uiTransform={{ width: '49%' }}>
+              {actionButton('REPLAY', () => clientFlow.replay(), waiting, 'secondary')}
+            </UiEntity>
+            <UiEntity uiTransform={{ width: '49%' }}>
+              {actionButton('MAKE YOUR OWN', () => clientFlow.beginAuthoring(), false, 'secondary')}
+            </UiEntity>
+          </UiEntity>
         </UiEntity>,
         state
       )}
@@ -232,7 +247,7 @@ function emoteButton(emote: Emote, index: number, state: ClientFlowState) {
       value={`${selected ? `${selectedIndex + 1} · ` : ''}${emote.toUpperCase()}`}
       fontSize={22}
       font="monospace"
-      color={selected ? COLORS.ink : COLORS.bone}
+      color={{ ...(selected ? COLORS.ink : COLORS.bone) }}
       variant={selected ? 'primary' : 'secondary'}
       uiTransform={{ width: index === 4 ? '100%' : '49%', minHeight: 96, height: 96, margin: '5px 0' }}
       onMouseDown={() => clientFlow.selectAuthorEmote(emote)}

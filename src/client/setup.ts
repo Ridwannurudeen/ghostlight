@@ -45,14 +45,6 @@ export function getCurrentTheaterRegion() {
   return currentRegion
 }
 
-export function getDetectedPlatform() {
-  return platform
-}
-
-export function isStageCameraEngaged() {
-  return stageCameraActive
-}
-
 function clientSetupSystem() {
   if (platform === null) {
     const detectedPlatform = getPlatform()
@@ -60,7 +52,9 @@ function clientSetupSystem() {
     configurePlatform(detectedPlatform)
   }
 
-  const playerPosition = Transform.get(engine.PlayerEntity).position
+  const playerTransform = Transform.getOrNull(engine.PlayerEntity)
+  if (playerTransform === null) return
+  const playerPosition = playerTransform.position
   currentRegion = getTheaterRegion(playerPosition)
   if (isInDecodeArea(playerPosition)) engageStageCamera()
   else releaseStageCamera()
