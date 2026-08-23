@@ -22,3 +22,6 @@ src
 cursor.config
 cursorignore
 .github
+.git
+.git/**
+**/.git/**
