@@ -633,6 +633,46 @@ describe('live protocol', () => {
     expect(protocol.rounds.current).toMatchObject({ charadeId: firstRound.id, guessed: ['alice'], winner: null })
   })
 
+  it('records a latecomer abstention when they have already seen the live charade', async () => {
+    const snapshotLook = async (address: string) => makeLook(address, address)
+    const { storage, state, sent, protocol } = await createHarness({ snapshotLook })
+    const live = makeCharade('live-seen', {
+      author: { address: 'outside-live' },
+      createdAt: FIXED_NOW - 2
+    })
+    const alternate = makeCharade('alternate', {
+      author: { address: 'outside-alternate' },
+      createdAt: FIXED_NOW - 1
+    })
+    state.upsertCharade(live)
+    state.upsertCharade(alternate)
+    storage.putPlayerJSON('carol', PLAYER_STATS_KEY, makeStats({ seen: [live.id] }))
+    await protocol.handleEnter('alice')
+    await protocol.handleEnter('bob')
+    await protocol.handleNextCharade({ exclude: [] }, 'alice')
+    await protocol.handleNextCharade({ exclude: [] }, 'bob')
+    const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade')[0])
+    expect(served.id).toBe(live.id)
+
+    await protocol.handleEnter('carol')
+    sent.length = 0
+    await protocol.handleNextCharade({ exclude: [] }, 'carol')
+
+    expect(dataOf<CharadeMessage>(messagesOfType(sent, 'charade')[0]).id).toBe(alternate.id)
+    expect(protocol.rounds.current?.guessed).toContain('carol')
+
+    const phrase = DECK.find((candidate) => candidate.id === live.phraseId)!
+    const correctIndex = served.answers.indexOf(phrase.text)
+    const wrongIndex = (correctIndex + 1) % served.answers.length
+    await protocol.handleRoundGuess(
+      { charadeId: live.id, answerIndex: wrongIndex, requestId: 'alice-wrong' },
+      'alice'
+    )
+    await protocol.handleRoundGuess({ charadeId: live.id, answerIndex: wrongIndex, requestId: 'bob-wrong' }, 'bob')
+
+    expect(protocol.rounds.isSettled).toBe(true)
+  })
+
   it("accepts a survivor's round guess as a plain guess after the other player leaves", async () => {
     const snapshotLook = async (address: string) => makeLook(address, address === 'alice' ? 'Alice' : 'Bob')
     const { state, sent, protocol } = await createHarness({ snapshotLook })
