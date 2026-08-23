@@ -4,93 +4,106 @@
     {
       "file": "room_tone.mp3",
       "durationSeconds": 12.0,
+      "decodedSamples": 529200,
       "sampleRate": 44100,
       "channels": 1,
-      "peakDbfs": -1,
-      "bytes": 144509
+      "peakDbfs": -1.466,
+      "bytes": 144822,
+      "loopBoundaryDeltaDbfs": -31.215,
+      "loopBoundaryP99Ratio": 0.339
     },
     {
       "file": "tick.mp3",
       "durationSeconds": 0.18,
+      "decodedSamples": 7938,
       "sampleRate": 44100,
       "channels": 1,
-      "peakDbfs": -1,
-      "bytes": 2508
+      "peakDbfs": -1.437,
+      "bytes": 2821
     },
     {
       "file": "drumroll.mp3",
       "durationSeconds": 2.6,
+      "decodedSamples": 114660,
       "sampleRate": 44100,
       "channels": 1,
-      "peakDbfs": -1,
-      "bytes": 31660
+      "peakDbfs": -1.429,
+      "bytes": 31973
     },
     {
       "file": "sting.mp3",
       "durationSeconds": 1.2,
+      "decodedSamples": 52920,
       "sampleRate": 44100,
       "channels": 1,
-      "peakDbfs": -1,
-      "bytes": 14733
+      "peakDbfs": -1.445,
+      "bytes": 15046
     },
     {
       "file": "hit.mp3",
       "durationSeconds": 0.8,
+      "decodedSamples": 35280,
       "sampleRate": 44100,
       "channels": 1,
-      "peakDbfs": -1,
-      "bytes": 10031
+      "peakDbfs": -1.446,
+      "bytes": 10344
     },
     {
       "file": "miss.mp3",
       "durationSeconds": 1.0,
+      "decodedSamples": 44100,
       "sampleRate": 44100,
       "channels": 1,
-      "peakDbfs": -1,
-      "bytes": 12539
+      "peakDbfs": -1.446,
+      "bytes": 12852
     },
     {
       "file": "applause.mp3",
       "durationSeconds": 2.8,
+      "decodedSamples": 123480,
       "sampleRate": 44100,
       "channels": 1,
-      "peakDbfs": -1,
-      "bytes": 34168
+      "peakDbfs": -2.315,
+      "bytes": 34481
     },
     {
       "file": "gasp.mp3",
       "durationSeconds": 1.4,
+      "decodedSamples": 61740,
       "sampleRate": 44100,
       "channels": 1,
-      "peakDbfs": -1,
-      "bytes": 17241
+      "peakDbfs": -1.414,
+      "bytes": 17554
     },
     {
       "file": "unlock.mp3",
       "durationSeconds": 1.7,
+      "decodedSamples": 74970,
       "sampleRate": 44100,
       "channels": 1,
-      "peakDbfs": -1,
-      "bytes": 21002
+      "peakDbfs": -1.439,
+      "bytes": 21315
     },
     {
       "file": "curtain.mp3",
       "durationSeconds": 1.6,
+      "decodedSamples": 70560,
       "sampleRate": 44100,
       "channels": 1,
-      "peakDbfs": -1,
-      "bytes": 19749
+      "peakDbfs": -1.372,
+      "bytes": 20062
     },
     {
       "file": "stamp.mp3",
       "durationSeconds": 0.45,
+      "decodedSamples": 19845,
       "sampleRate": 44100,
       "channels": 1,
-      "peakDbfs": -1,
-      "bytes": 5956
+      "peakDbfs": -1.482,
+      "bytes": 6269
     }
   ],
   "totals": {
-    "bytes": 314096
+    "bytes": 317539
   }
 }

@@ -4,18 +4,16 @@
   "display": {
     "title": "Ghost Charades",
     "description": "Guess what a stranger's ghost is acting out, then leave your own charade.",
-    "navmapThumbnail": "images/scene-thumbnail.png",
-    "favicon": "favicon_asset"
+    "navmapThumbnail": "images/scene-thumbnail.png"
   },
   "owner": "Ridwan Nurudeen",
   "contact": {
-    "name": "Ridwan Nurudeen",
-    "email": ""
+    "name": "Ridwan Nurudeen"
   },
   "main": "bin/index.js",
   "tags": ["social", "game", "mobile", "multiplayer", "charades"],
   "scene": {
-    "parcels": ["0,0"],
+    "parcels": ["0,0", "1,0"],
     "base": "0,0"
   },
   "spawnPoints": [
@@ -23,9 +21,9 @@
       "name": "spawn1",
       "default": true,
       "position": {
-        "x": [0, 3],
+        "x": [6, 10],
         "y": [0, 0],
-        "z": [0, 3]
+        "z": [1, 3]
       },
       "cameraTarget": {
         "x": 8,
@@ -34,6 +32,9 @@
       }
     }
   ],
+  "worldConfiguration": {
+    "name": "ghostcharades.dcl.eth"
+  },
   "featureToggles": {
     "voiceChat": "enabled",
     "portableExperiences": "enabled"

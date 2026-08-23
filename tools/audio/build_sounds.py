@@ -66,16 +66,21 @@ def add_burst(target, start, burst):
 
 def make_room_tone():
     duration = 12.0
-    time = timeline(duration)
-    low_air = filtered_noise(duration, 101, 420, "lowpass") * 0.13
-    high_air = filtered_noise(duration, 102, (900, 4_200), "bandpass") * 0.025
+    crossfade = 1.0
+    source_duration = duration + crossfade
+    time = timeline(source_duration)
+    low_air = filtered_noise(source_duration, 101, 420, "lowpass") * 0.13
+    high_air = filtered_noise(source_duration, 102, (900, 4_200), "bandpass") * 0.025
     hum = np.sin(math.tau * 55 * time) * 0.025 + np.sin(math.tau * 110 * time) * 0.009
-    samples = low_air + high_air + hum
-    crossfade = SAMPLE_RATE
-    blend = np.linspace(0.0, 1.0, crossfade, endpoint=False)
-    loop_edge = samples[:crossfade] * (1.0 - blend) + samples[-crossfade:] * blend
-    samples[:crossfade] = loop_edge
-    samples[-crossfade:] = loop_edge
+    source = low_air + high_air + hum
+    output_samples = round(duration * SAMPLE_RATE)
+    crossfade_samples = round(crossfade * SAMPLE_RATE)
+    blend = np.linspace(0.0, 1.0, crossfade_samples, endpoint=False)
+    samples = source[:output_samples].copy()
+    samples[:crossfade_samples] = (
+        source[output_samples : output_samples + crossfade_samples] * (1.0 - blend)
+        + source[:crossfade_samples] * blend
+    )
     return samples
 
 
@@ -209,13 +214,45 @@ def encode_mp3(wav_path, mp3_path):
             "-b:a",
             "96k",
             "-write_xing",
-            "0",
+            "1",
             "-id3v2_version",
             "0",
             str(mp3_path),
         ],
         check=True,
     )
+
+
+def measure_encoded(mp3_path, wav_path):
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(mp3_path),
+            "-ac",
+            "1",
+            "-ar",
+            str(SAMPLE_RATE),
+            "-codec:a",
+            "pcm_s16le",
+            str(wav_path),
+        ],
+        check=True,
+    )
+    sample_rate, samples = wavfile.read(wav_path)
+    if sample_rate != SAMPLE_RATE or samples.ndim != 1:
+        raise RuntimeError(f"Unexpected decoded format for {mp3_path.name}")
+
+    decoded = samples.astype(np.float64) / 32768.0
+    peak = float(np.max(np.abs(decoded)))
+    return {
+        "samples": decoded,
+        "peakDbfs": round(20 * math.log10(peak), 3),
+    }
 
 
 def main():
@@ -242,19 +279,36 @@ def main():
         temporary_path = Path(temporary)
         for filename, samples in sounds.items():
             wav_path = temporary_path / filename.replace(".mp3", ".wav")
+            decoded_path = temporary_path / filename.replace(".mp3", "-decoded.wav")
             mp3_path = OUTPUT / filename
             wavfile.write(wav_path, SAMPLE_RATE, normalize(samples))
             encode_mp3(wav_path, mp3_path)
-            manifest_entries.append(
-                {
-                    "file": filename,
-                    "durationSeconds": round(samples.size / SAMPLE_RATE, 3),
-                    "sampleRate": SAMPLE_RATE,
-                    "channels": 1,
-                    "peakDbfs": -1,
-                    "bytes": mp3_path.stat().st_size,
-                }
-            )
+            measured = measure_encoded(mp3_path, decoded_path)
+            decoded = measured.pop("samples")
+            if decoded.size != samples.size:
+                raise RuntimeError(
+                    f"Gapless metadata mismatch for {filename}: "
+                    f"expected {samples.size} samples, decoded {decoded.size}"
+                )
+            entry = {
+                "file": filename,
+                "durationSeconds": round(decoded.size / SAMPLE_RATE, 3),
+                "decodedSamples": decoded.size,
+                "sampleRate": SAMPLE_RATE,
+                "channels": 1,
+                **measured,
+                "bytes": mp3_path.stat().st_size,
+            }
+            if filename == "room_tone.mp3":
+                interior_deltas = np.abs(np.diff(decoded))
+                boundary_delta = abs(float(decoded[-1] - decoded[0]))
+                entry["loopBoundaryDeltaDbfs"] = round(
+                    20 * math.log10(max(boundary_delta, 1 / 32768)), 3
+                )
+                entry["loopBoundaryP99Ratio"] = round(
+                    boundary_delta / float(np.quantile(interior_deltas, 0.99)), 3
+                )
+            manifest_entries.append(entry)
 
     manifest = {
         "generator": "tools/audio/build_sounds.py",
