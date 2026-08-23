@@ -32,6 +32,13 @@ const hardestGhost = Schemas.Map({
   correct: Schemas.Int
 })
 
+const daily = Schemas.Map({
+  day: Schemas.String,
+  decoded: Schemas.Int,
+  authored: Schemas.Int,
+  stamped: Schemas.Boolean
+})
+
 export const Messages = {
   hello: Schemas.Map({
     displayName: Schemas.String,
@@ -40,10 +47,13 @@ export const Messages = {
   }),
   ready: Schemas.Map({
     instanceId: Schemas.String,
-    serverTime: Schemas.Int64
+    serverTime: Schemas.Int64,
+    theme: Schemas.String,
+    themeLabel: Schemas.String
   }),
   ping: Schemas.Map({ seq: Schemas.Int }),
   pong: Schemas.Map({ seq: Schemas.Int }),
+  progress: Schemas.Map({ daily }),
   nextCharade: Schemas.Map({ exclude: Schemas.Array(Schemas.String) }),
   charade: Schemas.Map({
     id: Schemas.String,
@@ -68,18 +78,25 @@ export const Messages = {
       total: Schemas.Int,
       correct: Schemas.Int
     }),
-    yourScore: Schemas.Int
+    yourScore: Schemas.Int,
+    daily,
+    stampAwarded: Schemas.Boolean
   }),
   post: Schemas.Map({
     phraseId: Schemas.String,
     emotes: Schemas.Array(Schemas.String),
     requestId: Schemas.String
   }),
-  posted: Schemas.Map({ charadeId: Schemas.String }),
+  posted: Schemas.Map({
+    charadeId: Schemas.String,
+    daily,
+    stampAwarded: Schemas.Boolean
+  }),
   since: Schemas.Map({
     triedYou: Schemas.Int,
     gotYou: Schemas.Int,
-    rank: Schemas.Int
+    rank: Schemas.Int,
+    daily
   }),
   audience: Schemas.Map({ looks: Schemas.Array(look) }),
   boards: Schemas.Map({

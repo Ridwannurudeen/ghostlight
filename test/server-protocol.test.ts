@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { PROTOCOL_VERSION } from '../src/shared/config'
+import { PROTOCOL_VERSION, themeForTimestamp } from '../src/shared/config'
 import { DECK, HOUSE_CHARADE } from '../src/shared/deck'
 import { createServerProtocol, type ProtocolSend, type ServerProtocolOptions } from '../src/server/server'
 import { GhostCharadesState } from '../src/server/state'
@@ -113,6 +113,7 @@ describe('server readiness and welcome', () => {
 
     expect(sent[0]).toEqual({ type: 'pong', data: { seq: 7 }, to: ['0xPlayer'] })
     expect(messagesOfType(sent, 'since')).toEqual([])
+    expect(messagesOfType(sent, 'progress')).toHaveLength(1)
     expect(messagesOfType(sent, 'audience')).toHaveLength(1)
     expect(messagesOfType(sent, 'boards')).toHaveLength(1)
     expect(sent.every((message) => message.to?.[0] === '0xPlayer')).toBe(true)
@@ -171,7 +172,14 @@ describe('server readiness and welcome', () => {
     expect(state.recentVisitors[0]).toMatchObject({ address: '0xPlayer', name: 'Server Name' })
     expect(state.recentVisitors[0].wearables).toHaveLength(12)
     expect(stats.pending).toEqual({ triedYou: 0, gotYou: 0 })
-    expect(messagesOfType(sent, 'since').map((message) => message.data)).toEqual([{ triedYou: 3, gotYou: 1, rank: 1 }])
+    expect(messagesOfType(sent, 'since').map((message) => message.data)).toEqual([
+      {
+        triedYou: 3,
+        gotYou: 1,
+        rank: 1,
+        daily: { day: '2026-08-23', decoded: 0, authored: 0, stamped: false }
+      }
+    ])
     const audience = messagesOfType(sent, 'audience')
     expect(audience).toHaveLength(6)
     expect(audience.every((message) => dataOf<{ looks: unknown[] }>(message).looks.length === 1)).toBe(true)
@@ -250,10 +258,56 @@ describe('server readiness and welcome', () => {
     })
     expect(storage.playerGets).toEqual([{ address: 'player', key: PLAYER_STATS_KEY }])
     expect(repository.getDirtyKeys()).toContain(`player:player:${PLAYER_STATS_KEY}`)
-    expect(messagesOfType(sent, 'since').map((message) => message.data)).toEqual([{ triedYou: 2, gotYou: 1, rank: 0 }])
+    expect(messagesOfType(sent, 'since').map((message) => message.data)).toEqual([
+      {
+        triedYou: 2,
+        gotYou: 1,
+        rank: 0,
+        daily: { day: '2026-08-23', decoded: 0, authored: 0, stamped: false }
+      }
+    ])
     expect(messagesOfType(sent, 'audience')).toHaveLength(1)
     expect(messagesOfType(sent, 'boards')).toHaveLength(1)
     expect(messagesOfType(sent, 'error')).toEqual([])
+  })
+
+  it('changes ready and serving preference exactly at UTC midnight without restarting', async () => {
+    let timestamp = Date.UTC(2026, 7, 23, 23, 59, 59, 999)
+    const before = themeForTimestamp(timestamp)
+    const after = themeForTimestamp(timestamp + 1)
+    const { state, sent, protocol } = await createHarness({ now: () => timestamp })
+    const beforePhrase = DECK.find((phrase) => phrase.theme === before.id)!
+    const afterPhrase = DECK.find((phrase) => phrase.theme === after.id)!
+    state.upsertCharade(
+      makeCharade('before-midnight', {
+        phraseId: beforePhrase.id,
+        author: { address: 'before-author' },
+        guesses: { total: 20 }
+      })
+    )
+    state.upsertCharade(
+      makeCharade('after-midnight', { phraseId: afterPhrase.id, author: { address: 'after-author' } })
+    )
+
+    await protocol.handleEnter('player')
+    expect(dataOf<{ serverTime: number; theme: string }>(messagesOfType(sent, 'ready').at(-1)!)).toMatchObject({
+      serverTime: timestamp,
+      theme: before.id
+    })
+    sent.length = 0
+    await protocol.handleNextCharade({ exclude: [] }, 'player')
+    expect(dataOf<CharadeMessage>(messagesOfType(sent, 'charade')[0]).id).toBe('before-midnight')
+
+    timestamp += 1
+    sent.length = 0
+    await protocol.handleHello({ displayName: 'Player', isGuest: false, protocolVersion: PROTOCOL_VERSION }, 'player')
+    expect(dataOf<{ serverTime: number; theme: string }>(messagesOfType(sent, 'ready').at(-1)!)).toMatchObject({
+      serverTime: timestamp,
+      theme: after.id
+    })
+    sent.length = 0
+    await protocol.handleNextCharade({ exclude: [] }, 'player')
+    expect(dataOf<CharadeMessage>(messagesOfType(sent, 'charade')[0]).id).toBe('after-midnight')
   })
 })
 

@@ -62,6 +62,20 @@ describe('state migrations', () => {
 
     expect(migratePlayerStats({ v: 'bad' }, 'Fresh name', FIXED_NOW)).toEqual(makeStats({ name: 'Fresh name' }))
   })
+
+  it('rejects invalid daily keys and keeps only valid stamped UTC days', () => {
+    const migrated = migratePlayerStats(
+      makeStats({
+        daily: { day: '2026-02-30', decoded: 99, authored: 99, stamped: true },
+        stampedDays: ['2026-08-20', 'not-a-day', '2026-02-30', '2026-08-20']
+      }),
+      'Player',
+      FIXED_NOW
+    )
+
+    expect(migrated.daily).toEqual({ day: '2026-08-23', decoded: 0, authored: 0, stamped: false })
+    expect(migrated.stampedDays).toEqual(['2026-08-20'])
+  })
 })
 
 describe('state hydration', () => {
@@ -257,6 +271,28 @@ describe('player stats', () => {
 
     expect(storage.playerGets).toEqual([])
     expect(storage.writes).toEqual([])
+  })
+
+  it('awards one daily stamp at three decodes and one authored charade and restores it after server sleep', async () => {
+    const storage = new FakeStorage()
+    const firstRepository = createStorageRepository(storage)
+    const firstState = new GhostCharadesState(firstRepository, () => FIXED_NOW)
+    const stats = await firstState.getOrCreateStats('player', 'Player')
+
+    expect(firstState.recordDailyAuthor(stats)).toBe(false)
+    expect(firstState.recordDailyDecode(stats)).toBe(false)
+    expect(firstState.recordDailyDecode(stats)).toBe(false)
+    expect(firstState.recordDailyDecode(stats)).toBe(true)
+    expect(firstState.recordDailyDecode(stats)).toBe(false)
+    firstState.saveStats('player')
+    await firstRepository.flushNow()
+
+    const secondRepository = createStorageRepository(storage)
+    const secondState = new GhostCharadesState(secondRepository, () => FIXED_NOW)
+    const restored = await secondState.getOrCreateStats('player', 'Player')
+
+    expect(restored.daily).toEqual({ day: '2026-08-23', decoded: 4, authored: 1, stamped: true })
+    expect(restored.stampedDays).toEqual(['2026-08-23'])
   })
 
   it('returns empty pending counts for an unknown player', () => {

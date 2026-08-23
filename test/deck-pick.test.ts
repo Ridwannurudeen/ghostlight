@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { THEMES, themeForTimestamp } from '../src/shared/config'
 import { CATEGORIES, DECK, EMOTE_VOCABULARY, HOUSE_CHARADE, type Category, type Phrase } from '../src/shared/deck'
 import { chooseCharadeFor, dealPhrase, offerEmotes, pickDecoys, shuffleSeeded } from '../src/shared/pick'
 import { STORAGE_SCHEMA_VERSION, type Charade, type Look } from '../src/shared/types'
@@ -43,6 +44,16 @@ describe('phrase deck', () => {
       expect(phrase.text.length).toBeGreaterThan(0)
       expect(phrase.text.length).toBeLessThanOrEqual(40)
     }
+  })
+
+  it('maps every daily theme to exactly twenty tagged phrases', () => {
+    expect(THEMES.map((theme) => theme.id)).toEqual(CATEGORIES)
+    for (const theme of THEMES) expect(DECK.filter((phrase) => phrase.theme === theme.id)).toHaveLength(20)
+  })
+
+  it('changes the selected theme at the UTC day boundary', () => {
+    const beforeMidnight = Date.UTC(2026, 7, 23, 23, 59, 59, 999)
+    expect(themeForTimestamp(beforeMidnight)).not.toEqual(themeForTimestamp(beforeMidnight + 1))
   })
 
   it('uses exactly three distinct verified emotes for every phrase', () => {
@@ -114,6 +125,15 @@ describe('chooseCharadeFor', () => {
     expect(chooseCharadeFor('player', [], pool)?.id).toBe('a-old')
   })
 
+  it('prefers the daily theme before falling back to the normal ranking', () => {
+    const themed = charade('themed', 'a', 20, 20)
+    themed.phraseId = DECK.find((phrase) => phrase.theme === 'food')!.id
+    const fallback = charade('fallback', 'b', 0, 1)
+
+    expect(chooseCharadeFor('player', [], [fallback, themed], '', 'food')?.id).toBe('themed')
+    expect(chooseCharadeFor('player', ['themed'], [fallback, themed], '', 'food')?.id).toBe('fallback')
+  })
+
   it('returns null when every charade is excluded', () => {
     expect(chooseCharadeFor('player', ['seen'], [charade('seen', 'other', 0, 0)])).toBeNull()
     expect(chooseCharadeFor('player', [], [charade('own', 'PLAYER', 0, 0)])).toBeNull()
@@ -161,11 +181,18 @@ describe('dealPhrase', () => {
 
   it('chooses categories before phrases instead of weighting larger categories', () => {
     const uneven: Phrase[] = [
-      { id: 'everyday-only', text: 'Wave hello', category: 'everyday', suggested: ['wave', 'clap', 'kiss'] },
+      {
+        id: 'everyday-only',
+        text: 'Wave hello',
+        category: 'everyday',
+        theme: 'everyday',
+        suggested: ['wave', 'clap', 'kiss']
+      },
       ...Array.from({ length: 9 }, (_, index) => ({
         id: `feelings-${index}`,
         text: `Feeling number ${index}`,
         category: 'feelings' as Category,
+        theme: 'feelings' as const,
         suggested: ['shrug', 'dontsee', 'headexplode'] as const
       }))
     ]

@@ -159,6 +159,8 @@ export function makeStats(overrides: Partial<PlayerStats> = {}): PlayerStats {
     authored: [],
     lastSeenAt: FIXED_NOW,
     pending: { triedYou: 0, gotYou: 0 },
+    daily: { day: '2026-08-23', decoded: 0, authored: 0, stamped: false },
+    stampedDays: [],
     ...overrides
   }
 }

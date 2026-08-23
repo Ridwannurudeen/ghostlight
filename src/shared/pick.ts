@@ -1,4 +1,5 @@
-import { CATEGORIES, EMOTE_VOCABULARY, type Emote, type Phrase } from './deck'
+import type { ThemeId } from './config'
+import { CATEGORIES, DECK, EMOTE_VOCABULARY, type Emote, type Phrase } from './deck'
 import type { Charade } from './types'
 
 export type Seed = string | number
@@ -45,7 +46,8 @@ export function chooseCharadeFor(
   address: string,
   seen: readonly string[],
   pool: readonly Charade[],
-  lastAuthor = ''
+  lastAuthor = '',
+  preferredTheme?: ThemeId
 ): Charade | null {
   const playerAddress = address.toLowerCase()
   const previousAuthor = lastAuthor.toLowerCase()
@@ -58,12 +60,22 @@ export function chooseCharadeFor(
       !seenIds.has(charade.id)
   )
 
-  eligible.sort(
-    (left, right) =>
-      left.guesses.total - right.guesses.total || left.createdAt - right.createdAt || left.id.localeCompare(right.id)
-  )
+  eligible.sort((left, right) => {
+    const leftPreferred = preferredTheme && phraseTheme(left.phraseId) === preferredTheme ? 0 : 1
+    const rightPreferred = preferredTheme && phraseTheme(right.phraseId) === preferredTheme ? 0 : 1
+    return (
+      leftPreferred - rightPreferred ||
+      left.guesses.total - right.guesses.total ||
+      left.createdAt - right.createdAt ||
+      left.id.localeCompare(right.id)
+    )
+  })
 
   return eligible[0] ?? null
+}
+
+export function phraseTheme(phraseId: string): ThemeId | null {
+  return DECK.find((phrase) => phrase.id === phraseId)?.theme ?? null
 }
 
 function firstWord(text: string) {

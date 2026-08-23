@@ -1,6 +1,6 @@
 import { AvatarBase, AvatarEquippedData, PlayerIdentityData, engine } from '@dcl/sdk/ecs'
 import { onEnterScene, onLeaveScene } from '@dcl/sdk/src/players'
-import { AUTHOR_COOLDOWN_SECONDS, PROTOCOL_VERSION } from '../shared/config'
+import { AUTHOR_COOLDOWN_SECONDS, PROTOCOL_VERSION, themeForTimestamp } from '../shared/config'
 import { DECK, EMOTE_VOCABULARY, HOUSE_CHARADE } from '../shared/deck'
 import { Messages, room } from '../shared/messages'
 import { chooseCharadeFor, pickDecoys, shuffleSeeded } from '../shared/pick'
@@ -23,6 +23,8 @@ type RevealPayload = {
   phrase: string
   stats: { total: number; correct: number }
   yourScore: number
+  daily: ReturnType<GhostCharadesState['getDaily']>
+  stampAwarded: boolean
 }
 
 export type ProtocolSend = (type: string, data: unknown, to?: string[]) => void | Promise<void>
@@ -114,7 +116,16 @@ export function createServerProtocol(options: ServerProtocolOptions) {
   const lastPosts = new Map<string, number>()
   const completedRequests = new Map<
     string,
-    { type: 'reveal' | 'posted'; data: RevealPayload | { charadeId: string } }
+    {
+      type: 'reveal' | 'posted'
+      data:
+        | RevealPayload
+        | {
+            charadeId: string
+            daily: ReturnType<GhostCharadesState['getDaily']>
+            stampAwarded: boolean
+          }
+    }
   >()
   const rounds = new LiveRounds((type, data) => options.send(type, data))
 
@@ -164,9 +175,16 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     })
   }
 
+  function readyPayload() {
+    const timestamp = now()
+    const theme = themeForTimestamp(timestamp)
+    return { instanceId, serverTime: timestamp, theme: theme.id, themeLabel: theme.label }
+  }
+
   function selectRoundCharade() {
     const present = new Set([...looks.keys()])
     const previous = rounds.current?.charadeId
+    const theme = themeForTimestamp(now()).id
     const eligible = options.state
       .getPool()
       .filter(
@@ -176,10 +194,16 @@ export function createServerProtocol(options: ServerProtocolOptions) {
           ![...present].some((address) => options.state.playerStats.get(address)?.seen.includes(charade.id))
       )
       .sort(
-        (left, right) =>
-          left.guesses.total - right.guesses.total ||
-          left.createdAt - right.createdAt ||
-          left.id.localeCompare(right.id)
+        (left, right) => {
+          const leftPreferred = DECK.find((phrase) => phrase.id === left.phraseId)?.theme === theme ? 0 : 1
+          const rightPreferred = DECK.find((phrase) => phrase.id === right.phraseId)?.theme === theme ? 0 : 1
+          return (
+            leftPreferred - rightPreferred ||
+            left.guesses.total - right.guesses.total ||
+            left.createdAt - right.createdAt ||
+            left.id.localeCompare(right.id)
+          )
+        }
       )
     return eligible[0] ?? HOUSE_CHARADE
   }
@@ -210,11 +234,14 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     const rankIndex = options.state.boards.decoders.findIndex((row) => canonicalAddress(row.address) === key)
     const pending = { ...stats.pending }
 
+    await sendTo(address, 'progress', { daily: { ...options.state.getDaily(stats) } })
+    if (welcomePromises.get(key) !== owner) return false
     if (pending.triedYou > 0) {
       await sendTo(address, 'since', {
         triedYou: pending.triedYou,
         gotYou: pending.gotYou,
-        rank: rankIndex < 0 ? 0 : rankIndex + 1
+        rank: rankIndex < 0 ? 0 : rankIndex + 1,
+        daily: { ...options.state.getDaily(stats) }
       })
       if (welcomePromises.get(key) !== owner) return false
     }
@@ -251,7 +278,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
 
   async function handleEnter(address: string) {
     await ready
-    await sendTo(address, 'ready', { instanceId, serverTime: now() })
+    await sendTo(address, 'ready', readyPayload())
     const pendingWelcome = welcome(address)
     if (!(await pendingWelcome) && !cancelledWelcomePromises.has(pendingWelcome)) {
       await sendError(address, 'look-not-ready')
@@ -289,7 +316,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       await sendError(address, 'protocol-version')
       return
     }
-    await sendTo(address, 'ready', { instanceId, serverTime: now() })
+    await sendTo(address, 'ready', readyPayload())
     const pendingWelcome = welcome(address)
     if (!(await pendingWelcome) && !cancelledWelcomePromises.has(pendingWelcome)) {
       await sendError(address, 'look-not-ready')
@@ -353,7 +380,13 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     const requesterGuessed = rounds.current?.guessed.includes(key) ?? false
     const selected =
       (requesterGuessed ? null : liveCharade) ??
-      chooseCharadeFor(key, [...stats.seen, ...data.exclude], options.state.getPool(), lastAuthors.get(key)) ??
+      chooseCharadeFor(
+        key,
+        [...stats.seen, ...data.exclude],
+        options.state.getPool(),
+        lastAuthors.get(key),
+        themeForTimestamp(now()).id
+      ) ??
       HOUSE_CHARADE
     await sendCharade(address, selected)
   }
@@ -398,10 +431,12 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     const correct = data.answerIndex === correctIndex
     if (roundIsActive) rounds.guess(key, charade.id, correct)
 
+    let stampAwarded = false
     if (!charade.isHouse) {
       stats.seen.push(charade.id)
       stats.decoded += 1
       stats.correct += correct ? 1 : 0
+      stampAwarded = options.state.recordDailyDecode(stats)
       options.state.recordGuess(charade.id, correct)
       options.state.recordDecoder(key, stats.name, correct)
       const authorStats = await options.state.getOrCreateStats(
@@ -426,7 +461,9 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       correct,
       phrase: phrase.text,
       stats: { ...updated.guesses },
-      yourScore: stats.correct
+      yourScore: stats.correct,
+      daily: { ...options.state.getDaily(stats) },
+      stampAwarded
     }
     completedRequests.set(idempotencyKey, { type: 'reveal', data: reveal })
     await sendTo(address, 'reveal', reveal)
@@ -454,7 +491,9 @@ export function createServerProtocol(options: ServerProtocolOptions) {
 
     const id = charadeId(key, data.requestId)
     if (options.state.getCharade(id)) {
-      const posted = { charadeId: id }
+      const look = looks.get(key)
+      const stats = await options.state.getOrCreateStats(key, playerName(key), !(look?.isGuest ?? true))
+      const posted = { charadeId: id, daily: { ...options.state.getDaily(stats) }, stampAwarded: false }
       completedRequests.set(idempotencyKey, { type: 'posted', data: posted })
       await sendTo(address, 'posted', posted)
       return
@@ -486,7 +525,8 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       return
     }
     if (options.state.getCharade(id)) {
-      const posted = { charadeId: id }
+      const stats = await options.state.getOrCreateStats(key, look.name, !look.isGuest)
+      const posted = { charadeId: id, daily: { ...options.state.getDaily(stats) }, stampAwarded: false }
       completedRequests.set(idempotencyKey, { type: 'posted', data: posted })
       await sendTo(address, 'posted', posted)
       return
@@ -511,10 +551,11 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     options.state.upsertCharade(charade)
     const stats = await options.state.getOrCreateStats(key, look.name, !look.isGuest)
     stats.authored.push(id)
+    const stampAwarded = options.state.recordDailyAuthor(stats)
     options.state.saveStats(key, !look.isGuest)
     lastPosts.set(key, currentTime)
 
-    const posted = { charadeId: id }
+    const posted = { charadeId: id, daily: { ...options.state.getDaily(stats) }, stampAwarded }
     completedRequests.set(idempotencyKey, { type: 'posted', data: posted })
     await sendTo(address, 'posted', posted)
     await checkpoint()

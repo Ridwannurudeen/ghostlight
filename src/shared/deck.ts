@@ -1,3 +1,4 @@
+import type { ThemeId } from './config'
 import { STORAGE_SCHEMA_VERSION, type Charade } from './types'
 
 export const CATEGORIES = ['everyday', 'feelings', 'food', 'dcl-life', 'pop', 'awkward'] as const
@@ -29,10 +30,13 @@ export type Phrase = {
   id: string
   text: string
   category: Category
+  theme: ThemeId
   suggested: readonly [Emote, Emote, Emote]
 }
 
-export const DECK = [
+type PhraseSource = Omit<Phrase, 'theme'>
+
+const PHRASE_SOURCES = [
   {
     id: 'everyday-wake-up-late',
     text: 'Wake up late',
@@ -698,7 +702,9 @@ export const DECK = [
     category: 'awkward',
     suggested: ['disco', 'shrug', 'clap']
   }
-] as const satisfies readonly Phrase[]
+] as const satisfies readonly PhraseSource[]
+
+export const DECK: readonly Phrase[] = PHRASE_SOURCES.map((phrase) => ({ ...phrase, theme: phrase.category }))
 
 export const HOUSE_CHARADE: Charade = {
   v: STORAGE_SCHEMA_VERSION,

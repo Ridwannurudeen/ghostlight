@@ -32,6 +32,13 @@ export type Charade = {
   isHouse: boolean
 }
 
+export type DailyProgress = {
+  day: string
+  decoded: number
+  authored: number
+  stamped: boolean
+}
+
 export type PlayerStats = {
   v: number
   name: string
@@ -44,6 +51,8 @@ export type PlayerStats = {
     triedYou: number
     gotYou: number
   }
+  daily: DailyProgress
+  stampedDays: string[]
 }
 
 export type Boards = {

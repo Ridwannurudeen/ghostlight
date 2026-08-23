@@ -1,6 +1,6 @@
 import { AUDIENCE_SEATS, HYDRATION_DAYS } from '../shared/config'
 import { HOUSE_CHARADE } from '../shared/deck'
-import type { Boards, Charade, Color, Look, PlayerStats } from '../shared/types'
+import type { Boards, Charade, Color, DailyProgress, Look, PlayerStats } from '../shared/types'
 import { STORAGE_SCHEMA_VERSION } from '../shared/types'
 import {
   PLAYER_STATS_KEY,
@@ -29,6 +29,7 @@ const defaultStorage: StateStorage = {
 const EMPTY_BOARDS: Boards = { decoders: [], hardest: [] }
 const DAY_MILLISECONDS = 24 * 60 * 60 * 1000
 const MAX_CONCURRENT_READS = 8
+const MAX_STAMPED_DAYS = 100
 
 function asObject(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -43,6 +44,27 @@ function asNonNegativeInt(value: unknown, fallback = 0) {
 function asStringArray(value: unknown, limit?: number) {
   const strings = Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
   return limit === undefined ? strings : strings.slice(-limit)
+}
+
+function isDayKey(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(value)) return false
+  const timestamp = Date.parse(`${value}T00:00:00.000Z`)
+  return Number.isFinite(timestamp) && dayKey(timestamp) === value
+}
+
+function emptyDaily(day: string): DailyProgress {
+  return { day, decoded: 0, authored: 0, stamped: false }
+}
+
+function migrateDaily(value: unknown, now: number): DailyProgress {
+  const stored = asObject(value)
+  if (!stored || typeof stored.day !== 'string' || !isDayKey(stored.day)) return emptyDaily(dayKey(now))
+  return {
+    day: stored.day,
+    decoded: asNonNegativeInt(stored.decoded),
+    authored: asNonNegativeInt(stored.authored),
+    stamped: stored.stamped === true
+  }
 }
 
 function migrateColor(value: unknown): Color | null {
@@ -129,12 +151,17 @@ export function migratePlayerStats(value: unknown, name: string, now: number): P
       seen: [],
       authored: [],
       lastSeenAt: now,
-      pending: { triedYou: 0, gotYou: 0 }
+      pending: { triedYou: 0, gotYou: 0 },
+      daily: emptyDaily(dayKey(now)),
+      stampedDays: []
     }
   }
 
   const pending = asObject(stored.pending)
   const decoded = asNonNegativeInt(stored.decoded)
+  const daily = migrateDaily(stored.daily, now)
+  const stampedDays = [...new Set(asStringArray(stored.stampedDays).filter(isDayKey))]
+  if (daily.stamped && !stampedDays.includes(daily.day)) stampedDays.push(daily.day)
   return {
     v: STORAGE_SCHEMA_VERSION,
     name: typeof stored.name === 'string' && stored.name ? stored.name : name,
@@ -146,7 +173,9 @@ export function migratePlayerStats(value: unknown, name: string, now: number): P
     pending: {
       triedYou: asNonNegativeInt(pending?.triedYou),
       gotYou: asNonNegativeInt(pending?.gotYou)
-    }
+    },
+    daily,
+    stampedDays: stampedDays.slice(-MAX_STAMPED_DAYS)
   }
 }
 
@@ -408,8 +437,35 @@ export class GhostCharadesState {
     const stats = this.playerStats.get(key)
     if (!stats) return
     stats.seen = [...new Set(stats.seen)].slice(-200)
+    stats.stampedDays = [...new Set(stats.stampedDays)].slice(-MAX_STAMPED_DAYS)
     stats.lastSeenAt = this.now()
     if (persist) this.storage.markPlayerDirty(key, PLAYER_STATS_KEY, stats)
+  }
+
+  getDaily(stats: PlayerStats) {
+    const today = dayKey(this.now())
+    if (stats.daily.day !== today) stats.daily = emptyDaily(today)
+    return stats.daily
+  }
+
+  recordDailyDecode(stats: PlayerStats) {
+    const daily = this.getDaily(stats)
+    daily.decoded += 1
+    return this.awardDailyStamp(stats)
+  }
+
+  recordDailyAuthor(stats: PlayerStats) {
+    const daily = this.getDaily(stats)
+    daily.authored += 1
+    return this.awardDailyStamp(stats)
+  }
+
+  private awardDailyStamp(stats: PlayerStats) {
+    const daily = this.getDaily(stats)
+    if (daily.stamped || daily.decoded < 3 || daily.authored < 1) return false
+    daily.stamped = true
+    if (!stats.stampedDays.includes(daily.day)) stats.stampedDays.push(daily.day)
+    return true
   }
 
   consumePending(address: string, persist = true) {
