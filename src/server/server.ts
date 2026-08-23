@@ -108,6 +108,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
   const looks = new Map<string, Look>()
   const welcomed = new Set<string>()
   const welcomePromises = new Map<string, Promise<boolean>>()
+  const cancelledWelcomePromises = new WeakSet<Promise<boolean>>()
   const answerIndexes = new Map<string, number>()
   const lastAuthors = new Map<string, string>()
   const lastPosts = new Map<string, number>()
@@ -251,12 +252,17 @@ export function createServerProtocol(options: ServerProtocolOptions) {
   async function handleEnter(address: string) {
     await ready
     await sendTo(address, 'ready', { instanceId, serverTime: now() })
-    if (!(await welcome(address))) await sendError(address, 'look-not-ready')
+    const pendingWelcome = welcome(address)
+    if (!(await pendingWelcome) && !cancelledWelcomePromises.has(pendingWelcome)) {
+      await sendError(address, 'look-not-ready')
+    }
   }
 
   async function handleLeave(address: string) {
     await ready
     const key = canonicalAddress(address)
+    const pendingWelcome = welcomePromises.get(key)
+    if (pendingWelcome) cancelledWelcomePromises.add(pendingWelcome)
     welcomePromises.delete(key)
     const look = looks.get(key)
     if (look) {
@@ -284,7 +290,10 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       return
     }
     await sendTo(address, 'ready', { instanceId, serverTime: now() })
-    if (!(await welcome(address))) await sendError(address, 'look-not-ready')
+    const pendingWelcome = welcome(address)
+    if (!(await pendingWelcome) && !cancelledWelcomePromises.has(pendingWelcome)) {
+      await sendError(address, 'look-not-ready')
+    }
   }
 
   async function handlePing(data: PingPayload, address: string) {

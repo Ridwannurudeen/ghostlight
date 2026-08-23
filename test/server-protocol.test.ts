@@ -239,7 +239,6 @@ describe('server readiness and welcome', () => {
 
     firstLook.resolve(makeLook('player', 'Stale Player'))
     await firstEnter
-    sent.length = 0
     secondLook.resolve(makeLook('player', 'Fresh Player'))
     await secondEnter
 
