@@ -20,7 +20,8 @@ describe('client settings', () => {
       soundVolume: 0.5,
       language: 'es',
       reducedMotion: true,
-      largeText: true
+      largeText: true,
+      diagnosticsEnabled: false
     })
     updateClientSettings({ largeText: true })
 
@@ -29,7 +30,8 @@ describe('client settings', () => {
       soundVolume: 0.5,
       language: 'es',
       reducedMotion: true,
-      largeText: true
+      largeText: true,
+      diagnosticsEnabled: false
     })
     expect(listener).toHaveBeenCalledTimes(1)
 

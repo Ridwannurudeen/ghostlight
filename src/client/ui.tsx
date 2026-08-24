@@ -22,6 +22,7 @@ import { canAnswerBack, canSendMail, canSpectatorReact, clientFlow, mailRecipien
 import { getOpeningViewState, skipOpening, type OpeningViewState } from './opening-scene'
 import { REACTION_OPTIONS, sendReaction } from './reactions'
 import { getRevealViewState, type RevealViewState } from './reveal-scene'
+import { formatDiagnosticsBlock, formatDiagnosticsLines, getDiagnosticsSnapshot } from './diagnostics'
 import { getClientSettings, updateClientSettings } from './settings'
 import { isPlayerInDecodeArea } from './setup'
 
@@ -653,11 +654,56 @@ function mailScreen(state: ClientFlowState) {
 
 function settingsScreen(state: ClientFlowState) {
   const settings = getClientSettings()
+  if (settings.diagnosticsEnabled) {
+    const snapshot = getDiagnosticsSnapshot(settings.language, {
+      ready: state.ready,
+      instanceId: state.instanceId
+    })
+    const lines = ['GHOSTLIGHT_DIAGNOSTICS v1', ...formatDiagnosticsLines(snapshot)]
+    return screenShell(
+      copy('diagnostics.title'),
+      <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column' }}>
+        <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', padding: '8px 4px' }}>
+          {lines.map((line) => (
+            <Label
+              value={line}
+              fontSize={uiFontSize(16)}
+              font="monospace"
+              color={COLORS.bone}
+              textAlign="middle-left"
+              uiTransform={{ width: '100%', minHeight: 32 }}
+            />
+          ))}
+        </UiEntity>
+        {actionButton(copy('diagnostics.copy'), () => {
+          void copyToClipboard({ text: formatDiagnosticsBlock(snapshot) }).catch((error: unknown) => {
+            console.error('Ghostlight diagnostics copy failed', error)
+          })
+        })}
+        {actionButton(
+          copy('diagnostics.disable'),
+          () => updateClientSettings({ diagnosticsEnabled: false }),
+          false,
+          'secondary'
+        )}
+        {actionButton(copy('common.back'), () => clientFlow.showFoyer(), false, 'secondary')}
+      </UiEntity>,
+      state
+    )
+  }
+
   const soundValue = !settings.soundEnabled
     ? copy('common.off')
     : settings.soundVolume === 0.5
       ? copy('common.quiet')
       : copy('common.full')
+  const accessibilityValue = settings.reducedMotion
+    ? settings.largeText
+      ? copy('settings.accessibilityBoth')
+      : copy('settings.accessibilityReduced')
+    : settings.largeText
+      ? copy('settings.accessibilityLarge')
+      : copy('common.off')
   return screenShell(
     copy('settings.title'),
     <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', justifyContent: 'center' }}>
@@ -680,14 +726,24 @@ function settingsScreen(state: ClientFlowState) {
         'secondary'
       )}
       {actionButton(
-        copy('settings.reducedMotion', { value: settings.reducedMotion ? copy('common.on') : copy('common.off') }),
-        () => updateClientSettings({ reducedMotion: !settings.reducedMotion }),
+        copy('settings.accessibility', { value: accessibilityValue }),
+        () => {
+          if (!settings.reducedMotion && !settings.largeText) {
+            updateClientSettings({ reducedMotion: true })
+          } else if (settings.reducedMotion && !settings.largeText) {
+            updateClientSettings({ reducedMotion: false, largeText: true })
+          } else if (!settings.reducedMotion && settings.largeText) {
+            updateClientSettings({ reducedMotion: true })
+          } else {
+            updateClientSettings({ reducedMotion: false, largeText: false })
+          }
+        },
         false,
         'secondary'
       )}
       {actionButton(
-        copy('settings.largeText', { value: settings.largeText ? copy('common.on') : copy('common.off') }),
-        () => updateClientSettings({ largeText: !settings.largeText }),
+        copy('settings.diagnostics', { value: copy('common.off') }),
+        () => updateClientSettings({ diagnosticsEnabled: true }),
         false,
         'secondary'
       )}

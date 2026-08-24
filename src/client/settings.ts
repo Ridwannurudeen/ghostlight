@@ -1,4 +1,5 @@
 import type { Language } from '../shared/i18n'
+import { DIAGNOSTICS_DEFAULT_ENABLED } from '../shared/config'
 
 export type SoundVolume = 0.5 | 1
 
@@ -8,6 +9,7 @@ export type ClientSettings = Readonly<{
   language: Language
   reducedMotion: boolean
   largeText: boolean
+  diagnosticsEnabled: boolean
 }>
 
 export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
@@ -15,7 +17,8 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
   soundVolume: 1,
   language: 'en',
   reducedMotion: false,
-  largeText: false
+  largeText: false,
+  diagnosticsEnabled: DIAGNOSTICS_DEFAULT_ENABLED
 }
 
 type SettingsListener = (settings: ClientSettings) => void
@@ -34,7 +37,8 @@ export function updateClientSettings(patch: Partial<ClientSettings>) {
     nextSettings.soundVolume === settings.soundVolume &&
     nextSettings.language === settings.language &&
     nextSettings.reducedMotion === settings.reducedMotion &&
-    nextSettings.largeText === settings.largeText
+    nextSettings.largeText === settings.largeText &&
+    nextSettings.diagnosticsEnabled === settings.diagnosticsEnabled
   ) {
     return settings
   }

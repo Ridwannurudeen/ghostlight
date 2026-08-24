@@ -371,13 +371,14 @@ describe('mobile control budget', () => {
 })
 
 describe('settings and accessibility', () => {
-  it('changes sound, language, reduced motion, and large text from a five-control panel', () => {
+  it('changes sound, language, and both accessibility modes from a five-control panel', () => {
     uiTest.state = { ...stateFor('decode'), screen: 'settings', theme: 'food' }
 
     expect(collectButtons(uiComponent())).toHaveLength(5)
     ;(findButton(uiComponent(), 'SOUND: FULL')?.onMouseDown as (() => void) | undefined)?.()
-    ;(findButton(uiComponent(), 'REDUCED MOTION: OFF')?.onMouseDown as (() => void) | undefined)?.()
-    ;(findButton(uiComponent(), 'LARGE TEXT: OFF')?.onMouseDown as (() => void) | undefined)?.()
+    ;(findButton(uiComponent(), 'ACCESSIBILITY: OFF')?.onMouseDown as (() => void) | undefined)?.()
+    ;(findButton(uiComponent(), 'ACCESSIBILITY: REDUCED')?.onMouseDown as (() => void) | undefined)?.()
+    ;(findButton(uiComponent(), 'ACCESSIBILITY: LARGE TEXT')?.onMouseDown as (() => void) | undefined)?.()
     ;(findButton(uiComponent(), 'LANGUAGE: English')?.onMouseDown as (() => void) | undefined)?.()
 
     expect(getClientSettings()).toEqual({
@@ -385,11 +386,29 @@ describe('settings and accessibility', () => {
       soundVolume: 1,
       language: 'es',
       reducedMotion: true,
-      largeText: true
+      largeText: true,
+      diagnosticsEnabled: false
     })
     expect(uiFontSize(20)).toBe(24)
     ;(findButton(uiComponent(), 'VOLVER')?.onMouseDown as (() => void) | undefined)?.()
     expect(uiActions.showFoyer).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders null-safe diagnostics in Settings without adding a sixth control', async () => {
+    uiTest.state = { ...stateFor('decode'), screen: 'settings', theme: 'food' }
+    ;(findButton(uiComponent(), 'DIAGNOSTICS: OFF')?.onMouseDown as (() => void) | undefined)?.()
+
+    expect(() => uiComponent()).not.toThrow()
+    expect(collectButtons(uiComponent()).map(({ value }) => value)).toEqual([
+      'COPY DIAGNOSTICS',
+      'DISABLE DIAGNOSTICS',
+      'BACK'
+    ])
+    ;(findButton(uiComponent(), 'COPY DIAGNOSTICS')?.onMouseDown as (() => void) | undefined)?.()
+    await Promise.resolve()
+    expect(restrictedActions.copyToClipboard).toHaveBeenCalledWith({
+      text: expect.stringMatching(/^GHOSTLIGHT_DIAGNOSTICS v1\n/)
+    })
   })
 })
 

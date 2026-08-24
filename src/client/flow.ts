@@ -14,6 +14,15 @@ import { SPECTATOR_REACTION_KINDS, room } from '../shared/messages'
 import { isPhraseId, normalizePlayerName } from '../shared/i18n'
 import { dealPhrase, offerEmotes } from '../shared/pick'
 import type { DailyProgress, Look, NextUnlock, PlaybillPerformer } from '../shared/types'
+import {
+  recordDiagnosticsCharade,
+  recordDiagnosticsGuess,
+  recordDiagnosticsPing,
+  recordDiagnosticsPong,
+  recordDiagnosticsPost,
+  recordDiagnosticsServerAttempt,
+  recordDiagnosticsServerReady
+} from './diagnostics'
 import { sanitizeAvatarLook } from './look'
 import { isInDecodeArea } from './theater'
 
@@ -814,6 +823,13 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
   }
 
   function emit(message: OutboundMessage) {
+    if (message.type === 'hello') {
+      recordDiagnosticsServerAttempt(now())
+    } else if (message.type === 'ping') {
+      const sentAt = now()
+      recordDiagnosticsServerAttempt(sentAt)
+      recordDiagnosticsPing(message.data.seq, sentAt)
+    }
     try {
       void Promise.resolve(options.send(message)).catch((error: unknown) => {
         console.error(`Ghostlight message ${message.type} failed`, error)
@@ -878,6 +894,8 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
   function receive(message: ServerMessage) {
     switch (message.type) {
       case 'ready': {
+        const receivedAt = now()
+        recordDiagnosticsServerReady(receivedAt)
         const instanceChanged = state.instanceId !== message.data.instanceId
         const theme =
           THEMES.find((candidate) => candidate.id === message.data.theme) ??
@@ -898,7 +916,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           type: 'ready',
           instanceId: message.data.instanceId,
           serverTime: message.data.serverTime,
-          now: now(),
+          now: receivedAt,
           theme: theme.id,
           themeLabel: message.data.themeLabel || theme.label,
           playerAddress: profile?.address ?? state.playerAddress,
@@ -921,10 +939,13 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           effects.showReward?.(message.data.address, message.data.title)
         }
         break
-      case 'pong':
-        dispatch({ type: 'pong', now: now() })
+      case 'pong': {
+        const receivedAt = now()
+        recordDiagnosticsPong(message.data.seq, receivedAt)
+        dispatch({ type: 'pong', now: receivedAt })
         requestRoundCharadeIfNeeded()
         break
+      }
       case 'charade': {
         if (!resolveRequest(message.data.requestId, 'nextCharade')) break
         if (
@@ -965,6 +986,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
             break
           }
         }
+        recordDiagnosticsCharade(charade.recipient !== undefined)
         cancelReveal()
         dispatch({ type: 'charade', charade })
         if (charade.reply) {
@@ -1019,6 +1041,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           titleUnlocked: message.data.titleUnlocked === true
         }
         if (state.roundCharadeId === message.data.charadeId) roundMismatchRefetchAttempted = false
+        recordDiagnosticsGuess()
         dispatch({ type: 'reveal', reveal })
         if (state.playerAddress) effects.showReward?.(state.playerAddress, reveal.title)
         if (revealedCharade?.id === message.data.charadeId) effects.resolveReveal?.(reveal, revealedCharade)
@@ -1037,6 +1060,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           stampAwarded: message.data.stampAwarded === true,
           titleUnlocked: message.data.titleUnlocked === true
         }
+        recordDiagnosticsPost(message.data.recipient !== undefined)
         dispatch({ type: 'posted', result })
         if (state.playerAddress) effects.showReward?.(state.playerAddress, result.title)
         break

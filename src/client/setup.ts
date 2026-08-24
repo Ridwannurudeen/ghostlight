@@ -2,6 +2,7 @@ import { MainCamera, TouchScreenControls, Transform, VirtualCamera, engine, type
 import { Vector3 } from '@dcl/sdk/math'
 import { getPlatform, isMobile, type Platform } from '@dcl/sdk/platform'
 import { ReactEcsRenderer, type UiComponent } from '@dcl/sdk/react-ecs'
+import { configureDiagnosticsEnvironment, initializeDiagnostics } from './diagnostics'
 import { getPerformerEntity, initializeGhosts } from './ghosts'
 import { initializeSounds, startRoomTone } from './sound'
 import { STAGE_CAMERA_POSITION, createTheater, getTheaterRegion, isInDecodeArea, type TheaterRegion } from './theater'
@@ -29,6 +30,7 @@ export function startClientSetup(renderer: UiComponent) {
   if (started) return
   started = true
   uiRenderer = renderer
+  initializeDiagnostics()
 
   createTheater()
   initializeGhosts()
@@ -110,6 +112,7 @@ function configurePlatform(detectedPlatform: Platform) {
   initializeSounds()
   startRoomTone()
   mobile = isMobile()
+  configureDiagnosticsEnvironment(detectedPlatform, mobile, mobile ? 'interactable' : 'device')
   if (mobile) {
     TouchScreenControls.hideAll()
   }
