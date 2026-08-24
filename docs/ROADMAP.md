@@ -1,7 +1,7 @@
 # Ghost Charades — Roadmap
 
 *Drafted 2026-08-23 by the owner's two AI builders from three independent inputs: a primary-source research
-pass on Decentraland's programs and levers, Codex's roadmap draft, and Claude's. Every external fact below
+pass on Decentraland's programs and levers plus two independent AI-assisted roadmap drafts. Every external fact below
 was verified on 2026-08-23 against the source named; anything we could not verify is marked as such and the
 plan does not depend on it.*
 
@@ -156,7 +156,7 @@ months of runway, and the core loop still free.
 ## 7. Team and capacity
 
 The owner owns product judgement, architecture, releases, creator relationships, and the final quality bar.
-AI builders (Codex builds, Claude verifies and reviews, Fable 5 audits) handle implementation, tests, asset
+AI-assisted builders (separate build, verification, and audit passes) handle implementation, tests, asset
 scripting, content tooling, QA matrices, analytics queries, release prep — every output owner-reviewed.
 Scripted Blender assets carry Phase 0. **Bring in a human environment artist and a sound designer by Sep 15,
 conditional on funding**, for a fixed four-week pass (three venue identities, reward props, sonic logo, crowd

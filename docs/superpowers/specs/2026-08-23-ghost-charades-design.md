@@ -3,8 +3,8 @@
 **Event:** Decentraland Friendzone Mobile Buildathon (DoraHacks). Deadline shown on the campaign page:
 2026-09-04 00:00 (timezone not stated — our wall is **Tue 2 Sep 18:00 local**). Judging 5–11 Sep, every
 entry played by a judge **alone, in the Decentraland mobile app**, unsupervised.
-**Status:** design approved by the owner 2026-08-23 (concept chosen over eight alternatives; Codex and Claude
-agreed on it twice). Nothing built yet.
+**Status:** design approved by the owner 2026-08-23 (concept chosen over eight alternatives; two independent
+AI-assisted evaluations converged on it). Nothing built yet.
 
 ## 1. The one-sentence hook
 
