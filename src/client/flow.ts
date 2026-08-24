@@ -1,6 +1,6 @@
 import { engine } from '@dcl/sdk/ecs'
 import { getPlayer } from '@dcl/sdk/src/players'
-import { DECK, type Emote, type Phrase } from '../shared/deck'
+import { DECK, type Emote, type Phrase, type PhraseId } from '../shared/deck'
 import {
   AUDIENCE_SEATS,
   HEARTBEAT_SECONDS,
@@ -10,7 +10,8 @@ import {
   type PlayerTitle,
   type ThemeId
 } from '../shared/config'
-import { room } from '../shared/messages'
+import { SPECTATOR_REACTION_KINDS, room } from '../shared/messages'
+import { isPhraseId } from '../shared/i18n'
 import { dealPhrase, offerEmotes } from '../shared/pick'
 import type { DailyProgress, Look, NextUnlock, PlaybillPerformer } from '../shared/types'
 import { isInDecodeArea } from './theater'
@@ -28,7 +29,7 @@ export type FlowScreen =
   | 'mail'
   | 'settings'
 
-export type ReactionKind = 'laugh' | 'confused' | 'genius'
+export type ReactionKind = (typeof SPECTATOR_REACTION_KINDS)[number]
 export type GhostEmotes = [string, string, string]
 
 export type DecodeReply = {
@@ -46,6 +47,7 @@ export type DecodeCharade = {
   look: Look
   emotes: GhostEmotes
   answers: [string, string, string]
+  answerIds?: [PhraseId, PhraseId, PhraseId]
   createdAt: number
   isHouse: boolean
   recipient?: string
@@ -167,6 +169,7 @@ export type ClientFlowState = {
     kind: ReactionKind
     from: string
     sequence: number
+    shownAt: number
   } | null
   reactionMenuOpen: boolean
   roundCharadeId: string
@@ -175,7 +178,7 @@ export type ClientFlowState = {
     name: string
   } | null
   toast: {
-    text: string
+    winnerName: string
     shownAt: number
   } | null
   pending: PendingRequest[]
@@ -221,7 +224,7 @@ export type FlowAction =
   | { type: 'ghostOfNight'; ghost: GhostOfNightView }
   | { type: 'roundStart'; charadeId: string }
   | { type: 'roundWinner'; address: string; name: string; now: number }
-  | { type: 'reaction'; kind: ReactionKind; from: string }
+  | { type: 'reaction'; kind: ReactionKind; from: string; now: number }
   | { type: 'toggleReactionMenu' }
   | { type: 'show'; screen: 'foyer' | 'boards' | 'invite' | 'mail' | 'settings' }
   | { type: 'requestSent'; request: PendingRequest }
@@ -406,7 +409,8 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
           nextUnlock: action.reveal.nextUnlock
         },
         notices: appendProgressNotices(state.notices, action.reveal.charadeId, action.reveal),
-        roundCharadeId: state.roundCharadeId === action.reveal.charadeId ? '' : state.roundCharadeId,
+        roundCharadeId:
+          state.roundCharadeId === action.reveal.charadeId && action.reveal.correct ? '' : state.roundCharadeId,
         errorCode: '',
         pending: state.pending.filter((request) => request.kind !== 'guess' && request.kind !== 'roundGuess')
       }
@@ -497,7 +501,7 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
       return {
         ...state,
         roundWinner: { address: action.address, name: action.name },
-        toast: { text: `${action.name} won the round.`, shownAt: action.now },
+        toast: { winnerName: action.name, shownAt: action.now },
         roundCharadeId: ''
       }
     case 'reaction':
@@ -506,11 +510,14 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
         reactionEvent: {
           kind: action.kind,
           from: action.from,
-          sequence: (state.reactionEvent?.sequence ?? 0) + 1
+          sequence: (state.reactionEvent?.sequence ?? 0) + 1,
+          shownAt: action.now
         }
       }
     case 'toggleReactionMenu':
-      return { ...state, reactionMenuOpen: !state.reactionMenuOpen }
+      return state.reactionMenuOpen || canSpectatorReact(state)
+        ? { ...state, reactionMenuOpen: !state.reactionMenuOpen }
+        : state
     case 'show':
       return {
         ...state,
@@ -591,10 +598,11 @@ export type ServerMessage =
   | { type: 'playerTitle'; data: { address: string; title: string } }
   | {
       type: 'charade'
-      data: Omit<DecodeCharade, 'emotes' | 'answers' | 'authorTitle' | 'reply'> & {
+      data: Omit<DecodeCharade, 'emotes' | 'answers' | 'answerIds' | 'authorTitle' | 'reply'> & {
         requestId: string
         emotes: string[]
         answers: string[]
+        answerIds?: string[]
         authorTitle?: string
       }
     }
@@ -683,6 +691,15 @@ export function mailRecipients(state: ClientFlowState) {
 export function canSendMail(state: ClientFlowState) {
   return (
     state.ready && !state.playerIsGuest && STABLE_ADDRESS.test(state.playerAddress) && mailRecipients(state).length > 0
+  )
+}
+
+export function canSpectatorReact(state: ClientFlowState) {
+  return (
+    state.ready &&
+    (state.screen === 'foyer' || (state.screen === 'reveal' && state.reveal?.correct === false)) &&
+    state.roundCharadeId !== '' &&
+    state.pending.length === 0
   )
 }
 
@@ -836,12 +853,18 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         break
       case 'charade': {
         if (!resolveRequest(message.data.requestId, 'nextCharade')) break
-        if (message.data.emotes.length !== 3 || message.data.answers.length !== 3) {
+        if (
+          message.data.emotes.length !== 3 ||
+          message.data.answers.length !== 3 ||
+          (message.data.answerIds !== undefined &&
+            (message.data.answerIds.length !== 3 || !message.data.answerIds.every(isPhraseId)))
+        ) {
           dispatch({ type: 'error', code: 'invalid_charade' })
           break
         }
         const [first, second, third] = message.data.emotes
         const [firstAnswer, secondAnswer, thirdAnswer] = message.data.answers
+        const [firstAnswerId, secondAnswerId, thirdAnswerId] = message.data.answerIds ?? []
         const charade: DecodeCharade = {
           id: message.data.id,
           authorName: message.data.authorName,
@@ -852,6 +875,9 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           ...(message.data.recipient ? { recipient: message.data.recipient } : {}),
           emotes: [first, second, third],
           answers: [firstAnswer, secondAnswer, thirdAnswer],
+          ...(firstAnswerId && secondAnswerId && thirdAnswerId
+            ? { answerIds: [firstAnswerId, secondAnswerId, thirdAnswerId] }
+            : {}),
           authorTitle:
             typeof message.data.authorTitle === 'string' && isPlayerTitle(message.data.authorTitle)
               ? message.data.authorTitle
@@ -982,7 +1008,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
       }
       case 'react':
         if (isReactionKind(message.data.kind)) {
-          dispatch({ type: 'reaction', kind: message.data.kind, from: message.from })
+          dispatch({ type: 'reaction', kind: message.data.kind, from: message.from, now: now() })
         }
         break
       case 'error':
@@ -1319,6 +1345,11 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     toggleReactionMenu() {
       dispatch({ type: 'toggleReactionMenu' })
     },
+    showLocalReaction(kind: ReactionKind) {
+      if (!isReactionKind(kind)) return false
+      dispatch({ type: 'reaction', kind, from: state.playerAddress, now: now() })
+      return true
+    },
     setInviteStatus(status: ClientFlowState['inviteStatus']) {
       dispatch({ type: 'inviteStatus', status })
     },
@@ -1334,7 +1365,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
 }
 
 function isReactionKind(kind: string): kind is ReactionKind {
-  return kind === 'laugh' || kind === 'confused' || kind === 'genius'
+  return SPECTATOR_REACTION_KINDS.some((candidate) => candidate === kind)
 }
 
 function sendRoomMessage(message: OutboundMessage) {

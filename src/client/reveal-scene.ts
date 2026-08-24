@@ -1,5 +1,6 @@
 import { Billboard, TextShape, Transform, Tween, engine, type Entity } from '@dcl/sdk/ecs'
 import { Color3, Color4, Vector3 } from '@dcl/sdk/math'
+import { phraseText, t, titleLabel } from '../shared/i18n'
 import type { DecodeCharade, RevealResult } from './flow'
 import { freezePerformer, playPerformerEmote, react, resumePerformer } from './ghosts'
 import {
@@ -181,32 +182,38 @@ export function createSceneRevealController(audio: RevealAudioPort, clock?: Reve
   return {
     begin(charade: DecodeCharade, answerIndex: number) {
       reducedMotion = getClientSettings().reducedMotion
+      const language = getClientSettings().language
       titleProgressTarget = 0
       titleProgressElapsed = TITLE_PROGRESS_SECONDS
       revealView = {
         ...EMPTY_REVEAL_VIEW,
         active: true,
         selectedAnswerIndex: answerIndex,
-        answers: charade.answers
+        answers: charade.answerIds?.map((id, index) => phraseText(id, language) ?? charade.answers[index]) ?? charade.answers
       }
       controller.begin()
     },
     resolve(reveal: RevealResult, charade: DecodeCharade) {
+      const language = getClientSettings().language
+      const phrase = phraseText(reveal.phraseId, language) ?? reveal.phrase
+      const authorName = charade.isHouse ? t('decode.houseGhost', language) : charade.authorName
       revealView = {
         ...revealView,
-        answers: charade.answers,
-        phrase: reveal.phrase,
+        answers: charade.answerIds?.map((id, index) => phraseText(id, language) ?? charade.answers[index]) ?? charade.answers,
+        phrase,
         correct: reveal.correct,
         stampAwarded: reveal.stampAwarded
       }
       return controller.resolve({
         correct: reveal.correct,
-        authorName: charade.authorName,
-        phrase: reveal.phrase,
+        authorName,
+        phrase,
         stats: reveal.stats,
         titleProgress: reveal.nextUnlock.progress,
-        unlockedTitle: reveal.titleUnlocked ? reveal.title : '',
-        stampAwarded: reveal.stampAwarded
+        unlockedTitle: reveal.titleUnlocked ? titleLabel(reveal.title, language) : '',
+        stampAwarded: reveal.stampAwarded,
+        hitText: t('reveal.hit', language),
+        missText: t('reveal.miss', language, { author: authorName.toUpperCase(), phrase: phrase.toUpperCase() })
       })
     },
     skipToEnd: controller.skipToEnd,

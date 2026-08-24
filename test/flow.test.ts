@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { DECK, EMOTE_VOCABULARY, type Emote } from '../src/shared/deck'
 import {
+  canSpectatorReact,
   createFlowRuntime,
   createInitialFlowState,
   flowReducer,
@@ -127,6 +128,29 @@ function messagesOfType<T extends OutboundMessage['type']>(sent: OutboundMessage
 }
 
 describe('flow reducer', () => {
+  it('keeps spectator reactions cosmetic and outside decode state transitions', () => {
+    const charade = makeDecodeCharade()
+    let state = {
+      ...createInitialFlowState(),
+      ready: true,
+      screen: 'decode' as const,
+      charade,
+      roundCharadeId: charade.id
+    }
+
+    state = flowReducer(state, { type: 'reaction', kind: 'applause', from: '0xSpectator', now: FIXED_NOW })
+
+    expect(state).toMatchObject({
+      screen: 'decode',
+      charade,
+      reveal: null,
+      roundCharadeId: charade.id,
+      pending: [],
+      reactionEvent: { kind: 'applause', from: '0xSpectator', shownAt: FIXED_NOW }
+    })
+    expect(flowReducer(state, { type: 'toggleReactionMenu' }).reactionMenuOpen).toBe(false)
+  })
+
   it('preserves the active screen through heartbeat loss and recovery', () => {
     const charade = makeDecodeCharade()
     let state = flowReducer(createInitialFlowState(), {
@@ -637,6 +661,21 @@ describe('flow lifecycle', () => {
     expect(effects.showPerformer).not.toHaveBeenCalled()
   })
 
+  it('retains validated phrase ids in server answer order and rejects malformed ids', () => {
+    const { runtime, effects } = createFlowHarness()
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    const charade = makeDecodeCharade()
+    const answerIds = [DECK[0].id, DECK[1].id, DECK[2].id]
+
+    serveCharade(runtime, { ...charade, answerIds })
+    expect(runtime.getState().charade?.answerIds).toEqual(answerIds)
+
+    runtime.requestNextCharade()
+    serveCharade(runtime, { ...makeDecodeCharade('invalid-ids'), answerIds: [DECK[0].id, 'missing', DECK[2].id] })
+    expect(runtime.getState()).toMatchObject({ errorCode: 'invalid_charade', pending: [] })
+    expect(effects.showPerformer).toHaveBeenCalledTimes(1)
+  })
+
   it('falls back to a plain guess after any server error on the decode screen', () => {
     const { runtime, sent } = createFlowHarness()
     runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
@@ -904,7 +943,7 @@ describe('audience and rounds', () => {
     expect(messagesOfType(sent, 'nextCharade')).toHaveLength(1)
   })
 
-  it('clears round context when that charade is revealed', () => {
+  it('keeps an incorrect round reveal eligible for reactions until a winner settles the round', () => {
     const { runtime } = createFlowHarness()
     runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
     serveCharade(runtime, makeDecodeCharade('live'))
@@ -921,7 +960,13 @@ describe('audience and rounds', () => {
       }
     })
 
-    expect(runtime.getState()).toMatchObject({ screen: 'reveal', roundCharadeId: '' })
+    expect(runtime.getState()).toMatchObject({ screen: 'reveal', roundCharadeId: 'live' })
+    expect(canSpectatorReact(runtime.getState())).toBe(true)
+
+    runtime.receive({ type: 'roundWinner', data: { address: 'remote', name: 'Remote' } })
+
+    expect(runtime.getState().roundCharadeId).toBe('')
+    expect(canSpectatorReact(runtime.getState())).toBe(false)
   })
 
   it.each(['foyer', 'since', 'reveal', 'author', 'posted', 'boards', 'invite'] as const)(
@@ -1025,7 +1070,7 @@ describe('audience and rounds', () => {
       screen: 'author',
       roundCharadeId: '',
       roundWinner: { address: '0xPLAYER', name: 'Player' },
-      toast: { text: 'Player won the round.', shownAt: FIXED_NOW }
+      toast: { winnerName: 'Player', shownAt: FIXED_NOW }
     })
     expect(runtime.getState().author).not.toBeNull()
     advance(4_000)

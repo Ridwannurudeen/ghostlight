@@ -155,4 +155,48 @@ describe('scene reveal adapter', () => {
     ])
     expect(audio.restore).toHaveBeenCalledTimes(1)
   })
+
+  it('resolves answer ids, verdict copy, and titles in the selected language', () => {
+    updateClientSettings({ language: 'pt', reducedMotion: true })
+    const audio = { play: vi.fn(), duck: vi.fn(), restore: vi.fn() }
+    const controller = createSceneRevealController(audio)
+    const localizedCharade: DecodeCharade = {
+      ...charade,
+      answerIds: [
+        'everyday-wake-up-late',
+        'everyday-brush-your-teeth',
+        'everyday-miss-the-bus'
+      ]
+    }
+
+    controller.begin(localizedCharade, 0)
+    controller.resolve(
+      {
+        charadeId: charade.id,
+        correct: true,
+        phraseId: 'everyday-wake-up-late',
+        phrase: 'Wake up late',
+        stats: { correct: 1, total: 1 },
+        yourScore: 1,
+        daily: { day: '2026-08-23', decoded: 1, authored: 0, stamped: false },
+        stampAwarded: false,
+        title: 'Scene Stealer',
+        nextUnlock: {
+          nextTitle: 'Ghostlight Legend',
+          requirement: '3 daily stamps and 25 correct decodes',
+          progress: 0.4
+        },
+        titleUnlocked: true
+      },
+      localizedCharade
+    )
+    vi.advanceTimersByTime(3_000)
+
+    expect(getRevealViewState()).toMatchObject({
+      answers: ['Acordar atrasado', 'Escovar os dentes', 'Perder o ônibus'],
+      phrase: 'Acordar atrasado',
+      verdictText: 'VOCÊ ACERTOU!',
+      unlockedTitle: 'Rouba-cena'
+    })
+  })
 })

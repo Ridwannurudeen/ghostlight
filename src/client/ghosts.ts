@@ -10,7 +10,7 @@ import {
 } from './theater'
 
 export type GhostEmotes = readonly [string, string, string]
-export type AudienceReaction = 'clap' | 'shrug' | 'laugh' | 'confused' | 'genius'
+export type AudienceReaction = 'clap' | 'shrug' | 'laugh' | 'confused' | 'genius' | 'gasp' | 'applause'
 
 export type DuetPerformer = {
   look: Look

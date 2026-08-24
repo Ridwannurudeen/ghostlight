@@ -26,9 +26,9 @@ vi.mock('../src/client/setup', () => ({
 
 vi.mock('../src/client/reactions', () => ({
   REACTION_OPTIONS: [
-    { kind: 'laugh', label: 'LAUGH', emote: 'clap' },
-    { kind: 'confused', label: 'CONFUSED', emote: 'shrug' },
-    { kind: 'genius', label: 'GENIUS', emote: 'fistpump' }
+    { kind: 'laugh', emote: 'clap' },
+    { kind: 'gasp', emote: 'headexplode' },
+    { kind: 'applause', emote: 'clap' }
   ],
   sendReaction: vi.fn(() => Promise.resolve(true))
 }))
@@ -41,6 +41,11 @@ vi.mock('../src/client/opening-scene', () => ({
 vi.mock('../src/client/flow', () => ({
   canAnswerBack: () => uiTest.canReply,
   canSendMail: () => false,
+  canSpectatorReact: (state: Record<string, unknown>) =>
+    state.ready === true &&
+    (state.screen === 'foyer' || (state.screen === 'reveal' && state.reveal?.correct === false)) &&
+    state.roundCharadeId !== '' &&
+    state.pending?.length === 0,
   mailRecipients: () => [],
   clientFlow: {
     getState: () => uiTest.state,
@@ -70,6 +75,7 @@ import {
   COLORS,
   REVEAL_VERTICAL_BUDGET,
   formatPerformedAgo,
+  localizedAnswers,
   performerPortraitBackground,
   uiFontSize,
   uiComponent
@@ -143,6 +149,7 @@ function stateFor(screen: 'decode' | 'reveal' | 'posted') {
     isHouse: false
   }
   return {
+    ready: true,
     screen,
     charade,
     reveal:
@@ -163,16 +170,16 @@ function stateFor(screen: 'decode' | 'reveal' | 'posted') {
   }
 }
 
-describe('UI colors', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-    uiTest.region = 'house'
-    uiTest.canReply = false
-    uiTest.opening = { active: false, instruction: '' }
-    uiTest.state = stateFor('decode')
-    updateClientSettings(DEFAULT_CLIENT_SETTINGS)
-  })
+beforeEach(() => {
+  vi.clearAllMocks()
+  uiTest.region = 'house'
+  uiTest.canReply = false
+  uiTest.opening = { active: false, instruction: '' }
+  uiTest.state = stateFor('decode')
+  updateClientSettings(DEFAULT_CLIENT_SETTINGS)
+})
 
+describe('UI colors', () => {
   it('does not let disabled buttons mutate the shared ink color across renders', () => {
     const inkAlpha = COLORS.ink.a
 
@@ -189,7 +196,7 @@ describe('UI colors', () => {
       screen: 'author',
       author: {
         phrase,
-        offeredEmotes: ['wave', 'clap', 'dab', 'dance', 'shrug'],
+        offeredEmotes: ['wave', 'clap', 'dab', 'disco', 'shrug'],
         selectedEmotes: [],
         shufflesRemaining: 2,
         phase: 'emotes'
@@ -212,7 +219,7 @@ describe('mobile control budget', () => {
       screen: 'author',
       author: {
         phrase: { id: 'phrase', text: 'Walking a dog' },
-        offeredEmotes: ['wave', 'clap', 'dab', 'dance', 'shrug'],
+        offeredEmotes: ['wave', 'clap', 'dab', 'disco', 'shrug'],
         selectedEmotes: phase === 'confirm' ? ['wave', 'clap', 'dab'] : [],
         shufflesRemaining: 2,
         phase
@@ -221,17 +228,63 @@ describe('mobile control budget', () => {
     expect(collectButtons(uiComponent())).toHaveLength(expected)
   })
 
-  it('replaces live-round answers with the four-control reaction menu', () => {
-    uiTest.state = { ...stateFor('decode'), roundCharadeId: 'charade-1', reactionMenuOpen: false }
+  it('offers the four-control reaction menu only from the foyer during a live round', () => {
+    uiTest.state = {
+      ...stateFor('decode'),
+      screen: 'foyer',
+      theme: 'food',
+      progress: { daily: { stamped: false } },
+      playerIsGuest: true,
+      boards: { playbill: [] },
+      roundCharadeId: 'charade-1',
+      pending: [],
+      reactionMenuOpen: false
+    }
     expect(collectButtons(uiComponent())).toHaveLength(5)
 
     uiTest.state = { ...uiTest.state, reactionMenuOpen: true }
     expect(collectButtons(uiComponent()).map(({ value }) => value)).toEqual([
       'LAUGH',
-      'CONFUSED',
-      'GENIUS',
-      'BACK TO ANSWERS'
+      'GASP',
+      'APPLAUSE',
+      'BACK TO THE SHOW',
+      'SETTINGS'
     ])
+  })
+
+  it('keeps reaction controls out of an active decode', () => {
+    uiTest.state = { ...stateFor('decode'), roundCharadeId: 'charade-1', pending: [] }
+    expect(collectButtons(uiComponent()).map(({ value }) => value)).toEqual([
+      'ONE',
+      'TWO',
+      'THREE',
+      'REPLAY',
+      'MAKE YOUR OWN'
+    ])
+  })
+
+  it('lets an incorrect round decoder react without stacking reveal actions', () => {
+    uiTest.state = { ...stateFor('reveal'), roundCharadeId: 'charade-1' }
+    expect(collectButtons(uiComponent()).map(({ value }) => value).sort()).toEqual(['NEXT GHOST', 'REACT'])
+
+    uiTest.state = { ...uiTest.state, reactionMenuOpen: true }
+    expect(collectButtons(uiComponent()).map(({ value }) => value)).toEqual([
+      'LAUGH',
+      'GASP',
+      'APPLAUSE',
+      'BACK TO THE SHOW'
+    ])
+  })
+
+  it('makes a progress notice modal so hidden controls cannot exceed the budget', () => {
+    uiTest.state = {
+      ...stateFor('decode'),
+      screen: 'foyer',
+      theme: 'food',
+      progress: { daily: { stamped: true } },
+      notices: [{ id: 'stamp-1', kind: 'stamp' }]
+    }
+    expect(collectButtons(uiComponent())).toEqual([{ value: 'TAKE A BOW', disabled: false }])
   })
 
   it('fits reveal content and its single action row inside the fixed panel', () => {
@@ -264,24 +317,25 @@ describe('mobile control budget', () => {
 })
 
 describe('settings and accessibility', () => {
-  it('changes sound, coarse volume, reduced motion, and large text from a five-control panel', () => {
+  it('changes sound, language, reduced motion, and large text from a five-control panel', () => {
     uiTest.state = { ...stateFor('decode'), screen: 'settings', theme: 'food' }
 
     expect(collectButtons(uiComponent())).toHaveLength(5)
-    ;(findButton(uiComponent(), 'SOUND: ON')?.onMouseDown as (() => void) | undefined)?.()
-    ;(findButton(uiComponent(), 'VOLUME: FULL')?.onMouseDown as (() => void) | undefined)?.()
+    ;(findButton(uiComponent(), 'SOUND: FULL')?.onMouseDown as (() => void) | undefined)?.()
     ;(findButton(uiComponent(), 'REDUCED MOTION: OFF')?.onMouseDown as (() => void) | undefined)?.()
     ;(findButton(uiComponent(), 'LARGE TEXT: OFF')?.onMouseDown as (() => void) | undefined)?.()
+    ;(findButton(uiComponent(), 'LANGUAGE: English')?.onMouseDown as (() => void) | undefined)?.()
 
     expect(getClientSettings()).toEqual({
       soundEnabled: false,
-      soundVolume: 0.5,
+      soundVolume: 1,
+      language: 'es',
       reducedMotion: true,
       largeText: true
     })
     expect(uiFontSize(20)).toBe(24)
 
-    ;(findButton(uiComponent(), 'BACK')?.onMouseDown as (() => void) | undefined)?.()
+    ;(findButton(uiComponent(), 'VOLVER')?.onMouseDown as (() => void) | undefined)?.()
     expect(uiActions.showFoyer).toHaveBeenCalledTimes(1)
   })
 })
@@ -319,6 +373,30 @@ describe('playbill time', () => {
       texture: { src: 'assets/ui/card_selected.png' },
       textureMode: 'stretch'
     })
+  })
+})
+
+describe('localized answer rendering', () => {
+  it('renders the same answer ids in the decoder language', () => {
+    const charade = {
+      ...stateFor('decode').charade,
+      answerIds: [
+        'everyday-wake-up-late',
+        'everyday-brush-your-teeth',
+        'everyday-miss-the-bus'
+      ]
+    }
+
+    expect(localizedAnswers(charade as never, 'es')).toEqual([
+      'Despertarse tarde',
+      'Cepillarse los dientes',
+      'Perder el autobús'
+    ])
+    expect(localizedAnswers(charade as never, 'pt')).toEqual([
+      'Acordar atrasado',
+      'Escovar os dentes',
+      'Perder o ônibus'
+    ])
   })
 })
 

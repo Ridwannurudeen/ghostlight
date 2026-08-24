@@ -3,7 +3,27 @@ import ReactEcs, { Button, Label, UiEntity, type UiTransformProps } from '@dcl/s
 import { copyToClipboard } from '~system/RestrictedActions'
 import { INVITE_URL, THEMES } from '../shared/config'
 import type { Emote } from '../shared/deck'
-import { canAnswerBack, canSendMail, clientFlow, mailRecipients, type ClientFlowState } from './flow'
+import {
+  LANGUAGE_LABELS,
+  LANGUAGES,
+  emoteLabel,
+  errorLabel,
+  phraseText,
+  requirementLabel,
+  t,
+  themeLabel,
+  titleLabel,
+  type CopyKey,
+  type Language
+} from '../shared/i18n'
+import {
+  canAnswerBack,
+  canSendMail,
+  canSpectatorReact,
+  clientFlow,
+  mailRecipients,
+  type ClientFlowState
+} from './flow'
 import { getOpeningViewState, skipOpening, type OpeningViewState } from './opening-scene'
 import { REACTION_OPTIONS, sendReaction } from './reactions'
 import { getRevealViewState, type RevealViewState } from './reveal-scene'
@@ -62,12 +82,32 @@ function accentFor(state: ClientFlowState) {
   return Color4.create(accent.r, accent.g, accent.b, 1)
 }
 
-export function formatPerformedAgo(performedAt: number, now: number) {
+function copy(key: CopyKey, values: Record<string, string | number> = {}) {
+  return t(key, getClientSettings().language, values)
+}
+
+export function localizedAnswers(
+  charade: NonNullable<ClientFlowState['charade']>,
+  language: Language = getClientSettings().language
+): [string, string, string] {
+  if (!charade.answerIds) return charade.answers
+  return charade.answerIds.map((id, index) => phraseText(id, language) ?? charade.answers[index]) as [
+    string,
+    string,
+    string
+  ]
+}
+
+export function formatPerformedAgo(
+  performedAt: number,
+  now: number,
+  language: Language = getClientSettings().language
+) {
   const elapsed = Math.max(0, now - performedAt)
-  if (elapsed < 60_000) return 'JUST NOW'
-  if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)}M AGO`
-  if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)}H AGO`
-  return `${Math.floor(elapsed / 86_400_000)}D AGO`
+  if (elapsed < 60_000) return t('time.now', language)
+  if (elapsed < 3_600_000) return t('time.minutes', language, { value: Math.floor(elapsed / 60_000) })
+  if (elapsed < 86_400_000) return t('time.hours', language, { value: Math.floor(elapsed / 3_600_000) })
+  return t('time.days', language, { value: Math.floor(elapsed / 86_400_000) })
 }
 
 export function performerPortraitBackground(performer: { address: string; isGuest: boolean }) {
@@ -107,7 +147,7 @@ function actionButton(
 function settingsControl() {
   return (
     <Button
-      value="SETTINGS"
+      value={copy('common.settings')}
       fontSize={uiFontSize(22)}
       font="monospace"
       color={{ ...COLORS.ink }}
@@ -146,7 +186,9 @@ function screenShell(sentence: string, body: ReactEcs.JSX.Element, state: Client
       </UiEntity>
       {state.errorCode ? (
         <Label
-          value={`STATUS · ${state.errorCode.replace(/_/gu, ' ').toUpperCase()}`}
+          value={copy('status.label', {
+            message: errorLabel(state.errorCode, getClientSettings().language).toUpperCase()
+          })}
           fontSize={uiFontSize(18)}
           font="monospace"
           color={COLORS.alert}
@@ -160,10 +202,10 @@ function screenShell(sentence: string, body: ReactEcs.JSX.Element, state: Client
 
 function wakingScreen(state: ClientFlowState) {
   return screenShell(
-    'The theater is waking up…',
+    copy('waking.title'),
     <UiEntity uiTransform={{ width: '100%', flex: 1, justifyContent: 'center', flexDirection: 'column' }}>
       <Label
-        value="CONNECTING TO THE STAGE"
+        value={copy('waking.connecting')}
         fontSize={uiFontSize(22)}
         font="monospace"
         color={COLORS.muted}
@@ -175,11 +217,15 @@ function wakingScreen(state: ClientFlowState) {
 
 function foyerScreen(state: ClientFlowState) {
   const canDecode = canDecodeInCurrentRegion()
+  const canReact = canSpectatorReact(state) && canDecode
   return screenShell(
-    "Tonight's ghosts are ready.",
-    <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', justifyContent: 'center' }}>
+    copy('foyer.title'),
+    state.reactionMenuOpen ? (
+      reactionMenu()
+    ) : (
+      <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', justifyContent: 'center' }}>
       <Label
-        value={`TONIGHT'S SHOW · ${state.themeLabel?.toUpperCase() ?? ''}`}
+        value={copy('foyer.show', { theme: themeLabel(state.theme, getClientSettings().language).toUpperCase() })}
         fontSize={uiFontSize(20)}
         font="monospace"
         color={accentFor(state)}
@@ -192,20 +238,23 @@ function foyerScreen(state: ClientFlowState) {
         />
       ) : null}
       {actionButton(
-        canDecode ? 'DECODE A GHOST' : 'WALK TO THE STAGE',
+        canDecode ? copy('foyer.decode') : copy('common.walkToStage'),
         () => clientFlow.requestNextCharade(),
         !canDecode
       )}
-      {actionButton('MAKE YOUR OWN', () => clientFlow.beginAuthoring(), false, 'secondary')}
+      {actionButton(copy('foyer.make'), () => clientFlow.beginAuthoring(), false, 'secondary')}
       <UiEntity uiTransform={{ width: '100%', flexDirection: 'row' }}>
         <UiEntity uiTransform={{ width: '49%', margin: '0 2% 0 0' }}>
-          {actionButton('GHOST MAIL', () => clientFlow.showMail(), !canSendMail(state), 'secondary')}
+          {actionButton(copy('foyer.mail'), () => clientFlow.showMail(), !canSendMail(state), 'secondary')}
         </UiEntity>
         <UiEntity uiTransform={{ width: '49%' }}>
-          {actionButton('BOARDS', () => clientFlow.showBoards(), false, 'secondary')}
+          {canReact
+            ? actionButton(copy('decode.react'), () => clientFlow.toggleReactionMenu(), false, 'secondary')
+            : actionButton(copy('foyer.boards'), () => clientFlow.showBoards(), false, 'secondary')}
         </UiEntity>
       </UiEntity>
-    </UiEntity>,
+      </UiEntity>
+    ),
     state
   )
 }
@@ -213,21 +262,21 @@ function foyerScreen(state: ClientFlowState) {
 function sinceScreen(state: ClientFlowState) {
   const since = state.since
   const sentence = since
-    ? `Since you left: ${since.triedYou} tried your ghosts, ${since.replies} answered back, and ${since.mail} Ghost Mail waited.`
-    : 'Your returning audience report is ready.'
+    ? copy('since.summary', { tried: since.triedYou, replies: since.replies, mail: since.mail })
+    : copy('since.ready')
   return screenShell(
     sentence,
     <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', justifyContent: 'center' }}>
       {since && since.rank > 0 ? (
         <Label
-          value={`TODAY'S DECODER RANK · ${since.rank}`}
+          value={copy('since.rank', { rank: since.rank })}
           fontSize={uiFontSize(28)}
           font="monospace"
           color={COLORS.gold}
           uiTransform={{ width: '100%', height: 68 }}
         />
       ) : null}
-      {actionButton('ENTER THE THEATER', () => clientFlow.dismissSince())}
+      {actionButton(copy('since.enter'), () => clientFlow.dismissSince())}
     </UiEntity>,
     state
   )
@@ -236,10 +285,10 @@ function sinceScreen(state: ClientFlowState) {
 function reactionMenu() {
   return (
     <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', justifyContent: 'center' }}>
-      <Label value="SEND A LIVE REACTION" fontSize={uiFontSize(22)} font="monospace" color={COLORS.muted} />
+      <Label value={copy('reaction.prompt')} fontSize={uiFontSize(22)} font="monospace" color={COLORS.muted} />
       {REACTION_OPTIONS.map((reaction) =>
         actionButton(
-          reaction.label,
+          copy(`reaction.${reaction.kind}` as CopyKey),
           () => {
             void sendReaction(reaction.kind).then(
               (sent) => {
@@ -252,7 +301,7 @@ function reactionMenu() {
           'secondary'
         )
       )}
-      {actionButton('BACK TO ANSWERS', () => clientFlow.toggleReactionMenu(), false, 'secondary')}
+      {actionButton(copy('reaction.back'), () => clientFlow.toggleReactionMenu(), false, 'secondary')}
     </UiEntity>
   )
 }
@@ -260,19 +309,18 @@ function reactionMenu() {
 function decodeScreen(state: ClientFlowState) {
   const charade = state.charade
   if (!charade) return wakingScreen(state)
-  const performers = charade.reply ? `${charade.authorName} + ${charade.reply.name}` : charade.authorName
+  const authorName = charade.isHouse ? copy('decode.houseGhost') : charade.authorName
+  const performers = charade.reply ? `${authorName} + ${charade.reply.name}` : authorName
   const label = charade.isHouse
-    ? 'HOUSE GHOST'
+    ? copy('decode.houseGhost')
     : charade.recipient
-      ? `GHOST MAIL · ${performers.toUpperCase()}`
-      : `GHOST · ${performers.toUpperCase()}`
+      ? copy('decode.mail', { performers: performers.toUpperCase() })
+      : copy('decode.ghost', { performers: performers.toUpperCase() })
+  const answers = localizedAnswers(charade)
   const waiting = state.pending.some((request) => request.kind === 'guess' || request.kind === 'roundGuess')
   return screenShell(
-    `What ${charade.reply ? 'are' : 'is'} ${performers} saying?`,
-    state.reactionMenuOpen ? (
-      reactionMenu()
-    ) : (
-      <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column' }}>
+    copy(charade.reply ? 'decode.questionMany' : 'decode.questionOne', { performers }),
+    <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column' }}>
         <Label
           value={label}
           fontSize={uiFontSize(18)}
@@ -281,7 +329,7 @@ function decodeScreen(state: ClientFlowState) {
           textAlign="middle-left"
           uiTransform={{ width: '100%', height: 38 }}
         />
-        {charade.answers.map((answer, index) =>
+        {answers.map((answer, index) =>
           actionButton(
             answer.toUpperCase(),
             () => clientFlow.guess(index),
@@ -291,32 +339,35 @@ function decodeScreen(state: ClientFlowState) {
         )}
         <UiEntity uiTransform={{ width: '100%', flexDirection: 'row', justifyContent: 'space-between' }}>
           <UiEntity uiTransform={{ width: '49%' }}>
-            {actionButton('REPLAY', () => clientFlow.replay(), waiting, 'secondary')}
+            {actionButton(copy('decode.replay'), () => clientFlow.replay(), waiting, 'secondary')}
           </UiEntity>
           <UiEntity uiTransform={{ width: '49%' }}>
-            {state.roundCharadeId
-              ? actionButton('REACT', () => clientFlow.toggleReactionMenu(), waiting, 'secondary')
-              : actionButton('MAKE YOUR OWN', () => clientFlow.beginAuthoring(), waiting, 'secondary')}
+            {actionButton(copy('foyer.make'), () => clientFlow.beginAuthoring(), waiting, 'secondary')}
           </UiEntity>
         </UiEntity>
-      </UiEntity>
-    ),
+      </UiEntity>,
     state
   )
 }
 
 function revealScreen(state: ClientFlowState) {
   const reveal = state.reveal
-  const author = state.charade?.authorName ?? 'The ghost'
+  const author = state.charade?.isHouse
+    ? copy('decode.houseGhost')
+    : (state.charade?.authorName ?? copy('decode.theGhost'))
   const canDecode = canDecodeInCurrentRegion()
   const presentation = getRevealViewState()
   const canReply = canAnswerBack(state)
+  const canReact = canSpectatorReact(state) && canDecode
   const actionWidth = canReply ? '32%' : '49%'
+  const phrase = reveal ? phraseText(reveal.phraseId, getClientSettings().language) ?? reveal.phrase : ''
+  const answers = state.charade ? localizedAnswers(state.charade) : []
   const sentence = presentation.verdict
     ? reveal
-      ? `${author} meant “${reveal.phrase}”.`
-      : 'The ghost has revealed the answer.'
-    : 'The house holds its breath…'
+      ? copy('reveal.authorMeant', { author, phrase })
+      : copy('reveal.answer')
+    : copy('reveal.wait')
+  if (state.reactionMenuOpen) return screenShell(sentence, reactionMenu(), state)
   return screenShell(
     sentence,
     <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column' }}>
@@ -326,21 +377,27 @@ function revealScreen(state: ClientFlowState) {
           uiBackground={{ texture: { src: UI_TEXTURES.card }, textureMode: 'stretch', color: COLORS.surface }}
         >
           <Label
-            value={`${presentation.stats.correct}/${presentation.stats.total} GUESSED IT`}
+            value={copy('reveal.guessed', {
+              correct: presentation.stats.correct,
+              total: presentation.stats.total
+            })}
             fontSize={uiFontSize(28)}
             font="monospace"
             color={COLORS.bone}
             textAlign="middle-center"
           />
           <Label
-            value={`${(reveal.title || 'NO TITLE YET').toUpperCase()} - ${Math.round(reveal.nextUnlock.progress * 100)}%`}
+            value={copy('reveal.progress', {
+              title: titleLabel(reveal.title, getClientSettings().language).toUpperCase(),
+              progress: Math.round(reveal.nextUnlock.progress * 100)
+            })}
             fontSize={uiFontSize(22)}
             font="monospace"
             color={COLORS.gold}
             textAlign="middle-center"
           />
           <Label
-            value={reveal.nextUnlock.requirement.toUpperCase()}
+            value={requirementLabel(reveal.nextUnlock.requirement, getClientSettings().language).toUpperCase()}
             fontSize={uiFontSize(16)}
             font="monospace"
             color={COLORS.muted}
@@ -349,7 +406,7 @@ function revealScreen(state: ClientFlowState) {
         </UiEntity>
       ) : (
         <UiEntity uiTransform={{ width: '100%', height: 222, flexDirection: 'column' }}>
-          {state.charade?.answers.map((answer, index) => revealAnswerCard(answer, index, presentation))}
+          {answers.map((answer, index) => revealAnswerCard(answer, index, presentation))}
         </UiEntity>
       )}
       <UiEntity
@@ -366,7 +423,7 @@ function revealScreen(state: ClientFlowState) {
         }}
       >
         <Label
-          value={presentation.verdictText || 'THE VERDICT IS COMING'}
+          value={presentation.verdictText || copy('reveal.verdictPending')}
           fontSize={uiFontSize(25)}
           font="monospace"
           color={COLORS.ink}
@@ -376,18 +433,20 @@ function revealScreen(state: ClientFlowState) {
       <UiEntity uiTransform={{ width: '100%', flexDirection: 'row', justifyContent: 'space-between' }}>
         <UiEntity uiTransform={{ width: actionWidth }}>
           {actionButton(
-            canDecode ? 'NEXT GHOST' : 'WALK TO THE STAGE',
+            canDecode ? copy('reveal.next') : copy('common.walkToStage'),
             () => clientFlow.requestNextCharade(),
             !canDecode
           )}
         </UiEntity>
         {canReply ? (
           <UiEntity uiTransform={{ width: actionWidth }}>
-            {actionButton('ANSWER BACK', () => clientFlow.beginAnswerBack(), false, 'secondary')}
+            {actionButton(copy('reveal.answerBack'), () => clientFlow.beginAnswerBack(), false, 'secondary')}
           </UiEntity>
         ) : null}
         <UiEntity uiTransform={{ width: actionWidth }}>
-          {actionButton('MAKE YOUR OWN', () => clientFlow.beginAuthoring(), false, 'secondary')}
+          {canReact
+            ? actionButton(copy('decode.react'), () => clientFlow.toggleReactionMenu(), false, 'secondary')
+            : actionButton(copy('foyer.make'), () => clientFlow.beginAuthoring(), false, 'secondary')}
         </UiEntity>
       </UiEntity>
     </UiEntity>,
@@ -426,7 +485,7 @@ function emoteButton(emote: Emote, index: number, state: ClientFlowState) {
   return (
     <Button
       key={emote}
-      value={`${selected ? `${selectedIndex + 1} · ` : ''}${emote.toUpperCase()}`}
+      value={`${selected ? `${selectedIndex + 1} · ` : ''}${emoteLabel(emote, getClientSettings().language)}`}
       fontSize={uiFontSize(22)}
       font="monospace"
       color={{ ...COLORS.ink }}
@@ -444,27 +503,32 @@ function authorScreen(state: ClientFlowState) {
   const posting = state.pending.some((request) => request.kind === 'post')
   const replying = !!author.replyTo
   const mailing = !!author.recipient
+  const phrase = phraseText(author.phrase.id, getClientSettings().language) ?? author.phrase.text
   const sentence =
     author.phase === 'phrase'
-      ? `${replying ? 'Answer back with' : mailing ? `Send ${author.recipient!.name}` : 'Your phrase is'} “${author.phrase.text}”.`
+      ? replying
+        ? copy('author.replyPhrase', { phrase })
+        : mailing
+          ? copy('author.mailPhrase', { recipient: author.recipient!.name, phrase })
+          : copy('author.ownPhrase', { phrase })
       : author.phase === 'emotes'
-        ? 'Choose three emotes in performance order.'
-        : `Ready to perform “${author.phrase.text}”.`
+        ? copy('author.chooseThree')
+        : copy('author.ready', { phrase })
   return screenShell(
     sentence,
     <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column' }}>
       {author.phase === 'phrase' ? (
         <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', justifyContent: 'center' }}>
-          {actionButton('CHOOSE EMOTES', () => clientFlow.continueAuthoring())}
+          {actionButton(copy('author.chooseEmotes'), () => clientFlow.continueAuthoring())}
           {!replying
             ? actionButton(
-                `SHUFFLE PHRASE · ${author.shufflesRemaining}`,
+                copy('author.shuffle', { remaining: author.shufflesRemaining }),
                 () => clientFlow.shuffleAuthorPhrase(),
                 author.shufflesRemaining === 0,
                 'secondary'
               )
             : null}
-          {actionButton('BACK', () => clientFlow.backFromAuthor(), false, 'secondary')}
+          {actionButton(copy('common.back'), () => clientFlow.backFromAuthor(), false, 'secondary')}
         </UiEntity>
       ) : author.phase === 'emotes' ? (
         <UiEntity
@@ -480,14 +544,14 @@ function authorScreen(state: ClientFlowState) {
         </UiEntity>
       ) : (
         <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', justifyContent: 'center' }}>
-          {actionButton('PREVIEW', () => clientFlow.previewAuthor(), !readyToPost || posting, 'secondary')}
+          {actionButton(copy('author.preview'), () => clientFlow.previewAuthor(), !readyToPost || posting, 'secondary')}
           {actionButton(
-            replying ? 'SEND REPLY' : mailing ? 'SEND GHOST MAIL' : 'POST',
+            replying ? copy('author.sendReply') : mailing ? copy('author.sendMail') : copy('author.post'),
             () => clientFlow.postAuthor(),
             !readyToPost || posting
           )}
-          {actionButton('CHANGE EMOTES', () => clientFlow.reviseAuthorEmotes(), posting, 'secondary')}
-          {actionButton('BACK', () => clientFlow.backFromAuthor(), posting, 'secondary')}
+          {actionButton(copy('author.changeEmotes'), () => clientFlow.reviseAuthorEmotes(), posting, 'secondary')}
+          {actionButton(copy('common.back'), () => clientFlow.backFromAuthor(), posting, 'secondary')}
         </UiEntity>
       )}
     </UiEntity>,
@@ -499,15 +563,22 @@ function postedScreen(state: ClientFlowState) {
   const canDecode = canDecodeInCurrentRegion()
   return screenShell(
     state.postedReplyTo
-      ? `Your answer-back joined ${state.charade?.authorName ?? 'the original performer'}.`
+      ? copy('posted.reply', {
+          performer: state.charade?.authorName ?? copy('posted.originalPerformer')
+        })
       : state.postedRecipient
-        ? `Your Ghost Mail is waiting for ${state.boards.playbill.find((performer) => performer.address.toLowerCase() === state.postedRecipient.toLowerCase())?.name ?? 'its recipient'}.`
-        : 'Your ghost is on stage for the next stranger.',
+        ? copy('posted.mail', {
+            recipient:
+              state.boards.playbill.find(
+                (performer) => performer.address.toLowerCase() === state.postedRecipient.toLowerCase()
+              )?.name ?? copy('posted.mailRecipient')
+          })
+        : copy('posted.ghost'),
     <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', justifyContent: 'center' }}>
-      {actionButton('COPY INVITE', () => copyInvite(true))}
-      {actionButton("TODAY'S BOARDS", () => clientFlow.showBoards(), false, 'secondary')}
+      {actionButton(copy('posted.copyInvite'), () => copyInvite(true))}
+      {actionButton(copy('posted.boards'), () => clientFlow.showBoards(), false, 'secondary')}
       {actionButton(
-        canDecode ? 'DECODE ANOTHER' : 'WALK TO THE STAGE',
+        canDecode ? copy('posted.decodeAnother') : copy('common.walkToStage'),
         () => clientFlow.requestNextCharade(),
         !canDecode,
         'secondary'
@@ -520,7 +591,7 @@ function postedScreen(state: ClientFlowState) {
 function mailScreen(state: ClientFlowState) {
   const recipients = mailRecipients(state).slice(0, 4)
   return screenShell(
-    'Choose a real recent performer for one private Ghost Mail.',
+    copy('mail.choose'),
     <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', justifyContent: 'center' }}>
       {recipients.map((recipient) =>
         actionButton(
@@ -530,7 +601,7 @@ function mailScreen(state: ClientFlowState) {
           'secondary'
         )
       )}
-      {actionButton('BACK', () => clientFlow.showFoyer(), false, 'secondary')}
+      {actionButton(copy('common.back'), () => clientFlow.showFoyer(), false, 'secondary')}
     </UiEntity>,
     state
   )
@@ -538,32 +609,48 @@ function mailScreen(state: ClientFlowState) {
 
 function settingsScreen(state: ClientFlowState) {
   const settings = getClientSettings()
+  const soundValue = !settings.soundEnabled
+    ? copy('common.off')
+    : settings.soundVolume === 0.5
+      ? copy('common.quiet')
+      : copy('common.full')
   return screenShell(
-    'Settings and accessibility apply for this visit.',
+    copy('settings.title'),
     <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', justifyContent: 'center' }}>
       {actionButton(
-        `SOUND: ${settings.soundEnabled ? 'ON' : 'OFF'}`,
-        () => updateClientSettings({ soundEnabled: !settings.soundEnabled })
+        copy('settings.sound', { value: soundValue }),
+        () => {
+          if (!settings.soundEnabled) {
+            updateClientSettings({ soundEnabled: true, soundVolume: 0.5 })
+          } else if (settings.soundVolume === 0.5) {
+            updateClientSettings({ soundVolume: 1 })
+          } else {
+            updateClientSettings({ soundEnabled: false })
+          }
+        }
       )}
       {actionButton(
-        `VOLUME: ${settings.soundVolume === 1 ? 'FULL' : 'QUIET'}`,
-        () => updateClientSettings({ soundVolume: settings.soundVolume === 1 ? 0.5 : 1 }),
+        copy('settings.language', { language: LANGUAGE_LABELS[settings.language] }),
+        () => {
+          const index = LANGUAGES.indexOf(settings.language)
+          updateClientSettings({ language: LANGUAGES[(index + 1) % LANGUAGES.length] })
+        },
         false,
         'secondary'
       )}
       {actionButton(
-        `REDUCED MOTION: ${settings.reducedMotion ? 'ON' : 'OFF'}`,
+        copy('settings.reducedMotion', { value: settings.reducedMotion ? copy('common.on') : copy('common.off') }),
         () => updateClientSettings({ reducedMotion: !settings.reducedMotion }),
         false,
         'secondary'
       )}
       {actionButton(
-        `LARGE TEXT: ${settings.largeText ? 'ON' : 'OFF'}`,
+        copy('settings.largeText', { value: settings.largeText ? copy('common.on') : copy('common.off') }),
         () => updateClientSettings({ largeText: !settings.largeText }),
         false,
         'secondary'
       )}
-      {actionButton('BACK', () => clientFlow.showFoyer(), false, 'secondary')}
+      {actionButton(copy('common.back'), () => clientFlow.showFoyer(), false, 'secondary')}
     </UiEntity>,
     state
   )
@@ -613,7 +700,7 @@ function playbillCard(performer: ClientFlowState['boards']['playbill'][number], 
           uiTransform={{ width: '100%', height: 24 }}
         />
         <Label
-          value={`${performer.title || 'NEW GHOST'} · ${formatPerformedAgo(performer.performedAt, now)}`}
+          value={`${performer.title ? titleLabel(performer.title, getClientSettings().language) : copy('boards.newGhost')} · ${formatPerformedAgo(performer.performedAt, now)}`}
           fontSize={uiFontSize(13)}
           font="monospace"
           color={COLORS.muted}
@@ -631,10 +718,10 @@ function boardsScreen(state: ClientFlowState) {
   const playbill = state.boards.playbill ?? []
   const alignedNow = Date.now() + state.serverClockOffset
   return screenShell(
-    "Today's boards count real players and exclude the house ghost.",
+    copy('boards.title'),
     <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column' }}>
       <Label
-        value="PLAYBILL · RECENT PERFORMERS"
+        value={copy('boards.playbill')}
         fontSize={uiFontSize(18)}
         font="monospace"
         color={COLORS.muted}
@@ -653,7 +740,7 @@ function boardsScreen(state: ClientFlowState) {
       <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'row', justifyContent: 'space-between' }}>
         <UiEntity uiTransform={{ width: '49%', flexDirection: 'column' }}>
           <Label
-            value="TOP DECODERS"
+            value={copy('boards.topDecoders')}
             fontSize={uiFontSize(18)}
             font="monospace"
             color={COLORS.muted}
@@ -663,7 +750,7 @@ function boardsScreen(state: ClientFlowState) {
             decoders.map((entry, index) => boardRow(index + 1, entry.name, `${entry.correct}/${entry.total}`))
           ) : (
             <Label
-              value="NO DECODES YET"
+              value={copy('boards.noDecodes')}
               fontSize={uiFontSize(20)}
               color={COLORS.muted}
               uiTransform={{ height: 48 }}
@@ -672,7 +759,7 @@ function boardsScreen(state: ClientFlowState) {
         </UiEntity>
         <UiEntity uiTransform={{ width: '49%', flexDirection: 'column' }}>
           <Label
-            value="HARDEST GHOSTS"
+            value={copy('boards.hardest')}
             fontSize={uiFontSize(18)}
             font="monospace"
             color={COLORS.muted}
@@ -682,7 +769,7 @@ function boardsScreen(state: ClientFlowState) {
             hardest.map((entry, index) => boardRow(index + 1, entry.authorName, `${entry.correct}/${entry.total}`))
           ) : (
             <Label
-              value="NO GUESSES YET"
+              value={copy('boards.noGuesses')}
               fontSize={uiFontSize(20)}
               color={COLORS.muted}
               uiTransform={{ height: 48 }}
@@ -692,9 +779,11 @@ function boardsScreen(state: ClientFlowState) {
       </UiEntity>
       <UiEntity uiTransform={{ width: '100%', flexDirection: 'row', justifyContent: 'space-between' }}>
         <UiEntity uiTransform={{ width: '49%' }}>
-          {actionButton('BACK', () => clientFlow.showFoyer(), false, 'secondary')}
+          {actionButton(copy('common.back'), () => clientFlow.showFoyer(), false, 'secondary')}
         </UiEntity>
-        <UiEntity uiTransform={{ width: '49%' }}>{actionButton('INVITE', () => clientFlow.showInvite())}</UiEntity>
+        <UiEntity uiTransform={{ width: '49%' }}>
+          {actionButton(copy('boards.invite'), () => clientFlow.showInvite())}
+        </UiEntity>
       </UiEntity>
     </UiEntity>,
     state
@@ -703,7 +792,7 @@ function boardsScreen(state: ClientFlowState) {
 
 function copyInvite(showInvite = false) {
   if (showInvite) clientFlow.showInvite()
-  void copyToClipboard({ text: `Join me for Ghostlight: ${INVITE_URL}` }).then(
+  void copyToClipboard({ text: copy('invite.message', { url: INVITE_URL }) }).then(
     () => clientFlow.setInviteStatus('copied'),
     (error: unknown) => {
       clientFlow.setInviteStatus('failed')
@@ -715,15 +804,15 @@ function copyInvite(showInvite = false) {
 function inviteScreen(state: ClientFlowState) {
   const sentence =
     state.inviteStatus === 'copied'
-      ? 'Your invitation is copied and ready to share.'
+      ? copy('invite.copied')
       : state.inviteStatus === 'failed'
-        ? 'The invitation could not be copied on this device.'
-        : 'Copy a link to invite a friend to Ghostlight.'
+        ? copy('invite.failed')
+        : copy('invite.ready')
   return screenShell(
     sentence,
     <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', justifyContent: 'center' }}>
-      {actionButton('COPY INVITE', copyInvite)}
-      {actionButton('BACK TO THEATER', () => clientFlow.showFoyer(), false, 'secondary')}
+      {actionButton(copy('invite.copy'), copyInvite)}
+      {actionButton(copy('invite.back'), () => clientFlow.showFoyer(), false, 'secondary')}
     </UiEntity>,
     state
   )
@@ -746,14 +835,14 @@ function openingOverlay(opening: OpeningViewState) {
         uiBackground={{ texture: { src: UI_TEXTURES.marquee }, textureMode: 'stretch', color: COLORS.ink }}
       >
         <Label
-          value={opening.instruction || 'OPENING NIGHT'}
+          value={opening.instruction || copy('opening.night')}
           fontSize={uiFontSize(36)}
           font="serif"
           color={COLORS.bone}
           textAlign="middle-center"
           uiTransform={{ width: '100%', height: 112 }}
         />
-        {actionButton('SKIP INTRO', () => skipOpening(), false, 'secondary')}
+        {actionButton(copy('opening.skip'), () => skipOpening(), false, 'secondary')}
       </UiEntity>
     </UiEntity>
   )
@@ -763,11 +852,16 @@ function noticeOverlay(state: ClientFlowState) {
   const notice = state.notices?.[0]
   if (!notice) return null
   if (state.screen === 'reveal' && !getRevealViewState().stats) return null
-  const title = notice.kind === 'stamp' ? 'DAILY SHOW COMPLETE' : `${notice.title.toUpperCase()} UNLOCKED`
-  const copy =
+  const title =
     notice.kind === 'stamp'
-      ? 'Three decodes and one performance. Your stamp is saved.'
-      : 'Your verified participation earned a new title and reward prop.'
+      ? copy('notice.stampTitle')
+      : copy('notice.titleUnlocked', {
+          title: titleLabel(notice.title, getClientSettings().language).toUpperCase()
+        })
+  const noticeCopy =
+    notice.kind === 'stamp'
+      ? t('notice.stampCopy', getClientSettings().language)
+      : t('notice.titleCopy', getClientSettings().language)
   return (
     <UiEntity
       uiTransform={{
@@ -796,8 +890,36 @@ function noticeOverlay(state: ClientFlowState) {
         color={COLORS.gold}
         textAlign="middle-center"
       />
-      <Label value={copy} fontSize={uiFontSize(18)} color={COLORS.bone} textAlign="middle-center" />
-      {actionButton('TAKE A BOW', () => clientFlow.dismissNotice(notice.id), false, 'secondary')}
+      <Label value={noticeCopy} fontSize={uiFontSize(18)} color={COLORS.bone} textAlign="middle-center" />
+      {actionButton(t('notice.dismiss', getClientSettings().language), () => clientFlow.dismissNotice(notice.id), false, 'secondary')}
+    </UiEntity>
+  )
+}
+
+function reactionStamp(state: ClientFlowState) {
+  const event = state.reactionEvent
+  if (!event || Date.now() - event.shownAt >= 3_000) return null
+  return (
+    <UiEntity
+      uiTransform={{
+        width: 300,
+        height: 64,
+        positionType: 'absolute',
+        position: { top: 110, right: 28 },
+        padding: '8px 14px',
+        borderRadius: 5,
+        borderWidth: 2,
+        borderColor: COLORS.gold
+      }}
+      uiBackground={{ texture: { src: UI_TEXTURES.stamp }, textureMode: 'stretch', color: COLORS.surface }}
+    >
+      <Label
+        value={copy(`reaction.${event.kind}` as CopyKey)}
+        fontSize={uiFontSize(22)}
+        font="monospace"
+        color={COLORS.bone}
+        textAlign="middle-center"
+      />
     </UiEntity>
   )
 }
@@ -832,14 +954,15 @@ function currentScreen(state: ClientFlowState) {
 export const uiComponent = () => {
   const state = clientFlow.getState()
   const opening = getOpeningViewState()
+  const notice = opening.active ? null : noticeOverlay(state)
   return (
     <UiEntity
       uiTransform={{ width: '100%', height: '100%', positionType: 'absolute', pointerFilter: 'none' }}
       uiBackground={{ color: Color4.create(0.02, 0.014, 0.037, 0.08) }}
     >
-      {opening.active ? openingOverlay(opening) : currentScreen(state)}
-      {!opening.active && state.screen === 'foyer' ? settingsControl() : null}
-      {!opening.active ? noticeOverlay(state) : null}
+      {opening.active ? openingOverlay(opening) : (notice ?? currentScreen(state))}
+      {!opening.active && !notice && state.screen === 'foyer' ? settingsControl() : null}
+      {!opening.active ? reactionStamp(state) : null}
       {!opening.active && state.toast ? (
         <UiEntity
           uiTransform={{
@@ -855,7 +978,7 @@ export const uiComponent = () => {
           uiBackground={{ color: COLORS.surface }}
         >
           <Label
-            value={state.toast.text}
+            value={copy('round.winner', { name: state.toast.winnerName })}
             fontSize={uiFontSize(24)}
             color={COLORS.bone}
             textAlign="middle-center"
