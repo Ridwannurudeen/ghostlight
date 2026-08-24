@@ -119,7 +119,11 @@ charade. No engagement, visitor, guess, or board entry is fabricated.
 
 ### Measured mobile result
 
-`<MEASURED: High-profile Performance score on the tested phone, with device model, OS version, and test date>`
+`<MEASURED: owner-recorded High-profile Performance score, device model, OS version, and UTC test date; COPY DIAGNOSTICS frame proxy>`
+
+Use `frame.avg_ms` from the unchanged diagnostics block for the frame proxy, with `frame.approx_fps` beside it and
+`frame.worst_ms` as supporting worst-frame evidence. These diagnostics fields are not the Decentraland client's
+native Performance percentage; the owner must record that High-profile score, device model, OS version, and date.
 
 ### Links
 

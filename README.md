@@ -166,6 +166,11 @@ triangles, exact `createTheater()` instance counts, 11,664 instantiated theater 
 non-outlier decoded seam for the room-tone loop, measured encoded peaks, less than 2 MB of sound, and less than
 25 MB under `assets/`.
 
+## Before deploying
+
+Run `npm run preflight` from the exact candidate checkout. Resolve every reported `FAIL`, then review the ordered
+owner warnings before requesting deployment approval; the command does not deploy the World.
+
 ## Run from scratch
 
 Requirements: Node.js 20.x, 22.x, or 24+ and npm 10+. From a fresh checkout:

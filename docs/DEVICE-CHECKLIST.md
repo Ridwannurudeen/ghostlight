@@ -4,6 +4,14 @@ Run this checklist in the released Decentraland mobile clients on the exact depl
 preview and automated tests do not count as device evidence. Any unchecked item is a release blocker unless the
 run note names the failure and the owner explicitly accepts it.
 
+## First device step - capture diagnostics
+
+- [ ] In the foyer, open `SETTINGS`, tap `DIAGNOSTICS: OFF` to enable the owner view, return to the foyer, complete
+      one full decode -> reveal -> author -> post loop, return to `SETTINGS`, tap `COPY DIAGNOSTICS`, and paste the
+      complete block back into the run record before evaluating anything below. Keep the block unchanged so the
+      tested platform, language, inset, frame-time proxy, Transform-entity proxy, avatar count, asset totals, server
+      timings, and session loop counts remain one attributable evidence record.
+
 ## Hard pre-deploy gates
 
 Do not deploy, record final media, or submit until every item in this section is checked. The House ghost is an
