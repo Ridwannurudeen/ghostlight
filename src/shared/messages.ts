@@ -90,7 +90,8 @@ export const Messages = {
     answers: Schemas.Array(Schemas.String),
     createdAt: Schemas.Int64,
     isHouse: Schemas.Boolean,
-    authorTitle: Schemas.String
+    authorTitle: Schemas.String,
+    recipient: Schemas.Optional(Schemas.String)
   }),
   guess: Schemas.Map({
     charadeId: Schemas.String,
@@ -117,11 +118,13 @@ export const Messages = {
     phraseId: Schemas.String,
     emotes: Schemas.Array(Schemas.String),
     requestId: Schemas.String,
-    replyTo: Schemas.Optional(Schemas.String)
+    replyTo: Schemas.Optional(Schemas.String),
+    recipient: Schemas.Optional(Schemas.String)
   }),
   posted: Schemas.Map({
     charadeId: Schemas.String,
     replyTo: Schemas.Optional(Schemas.String),
+    recipient: Schemas.Optional(Schemas.String),
     daily,
     stampAwarded: Schemas.Boolean,
     title: Schemas.String,
@@ -132,6 +135,7 @@ export const Messages = {
     triedYou: Schemas.Int,
     gotYou: Schemas.Int,
     replies: Schemas.Int,
+    mail: Schemas.Int,
     rank: Schemas.Int,
     daily,
     title: Schemas.String,

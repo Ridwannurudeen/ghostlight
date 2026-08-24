@@ -59,6 +59,7 @@ type CharadeMessage = {
   answers: string[]
   look: ReturnType<typeof makeLook>
   isHouse: boolean
+  recipient?: string
 }
 
 type ErrorMessage = { code: string }
@@ -201,7 +202,7 @@ describe('server readiness and welcome', () => {
       hardest: []
     }
     const stats = await state.getOrCreateStats('0xplayer', 'Server Name')
-    stats.pending = { triedYou: 3, gotYou: 1, replies: 2 }
+    stats.pending = { triedYou: 3, gotYou: 1, replies: 2, mail: 0 }
 
     await protocol.handleHello(
       { displayName: 'Spoofed Client Name', isGuest: true, protocolVersion: PROTOCOL_VERSION },
@@ -211,12 +212,13 @@ describe('server readiness and welcome', () => {
     expect(snapshotLook).toHaveBeenCalledWith('0xPlayer')
     expect(state.recentVisitors[0]).toMatchObject({ address: '0xPlayer', name: 'Server Name' })
     expect(state.recentVisitors[0].wearables).toHaveLength(12)
-    expect(stats.pending).toEqual({ triedYou: 0, gotYou: 0, replies: 0 })
+    expect(stats.pending).toEqual({ triedYou: 0, gotYou: 0, replies: 0, mail: 0 })
     expect(messagesOfType(sent, 'since').map((message) => message.data)).toEqual([
       {
         triedYou: 3,
         gotYou: 1,
         replies: 2,
+        mail: 0,
         rank: 1,
         daily: { day: '2026-08-23', decoded: 0, authored: 0, stamped: false },
         title: '',
@@ -300,7 +302,7 @@ describe('server readiness and welcome', () => {
     storage.putPlayerJSON(
       'player',
       PLAYER_STATS_KEY,
-      makeStats({ decoded: 7, correct: 5, pending: { triedYou: 2, gotYou: 1, replies: 0 } })
+      makeStats({ decoded: 7, correct: 5, pending: { triedYou: 2, gotYou: 1, replies: 0, mail: 0 } })
     )
 
     const firstEnter = negotiate(protocol, 'player')
@@ -318,7 +320,7 @@ describe('server readiness and welcome', () => {
     expect(state.playerStats.get('player')).toMatchObject({
       decoded: 7,
       correct: 5,
-      pending: { triedYou: 0, gotYou: 0, replies: 0 }
+      pending: { triedYou: 0, gotYou: 0, replies: 0, mail: 0 }
     })
     expect(storage.playerGets).toEqual([{ address: 'player', key: PLAYER_STATS_KEY }])
     expect(repository.getDirtyKeys()).toContain(`player:player:${PLAYER_STATS_KEY}`)
@@ -327,6 +329,7 @@ describe('server readiness and welcome', () => {
         triedYou: 2,
         gotYou: 1,
         replies: 0,
+        mail: 0,
         rank: 0,
         daily: { day: '2026-08-23', decoded: 0, authored: 0, stamped: false },
         title: '',
@@ -391,7 +394,9 @@ describe('charade serving and guesses', () => {
 
     await Promise.all([protocol.handleNextCharade(request, 'player'), protocol.handleNextCharade(request, 'player')])
 
-    const replies = messagesOfType(sent, 'charade').map((message) => dataOf<CharadeMessage & { requestId: string }>(message))
+    const replies = messagesOfType(sent, 'charade').map((message) =>
+      dataOf<CharadeMessage & { requestId: string }>(message)
+    )
     expect(replies).toHaveLength(2)
     expect(new Set(replies.map((reply) => reply.id))).toEqual(new Set(['first']))
     expect(replies.map((reply) => reply.requestId)).toEqual(['same-next-request', 'same-next-request'])
@@ -427,7 +432,7 @@ describe('charade serving and guesses', () => {
     expect(messagesOfType(sent, 'reveal')[1].data).toEqual(firstReveal.data)
     expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 1, correct: 1 })
     expect(state.playerStats.get('0xplayer')).toMatchObject({ decoded: 1, correct: 1, seen: [charade.id] })
-    expect(state.playerStats.get('0xauthor')?.pending).toEqual({ triedYou: 1, gotYou: 1, replies: 0 })
+    expect(state.playerStats.get('0xauthor')?.pending).toEqual({ triedYou: 1, gotYou: 1, replies: 0, mail: 0 })
     expect(checkpoint).toHaveBeenCalledOnce()
 
     await protocol.handleGuess({ ...guess, requestId: 'guess-2' }, '0xPlayer')
@@ -724,6 +729,157 @@ describe('authoring protocol', () => {
   })
 })
 
+describe('Ghost Mail protocol', () => {
+  const senderAddress = `0x${'1'.repeat(40)}`
+  const recipientAddress = `0x${'2'.repeat(40)}`
+  const otherAddress = `0x${'3'.repeat(40)}`
+
+  it('delivers persisted mail only to its real recipient and returns the answer-back to its sender', async () => {
+    const storage = new FakeStorage()
+    const snapshotLook = async (address: string) => {
+      const names: Record<string, string> = {
+        [senderAddress]: 'Sender',
+        [recipientAddress]: 'Recipient',
+        [otherAddress]: 'Other'
+      }
+      return makeLook(address, names[address] ?? 'Player')
+    }
+    const first = await createHarness({ snapshotLook }, storage)
+    first.state.upsertCharade(
+      makeCharade('recipient-performance', {
+        author: { address: recipientAddress, name: 'Recipient' },
+        createdAt: FIXED_NOW - 1
+      })
+    )
+    await negotiate(first.protocol, senderAddress)
+    first.sent.length = 0
+
+    await first.protocol.handlePost(
+      {
+        phraseId: DECK[1].id,
+        emotes: [...DECK[1].suggested],
+        requestId: 'mail-send',
+        recipient: recipientAddress
+      },
+      senderAddress
+    )
+
+    const posted = dataOf<PostedMessage & { recipient?: string }>(messagesOfType(first.sent, 'posted')[0])
+    const mailId = posted.charadeId
+    expect(posted.recipient).toBe(recipientAddress)
+    expect(first.state.getCharade(mailId)).toMatchObject({ recipient: recipientAddress })
+    expect(first.state.getCharade(mailId)?.reply).toBeUndefined()
+    expect(first.state.getPool().map((charade) => charade.id)).toEqual(['recipient-performance'])
+    expect(first.state.getPlayerCharades().map((charade) => charade.id)).toContain(mailId)
+    await first.repository.flushNow()
+
+    const otherVisit = await createHarness({ snapshotLook }, storage)
+    await negotiate(otherVisit.protocol, otherAddress)
+    otherVisit.sent.length = 0
+    await otherVisit.protocol.handleNextCharade(nextCharadeRequest(), otherAddress)
+    expect(dataOf<CharadeMessage>(messagesOfType(otherVisit.sent, 'charade').at(-1)!).id).not.toBe(mailId)
+
+    const guestVisit = await createHarness(
+      {
+        snapshotLook: async (address) =>
+          address === recipientAddress
+            ? { ...makeLook(address, 'Guest Recipient'), isGuest: true }
+            : snapshotLook(address)
+      },
+      storage
+    )
+    await negotiate(guestVisit.protocol, recipientAddress)
+    expect(messagesOfType(guestVisit.sent, 'since')).toEqual([])
+    guestVisit.sent.length = 0
+    await guestVisit.protocol.handleNextCharade(nextCharadeRequest(), recipientAddress)
+    expect(dataOf<CharadeMessage>(messagesOfType(guestVisit.sent, 'charade').at(-1)!).id).not.toBe(mailId)
+
+    const recipientVisit = await createHarness({ snapshotLook }, storage)
+    await negotiate(recipientVisit.protocol, recipientAddress)
+    expect(messagesOfType(recipientVisit.sent, 'since').map((message) => message.data)).toEqual([
+      expect.objectContaining({ mail: 1, triedYou: 0, replies: 0 })
+    ])
+    recipientVisit.sent.length = 0
+    await recipientVisit.protocol.handleNextCharade(nextCharadeRequest(), recipientAddress)
+    const mailed = dataOf<CharadeMessage>(messagesOfType(recipientVisit.sent, 'charade').at(-1)!)
+    expect(mailed).toMatchObject({ id: mailId, recipient: recipientAddress, isHouse: false })
+    const mailedPhrase = DECK.find((phrase) => phrase.id === recipientVisit.state.getCharade(mailId)?.phraseId)!
+    await recipientVisit.protocol.handleGuess(
+      {
+        charadeId: mailId,
+        answerIndex: mailed.answers.indexOf(mailedPhrase.text),
+        requestId: 'mail-guess'
+      },
+      recipientAddress
+    )
+    await recipientVisit.protocol.handlePost(
+      {
+        phraseId: mailedPhrase.id,
+        emotes: [...mailedPhrase.suggested],
+        requestId: 'mail-answer-back',
+        replyTo: mailId
+      },
+      recipientAddress
+    )
+    expect(recipientVisit.state.getCharade(mailId)?.reply).toMatchObject({
+      address: recipientAddress,
+      name: 'Recipient'
+    })
+    await recipientVisit.repository.flushNow()
+
+    const senderReturn = await createHarness({ snapshotLook }, storage)
+    await negotiate(senderReturn.protocol, senderAddress)
+    expect(messagesOfType(senderReturn.sent, 'since').map((message) => message.data)).toEqual([
+      expect.objectContaining({ triedYou: 1, gotYou: 1, replies: 1, mail: 0 })
+    ])
+    expect(senderReturn.state.getCharade(mailId)).toMatchObject({
+      recipient: recipientAddress,
+      reply: { address: recipientAddress }
+    })
+  })
+
+  it('rejects guest senders and recipients outside the real known-performer list', async () => {
+    const snapshotLook = async (address: string) =>
+      address === senderAddress ? { ...makeLook(address, 'Guest Sender'), isGuest: true } : makeLook(address)
+    const guest = await createHarness({ snapshotLook })
+    guest.state.upsertCharade(
+      makeCharade('known-recipient', { author: { address: recipientAddress, name: 'Recipient' } })
+    )
+    await negotiate(guest.protocol, senderAddress)
+    guest.sent.length = 0
+    await guest.protocol.handlePost(
+      {
+        phraseId: DECK[0].id,
+        emotes: [...DECK[0].suggested],
+        requestId: 'guest-mail',
+        recipient: recipientAddress
+      },
+      senderAddress
+    )
+    expect(messagesOfType(guest.sent, 'error').map((message) => dataOf<ErrorMessage>(message).code)).toEqual([
+      'mail-guest'
+    ])
+    expect(guest.state.getPlayerCharades()).toHaveLength(1)
+
+    const real = await createHarness({ snapshotLook: async (address) => makeLook(address, 'Real Sender') })
+    await negotiate(real.protocol, senderAddress)
+    real.sent.length = 0
+    await real.protocol.handlePost(
+      {
+        phraseId: DECK[0].id,
+        emotes: [...DECK[0].suggested],
+        requestId: 'unknown-recipient',
+        recipient: recipientAddress
+      },
+      senderAddress
+    )
+    expect(messagesOfType(real.sent, 'error').map((message) => dataOf<ErrorMessage>(message).code)).toEqual([
+      'mail-recipient-unknown'
+    ])
+    expect(real.state.getPlayerCharades()).toEqual([])
+  })
+})
+
 describe('answer-back protocol', () => {
   it('rejects malformed and ineligible replies before taking a fresh look', async () => {
     const snapshotLook = vi.fn(async (address: string) => makeLook(address, address))
@@ -859,7 +1015,7 @@ describe('answer-back protocol', () => {
     expect(messagesOfType(second.sent, 'since').map((message) => message.data)).toEqual([
       expect.objectContaining({ triedYou: 1, gotYou: 1, replies: 1 })
     ])
-    expect(second.state.playerStats.get('author')?.pending).toEqual({ triedYou: 0, gotYou: 0, replies: 0 })
+    expect(second.state.playerStats.get('author')?.pending).toEqual({ triedYou: 0, gotYou: 0, replies: 0, mail: 0 })
     await second.repository.flushNow()
 
     const third = await createHarness({ snapshotLook }, storage)
@@ -1142,7 +1298,11 @@ describe('live protocol', () => {
       `urn:decentraland:matic:collections-v2:wearable-${index.toString().padStart(2, '0')}`.padEnd(85, 'x')
     )
     const storage = new FakeStorage()
-    storage.putPlayerJSON('player', PLAYER_STATS_KEY, makeStats({ pending: { triedYou: 99, gotYou: 50, replies: 9 } }))
+    storage.putPlayerJSON(
+      'player',
+      PLAYER_STATS_KEY,
+      makeStats({ pending: { triedYou: 99, gotYou: 50, replies: 9, mail: 4 } })
+    )
     const { state, sent, protocol } = await createHarness({}, storage)
     const phrase = DECK.find((candidate) => candidate.theme === themeForTimestamp(FIXED_NOW).id)!
     const target = makeCharade('ghost-0000000000000000', {
@@ -1214,7 +1374,7 @@ describe('live protocol', () => {
     expect({ ...wireMeasurements, inlineCharade }).toEqual({
       charade: 2_403,
       charadeReply: 2_278,
-      since: 222,
+      since: 231,
       boards: 3_263,
       ready: 110,
       inlineCharade: 4_653

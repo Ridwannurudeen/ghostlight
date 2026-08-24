@@ -47,6 +47,7 @@ const MAX_CACHED_PLAYER_STATS = 256
 const MAX_TIMESTAMP = 8_640_000_000_000_000
 const SUPPORTED_STORAGE_VERSIONS = new Set([0, 1, STORAGE_SCHEMA_VERSION])
 const HOUSE_CHARADE_IDS = new Set(HOUSE_CHARADES.map((charade) => charade.id))
+const STABLE_ADDRESS = /^0x[a-f0-9]{40}$/iu
 
 function asObject(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -240,6 +241,10 @@ export function migrateCharade(value: unknown): Charade | null {
     lastGuessAt: asTimestamp(stored.lastGuessAt, stored.createdAt as number)!,
     isHouse: stored.isHouse
   }
+  if (stored.v === STORAGE_SCHEMA_VERSION && stored.recipient !== undefined) {
+    if (typeof stored.recipient !== 'string' || !STABLE_ADDRESS.test(stored.recipient)) return null
+    migrated.recipient = stored.recipient
+  }
   if (stored.v === STORAGE_SCHEMA_VERSION && !stored.isHouse) {
     const reply = migrateReply(stored.reply)
     if (reply) migrated.reply = reply
@@ -259,7 +264,7 @@ export function migratePlayerStats(value: unknown, name: string, now: number): P
       authored: [],
       authoredCount: 0,
       lastSeenAt: now,
-      pending: { triedYou: 0, gotYou: 0, replies: 0 },
+      pending: { triedYou: 0, gotYou: 0, replies: 0, mail: 0 },
       daily: emptyDaily(dayKey(now)),
       stampedDays: [],
       title: ''
@@ -286,7 +291,8 @@ export function migratePlayerStats(value: unknown, name: string, now: number): P
     pending: {
       triedYou: asNonNegativeInt(pending?.triedYou),
       gotYou: asNonNegativeInt(pending?.gotYou),
-      replies: asNonNegativeInt(pending?.replies)
+      replies: asNonNegativeInt(pending?.replies),
+      mail: asNonNegativeInt(pending?.mail)
     },
     daily,
     stampedDays: stampedDays.slice(-MAX_STAMPED_DAYS),
@@ -439,8 +445,46 @@ export class GhostlightState {
 
   getPool() {
     return [...this.charades.values()]
+      .filter((charade) => !charade.isHouse && charade.recipient === undefined)
+      .sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id))
+  }
+
+  getPlayerCharades() {
+    return [...this.charades.values()]
       .filter((charade) => !charade.isHouse)
       .sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id))
+  }
+
+  getMailForRecipient(address: string, seen: readonly string[], exclude: readonly string[] = []) {
+    const wanted = address.toLowerCase()
+    const skipped = new Set([...seen, ...exclude])
+    return (
+      this.getPlayerCharades().find(
+        (charade) => charade.recipient?.toLowerCase() === wanted && !skipped.has(charade.id)
+      ) ?? null
+    )
+  }
+
+  countMailForRecipient(address: string, seen: readonly string[]) {
+    const wanted = address.toLowerCase()
+    const seenIds = new Set(seen)
+    return this.getPlayerCharades().filter(
+      (charade) => charade.recipient?.toLowerCase() === wanted && !seenIds.has(charade.id)
+    ).length
+  }
+
+  getKnownRecipient(address: string) {
+    const wanted = address.toLowerCase()
+    const visitor = this.recentVisitors.find(
+      (candidate) => candidate.address.toLowerCase() === wanted && !candidate.isGuest
+    )
+    if (visitor) return visitor
+    return (
+      this.getPool()
+        .slice()
+        .reverse()
+        .find((charade) => charade.author.address.toLowerCase() === wanted && !charade.author.isGuest)?.author ?? null
+    )
   }
 
   async getRecentPerformers(limit = 6): Promise<PlaybillPerformer[]> {
@@ -542,7 +586,13 @@ export class GhostlightState {
       .sort((a, b) => b.correct - a.correct || b.total - a.total || a.name.localeCompare(b.name))
       .slice(0, 10)
     const hardest = [...this.charades.values()]
-      .filter((charade) => !charade.isHouse && dayKey(charade.createdAt) === today && charade.guesses.total > 0)
+      .filter(
+        (charade) =>
+          !charade.isHouse &&
+          charade.recipient === undefined &&
+          dayKey(charade.createdAt) === today &&
+          charade.guesses.total > 0
+      )
       .sort((a, b) => {
         const aRate = a.guesses.correct / a.guesses.total
         const bRate = b.guesses.correct / b.guesses.total
@@ -691,9 +741,9 @@ export class GhostlightState {
 
   consumePending(address: string, persist = true) {
     const stats = this.playerStats.get(address.toLowerCase())
-    if (!stats) return { triedYou: 0, gotYou: 0, replies: 0 }
+    if (!stats) return { triedYou: 0, gotYou: 0, replies: 0, mail: 0 }
     const pending = { ...stats.pending }
-    stats.pending = { triedYou: 0, gotYou: 0, replies: 0 }
+    stats.pending = { triedYou: 0, gotYou: 0, replies: 0, mail: 0 }
     this.saveStats(address, persist)
     return pending
   }

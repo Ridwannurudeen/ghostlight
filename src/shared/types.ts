@@ -40,6 +40,7 @@ export type Charade = {
   }
   lastGuessAt: number
   isHouse: boolean
+  recipient?: string
   reply?: CharadeReply
 }
 
@@ -63,6 +64,7 @@ export type PlayerStats = {
     triedYou: number
     gotYou: number
     replies: number
+    mail: number
   }
   daily: DailyProgress
   stampedDays: string[]

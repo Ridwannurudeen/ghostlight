@@ -14,7 +14,7 @@ type HelloPayload = { displayName: string; isGuest: boolean; protocolVersion: nu
 type PingPayload = { seq: number }
 type NextCharadePayload = { requestId: string; exclude: string[] }
 type GuessPayload = { charadeId: string; answerIndex: number; requestId: string }
-type PostPayload = { phraseId: string; emotes: string[]; requestId: string; replyTo?: string }
+type PostPayload = { phraseId: string; emotes: string[]; requestId: string; replyTo?: string; recipient?: string }
 type ReactPayload = { kind: string }
 
 type RevealPayload = {
@@ -34,6 +34,7 @@ type RevealPayload = {
 type PostedPayload = {
   charadeId: string
   replyTo?: string
+  recipient?: string
   daily: ReturnType<GhostlightState['getDaily']>
   stampAwarded: boolean
   title: PlayerProgress['title']
@@ -64,6 +65,7 @@ const MAX_WIRE_ID_BYTES = 64
 const MAX_WIRE_URN_BYTES = 512
 const MAX_WIRE_LOOK_BYTES = 2_800
 const DEFAULT_BODY_SHAPE = 'urn:decentraland:off-chain:base-avatars:BaseMale'
+const STABLE_ADDRESS = /^0x[a-f0-9]{40}$/iu
 
 function canonicalAddress(address: string) {
   return address.toLowerCase()
@@ -433,6 +435,10 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     options.state.touchVisitor(look)
     const rankIndex = options.state.boards.decoders.findIndex((row) => canonicalAddress(row.address) === key)
     const pending = { ...stats.pending }
+    pending.mail =
+      !look.isGuest && STABLE_ADDRESS.test(look.address)
+        ? options.state.countMailForRecipient(look.address, stats.seen)
+        : 0
     const progress = progressFor(stats)
 
     options.state.consumePending(key, !look.isGuest)
@@ -447,11 +453,12 @@ export function createServerProtocol(options: ServerProtocolOptions) {
 
     await sendTo(address, 'progress', { daily: { ...options.state.getDaily(stats) }, ...progress })
     if (welcomePromises.get(key) !== owner) return false
-    if (pending.triedYou > 0 || pending.replies > 0) {
+    if (pending.triedYou > 0 || pending.replies > 0 || pending.mail > 0) {
       await sendTo(address, 'since', {
         triedYou: pending.triedYou,
         gotYou: pending.gotYou,
         replies: pending.replies,
+        mail: pending.mail,
         rank: rankIndex < 0 ? 0 : rankIndex + 1,
         daily: { ...options.state.getDaily(stats) },
         ...progress
@@ -599,7 +606,8 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       answers: answers.answers,
       createdAt: charade.createdAt,
       isHouse: charade.isHouse,
-      authorTitle
+      authorTitle,
+      ...(charade.recipient ? { recipient: charade.recipient } : {})
     })
     if (charade.reply) {
       const replyLook = withoutLastSeen(charade.reply.look)
@@ -632,6 +640,11 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       selection = (async () => {
         const look = looks.get(key)
         const stats = await options.state.getOrCreateStats(key, playerName(key), !(look?.isGuest ?? true))
+        const mail =
+          look && !look.isGuest && STABLE_ADDRESS.test(look.address)
+            ? options.state.getMailForRecipient(look.address, stats.seen, data.exclude)
+            : null
+        if (mail) return mail
         const currentRound = rounds.current
         const currentCharade =
           currentRound && !rounds.isSettled
@@ -779,6 +792,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       if (
         !data.requestId ||
         !data.replyTo ||
+        data.recipient !== undefined ||
         !data.phraseId ||
         data.emotes.length !== 3 ||
         data.emotes.some((emote) => !EMOTES.has(emote))
@@ -793,6 +807,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         !target ||
         target.isHouse ||
         canonicalAddress(target.author.address) === key ||
+        (target.recipient !== undefined && canonicalAddress(target.recipient) !== key) ||
         !stats.seen.includes(target.id) ||
         target.phraseId !== data.phraseId
       ) {
@@ -869,11 +884,13 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     }
 
     const id = charadeId(key, data.requestId)
-    if (options.state.getCharade(id)) {
+    const existing = options.state.getCharade(id)
+    if (existing) {
       const look = looks.get(key)
       const stats = await options.state.getOrCreateStats(key, playerName(key), !(look?.isGuest ?? true))
       const posted: PostedPayload = {
         charadeId: id,
+        ...(existing.recipient ? { recipient: existing.recipient } : {}),
         daily: { ...options.state.getDaily(stats) },
         stampAwarded: false,
         ...progressFor(stats),
@@ -886,7 +903,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
 
     function latestPostAt() {
       const persisted = options.state
-        .getPool()
+        .getPlayerCharades()
         .filter((charade) => canonicalAddress(charade.author.address) === key)
         .reduce<number | null>(
           (latest, charade) => (latest === null ? charade.createdAt : Math.max(latest, charade.createdAt)),
@@ -895,6 +912,24 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       const session = lastPosts.get(key)
       if (persisted === null) return session ?? null
       return session === undefined ? persisted : Math.max(session, persisted)
+    }
+
+    let recipientLook: Look | null = null
+    if (data.recipient !== undefined) {
+      const sender = looks.get(key)
+      if (!sender || sender.isGuest || !STABLE_ADDRESS.test(sender.address)) {
+        await sendError(address, 'mail-guest')
+        return
+      }
+      if (!STABLE_ADDRESS.test(data.recipient) || canonicalAddress(data.recipient) === key) {
+        await sendError(address, 'mail-recipient-invalid')
+        return
+      }
+      recipientLook = options.state.getKnownRecipient(data.recipient)
+      if (!recipientLook || recipientLook.isGuest || !STABLE_ADDRESS.test(recipientLook.address)) {
+        await sendError(address, 'mail-recipient-unknown')
+        return
+      }
     }
 
     const beforeLookTime = now()
@@ -909,7 +944,12 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       await sendError(address, 'look-not-ready')
       return
     }
-    if (options.state.getCharade(id)) {
+    if (recipientLook && (look.isGuest || !STABLE_ADDRESS.test(look.address))) {
+      await sendError(address, 'mail-guest')
+      return
+    }
+    const existingAfterSnapshot = options.state.getCharade(id)
+    if (existingAfterSnapshot) {
       const stats = await options.state.getOrCreateStats(key, look.name, !look.isGuest)
       const replay = completedRequests.get(idempotencyKey)
       if (replay) {
@@ -918,6 +958,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       }
       const posted: PostedPayload = {
         charadeId: id,
+        ...(existingAfterSnapshot.recipient ? { recipient: existingAfterSnapshot.recipient } : {}),
         daily: { ...options.state.getDaily(stats) },
         stampAwarded: false,
         ...progressFor(stats),
@@ -942,7 +983,8 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       createdAt: currentTime,
       guesses: { total: 0, correct: 0 },
       lastGuessAt: 0,
-      isHouse: false
+      isHouse: false,
+      ...(recipientLook ? { recipient: recipientLook.address } : {})
     }
     options.state.upsertCharade(charade)
     const stats = await options.state.getOrCreateStats(key, look.name, !look.isGuest)
@@ -953,12 +995,18 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     }
     const stampAwarded = options.state.recordDailyAuthor(stats)
     options.state.saveStats(key, !look.isGuest)
+    if (recipientLook) {
+      const recipientStats = await options.state.getOrCreateStats(recipientLook.address, recipientLook.name, true)
+      recipientStats.pending.mail = Math.min(recipientStats.pending.mail + 1, WIRE_INT_MAX)
+      options.state.saveStats(recipientLook.address)
+    }
     lastPosts.set(key, currentTime)
 
     const progress = progressFor(stats)
     const titleUnlocked = progress.title !== previousTitle && progress.title !== ''
     const posted: PostedPayload = {
       charadeId: id,
+      ...(recipientLook ? { recipient: recipientLook.address } : {}),
       daily: { ...options.state.getDaily(stats) },
       stampAwarded,
       ...progress,
@@ -970,7 +1018,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     request.durable = true
     await sendTo(address, 'posted', posted)
     if (titleUnlocked) await broadcastTitleUnlock(address, progress.title)
-    await refreshBoards()
+    if (!recipientLook) await refreshBoards()
   }
 
   async function handleReact(data: ReactPayload, address: string) {

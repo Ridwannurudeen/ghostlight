@@ -113,7 +113,10 @@ describe('phrase deck', () => {
       const phrase = DECK.find((candidate) => candidate.id === charade.phraseId)
       expect(charade.isHouse, charade.id).toBe(true)
       expect(charade.author.name, charade.id).toBe('House')
-      expect(DECK.some((candidate) => candidate.id === charade.id), charade.id).toBe(false)
+      expect(
+        DECK.some((candidate) => candidate.id === charade.id),
+        charade.id
+      ).toBe(false)
       expect(phrase, charade.id).toBeDefined()
       expect(charade.emotes, charade.id).toEqual(phrase?.suggested)
     }
@@ -308,7 +311,8 @@ describe('installed protocol codec', () => {
         answers: ['Wake up late', 'Brush your teeth', 'Miss the bus'],
         createdAt: 1_777_000_000_000,
         isHouse: false,
-        authorTitle: 'Understudy'
+        authorTitle: 'Understudy',
+        recipient: `0x${'b'.repeat(40)}`
       },
       guess: { charadeId: 'ghost-1', answerIndex: 1, requestId: 'guess-1' },
       reveal: {
@@ -324,16 +328,22 @@ describe('installed protocol codec', () => {
         nextUnlock,
         titleUnlocked: true
       },
-      post: { phraseId: DECK[0].id, emotes: [...DECK[0].suggested], requestId: 'post-1' },
+      post: {
+        phraseId: DECK[0].id,
+        emotes: [...DECK[0].suggested],
+        requestId: 'post-1',
+        recipient: `0x${'b'.repeat(40)}`
+      },
       posted: {
         charadeId: 'ghost-1',
+        recipient: `0x${'b'.repeat(40)}`,
         daily,
         stampAwarded: true,
         title: 'Understudy',
         nextUnlock,
         titleUnlocked: true
       },
-      since: { triedYou: 2, gotYou: 1, replies: 1, rank: 11, daily, title: 'Understudy', nextUnlock },
+      since: { triedYou: 2, gotYou: 1, replies: 1, mail: 1, rank: 11, daily, title: 'Understudy', nextUnlock },
       audience: { looks: [maximalLook] },
       boards: {
         topDecoders: [{ address: maximalLook.address, name: maximalLook.name, correct: 2, total: 3 }],

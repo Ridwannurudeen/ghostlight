@@ -15,7 +15,17 @@ import { dealPhrase, offerEmotes } from '../shared/pick'
 import type { DailyProgress, Look, NextUnlock, PlaybillPerformer } from '../shared/types'
 import { isInDecodeArea } from './theater'
 
-export type FlowScreen = 'waking' | 'foyer' | 'since' | 'decode' | 'reveal' | 'author' | 'posted' | 'boards' | 'invite'
+export type FlowScreen =
+  | 'waking'
+  | 'foyer'
+  | 'since'
+  | 'decode'
+  | 'reveal'
+  | 'author'
+  | 'posted'
+  | 'boards'
+  | 'invite'
+  | 'mail'
 
 export type ReactionKind = 'laugh' | 'confused' | 'genius'
 export type GhostEmotes = [string, string, string]
@@ -37,6 +47,7 @@ export type DecodeCharade = {
   answers: [string, string, string]
   createdAt: number
   isHouse: boolean
+  recipient?: string
   authorTitle: PlayerTitle
   reply: DecodeReply | null
 }
@@ -65,6 +76,7 @@ export type SinceSummary = ProgressView & {
   triedYou: number
   gotYou: number
   replies: number
+  mail: number
   rank: number
 }
 
@@ -106,6 +118,10 @@ export type AuthorDraft = {
   shufflesRemaining: number
   phase: 'phrase' | 'emotes' | 'confirm'
   replyTo?: string
+  recipient?: {
+    address: string
+    name: string
+  }
 }
 
 export type PendingRequestKind = 'nextCharade' | 'guess' | 'roundGuess' | 'post'
@@ -129,16 +145,18 @@ export type ClientFlowState = {
   themeLabel: string
   playerAddress: string
   playerName: string
+  playerIsGuest: boolean
   progress: ProgressView
   playerTitles: Record<string, PlayerTitle>
   notices: ProgressNotice[]
   charade: DecodeCharade | null
   reveal: RevealResult | null
   author: AuthorDraft | null
-  authorReturnScreen: 'foyer' | 'decode' | 'reveal'
+  authorReturnScreen: 'foyer' | 'decode' | 'reveal' | 'mail'
   dealtPhraseIds: string[]
   postedCharadeId: string
   postedReplyTo: string
+  postedRecipient: string
   boards: BoardsView
   ghostOfNight: GhostOfNightView | null
   since: SinceSummary | null
@@ -175,6 +193,7 @@ export type FlowAction =
       themeLabel: string
       playerAddress: string
       playerName: string
+      playerIsGuest?: boolean
     }
   | { type: 'pong'; now: number }
   | { type: 'heartbeatTimeout' }
@@ -189,7 +208,7 @@ export type FlowAction =
   | { type: 'playerTitle'; address: string; title: PlayerTitle }
   | {
       type: 'posted'
-      result: { charadeId: string; replyTo?: string } & ProgressView & {
+      result: { charadeId: string; replyTo?: string; recipient?: string } & ProgressView & {
           stampAwarded: boolean
           titleUnlocked: boolean
         }
@@ -203,7 +222,7 @@ export type FlowAction =
   | { type: 'roundWinner'; address: string; name: string; now: number }
   | { type: 'reaction'; kind: ReactionKind; from: string }
   | { type: 'toggleReactionMenu' }
-  | { type: 'show'; screen: 'foyer' | 'boards' | 'invite' }
+  | { type: 'show'; screen: 'foyer' | 'boards' | 'invite' | 'mail' }
   | { type: 'requestSent'; request: PendingRequest }
   | { type: 'requestRetried'; requestId: string; now: number }
   | { type: 'requestResolved'; kind: PendingRequestKind }
@@ -227,6 +246,7 @@ export function createInitialFlowState(): ClientFlowState {
     themeLabel: initialTheme.label,
     playerAddress: '',
     playerName: '',
+    playerIsGuest: true,
     progress: {
       daily: { day: '', decoded: 0, authored: 0, stamped: false },
       title: '',
@@ -241,6 +261,7 @@ export function createInitialFlowState(): ClientFlowState {
     dealtPhraseIds: [],
     postedCharadeId: '',
     postedReplyTo: '',
+    postedRecipient: '',
     boards: { topDecoders: [], hardestGhosts: [], playbill: [], ghostOfNightId: '' },
     ghostOfNight: null,
     since: null,
@@ -314,6 +335,7 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
         themeLabel: action.themeLabel,
         playerAddress: action.playerAddress,
         playerName: action.playerName,
+        playerIsGuest: action.playerIsGuest ?? true,
         screen,
         resumeScreen: null,
         charade: newInstance ? null : state.charade,
@@ -322,6 +344,7 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
         authorReturnScreen: newInstance ? 'foyer' : state.authorReturnScreen,
         postedCharadeId: newInstance ? '' : state.postedCharadeId,
         postedReplyTo: newInstance ? '' : state.postedReplyTo,
+        postedRecipient: newInstance ? '' : state.postedRecipient,
         since: newInstance ? null : state.since,
         sinceShown: newInstance ? false : state.sinceShown,
         audience: newInstance ? [] : state.audience,
@@ -431,6 +454,7 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
         screen: 'posted',
         postedCharadeId: action.result.charadeId,
         postedReplyTo: action.result.replyTo ?? '',
+        postedRecipient: action.result.recipient ?? '',
         progress: {
           daily: action.result.daily,
           title: action.result.title,
@@ -535,7 +559,10 @@ export type OutboundMessage =
   | { type: 'nextCharade'; data: { requestId: string; exclude: string[] } }
   | { type: 'guess'; data: { charadeId: string; answerIndex: number; requestId: string } }
   | { type: 'roundGuess'; data: { charadeId: string; answerIndex: number; requestId: string } }
-  | { type: 'post'; data: { phraseId: string; emotes: string[]; requestId: string; replyTo?: string } }
+  | {
+      type: 'post'
+      data: { phraseId: string; emotes: string[]; requestId: string; replyTo?: string; recipient?: string }
+    }
 
 type ServerProgress = {
   daily?: DailyProgress
@@ -546,7 +573,7 @@ type ServerProgress = {
 type ServerReveal = Omit<RevealResult, keyof ProgressView | 'stampAwarded' | 'titleUnlocked' | 'phraseId'> &
   ServerProgress & { phraseId?: string; stampAwarded?: boolean; titleUnlocked?: boolean }
 
-type ServerPosted = { charadeId: string; replyTo?: string } & ServerProgress & {
+type ServerPosted = { charadeId: string; replyTo?: string; recipient?: string } & ServerProgress & {
     stampAwarded?: boolean
     titleUnlocked?: boolean
   }
@@ -575,7 +602,7 @@ export type ServerMessage =
   | { type: 'posted'; data: ServerPosted }
   | {
       type: 'since'
-      data: Pick<SinceSummary, 'triedYou' | 'gotYou' | 'rank'> & { replies?: number } & ServerProgress
+      data: Pick<SinceSummary, 'triedYou' | 'gotYou' | 'rank'> & { replies?: number; mail?: number } & ServerProgress
     }
   | { type: 'audience'; data: { looks: Look[] } }
   | { type: 'boards'; data: BoardsView }
@@ -635,6 +662,27 @@ function progressFrom(data: ServerProgress, fallback: ProgressView): ProgressVie
 
 function canonicalAddress(address: string) {
   return address.toLowerCase()
+}
+
+const STABLE_ADDRESS = /^0x[a-f0-9]{40}$/iu
+
+export function mailRecipients(state: ClientFlowState) {
+  const ownAddress = canonicalAddress(state.playerAddress)
+  const seen = new Set<string>()
+  return state.boards.playbill.filter((performer) => {
+    const address = canonicalAddress(performer.address)
+    if (performer.isGuest || !STABLE_ADDRESS.test(performer.address) || address === ownAddress || seen.has(address)) {
+      return false
+    }
+    seen.add(address)
+    return true
+  })
+}
+
+export function canSendMail(state: ClientFlowState) {
+  return (
+    state.ready && !state.playerIsGuest && STABLE_ADDRESS.test(state.playerAddress) && mailRecipients(state).length > 0
+  )
 }
 
 type FlowProfile = NonNullable<ReturnType<NonNullable<FlowRuntimeOptions['getProfile']>>>
@@ -762,7 +810,8 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           theme: theme.id,
           themeLabel: message.data.themeLabel || theme.label,
           playerAddress: profile?.address ?? state.playerAddress,
-          playerName: profile?.name ?? state.playerName
+          playerName: profile?.name ?? state.playerName,
+          playerIsGuest: profile?.isGuest ?? state.playerIsGuest
         })
         if (instanceChanged || lastHelloInstance !== message.data.instanceId) sendHello(true)
         requestRoundCharadeIfNeeded()
@@ -799,6 +848,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           look: message.data.look,
           createdAt: message.data.createdAt,
           isHouse: message.data.isHouse,
+          ...(message.data.recipient ? { recipient: message.data.recipient } : {}),
           emotes: [first, second, third],
           answers: [firstAnswer, secondAnswer, thirdAnswer],
           authorTitle:
@@ -870,6 +920,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         const result = {
           charadeId: message.data.charadeId,
           replyTo: message.data.replyTo,
+          recipient: message.data.recipient,
           ...postedProgress,
           stampAwarded: message.data.stampAwarded === true,
           titleUnlocked: message.data.titleUnlocked === true
@@ -881,7 +932,15 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
       }
       case 'since': {
         const sinceProgress = progressFrom(message.data, state.progress)
-        dispatch({ type: 'since', summary: { ...message.data, replies: message.data.replies ?? 0, ...sinceProgress } })
+        dispatch({
+          type: 'since',
+          summary: {
+            ...message.data,
+            replies: message.data.replies ?? 0,
+            mail: message.data.mail ?? 0,
+            ...sinceProgress
+          }
+        })
         if (state.playerAddress) effects.showReward?.(state.playerAddress, sinceProgress.title)
         break
       }
@@ -1043,11 +1102,10 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     return true
   }
 
-  function beginAuthoring(returnScreen: ClientFlowState['authorReturnScreen'] = state.screen === 'reveal' ? 'reveal' : 'foyer') {
-    if (
-      !state.ready ||
-      state.pending.some((request) => request.kind === 'guess' || request.kind === 'roundGuess')
-    ) {
+  function beginAuthoring(
+    returnScreen: ClientFlowState['authorReturnScreen'] = state.screen === 'reveal' ? 'reveal' : 'foyer'
+  ) {
+    if (!state.ready || state.pending.some((request) => request.kind === 'guess' || request.kind === 'roundGuess')) {
       return false
     }
     cancelReveal()
@@ -1097,6 +1155,40 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     return true
   }
 
+  function beginGhostMail(recipientAddress: string) {
+    if (
+      !canSendMail(state) ||
+      state.pending.some((request) => request.kind === 'guess' || request.kind === 'roundGuess')
+    ) {
+      return false
+    }
+    const recipient = mailRecipients(state).find(
+      (candidate) => canonicalAddress(candidate.address) === canonicalAddress(recipientAddress)
+    )
+    if (!recipient) return false
+    cancelReveal()
+    effects.clearStageReward?.()
+    const seed = createRequestId()
+    const phrase = dealPhrase(DECK, state.dealtPhraseIds, seed)
+    if (!phrase) {
+      dispatch({ type: 'error', code: 'deck_exhausted' })
+      return false
+    }
+    dispatch({
+      type: 'author',
+      returnScreen: 'mail',
+      draft: {
+        phrase,
+        offeredEmotes: offerEmotes(phrase, seed),
+        selectedEmotes: [],
+        shufflesRemaining: 2,
+        phase: 'phrase',
+        recipient: { address: recipient.address, name: recipient.name }
+      }
+    })
+    return true
+  }
+
   function shuffleAuthorPhrase() {
     if (!state.author || state.author.shufflesRemaining <= 0) return false
     const seed = createRequestId()
@@ -1110,7 +1202,8 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         offeredEmotes: offerEmotes(phrase, seed),
         selectedEmotes: [],
         shufflesRemaining: state.author.shufflesRemaining - 1,
-        phase: 'phrase'
+        phase: 'phrase',
+        ...(state.author.recipient ? { recipient: state.author.recipient } : {})
       }
     })
     return true
@@ -1146,7 +1239,8 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           phraseId: state.author.phrase.id,
           emotes: [...state.author.selectedEmotes],
           requestId,
-          ...(state.author.replyTo ? { replyTo: state.author.replyTo } : {})
+          ...(state.author.replyTo ? { replyTo: state.author.replyTo } : {}),
+          ...(state.author.recipient ? { recipient: state.author.recipient.address } : {})
         }
       },
       requestId
@@ -1175,6 +1269,8 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     },
     beginAuthoring,
     beginAnswerBack,
+    beginGhostMail,
+    canSendMail: () => canSendMail(state),
     canAnswerBack: () => canAnswerBack(state),
     shuffleAuthorPhrase,
     selectAuthorEmote,
@@ -1209,6 +1305,11 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     showInvite() {
       if (state.screen === 'reveal') cancelReveal()
       dispatch({ type: 'show', screen: 'invite' })
+    },
+    showMail() {
+      if (!canSendMail(state)) return false
+      dispatch({ type: 'show', screen: 'mail' })
+      return true
     },
     toggleReactionMenu() {
       dispatch({ type: 'toggleReactionMenu' })
@@ -1298,6 +1399,7 @@ export function startClientFlow() {
       type: 'since',
       data: data as unknown as Pick<SinceSummary, 'triedYou' | 'gotYou' | 'rank'> & {
         replies?: number
+        mail?: number
       } & ServerProgress
     })
   )

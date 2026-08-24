@@ -79,6 +79,16 @@ describe('state migrations', () => {
     expect(migrateCharade({ ...charade, reply: { ...reply, name: 'Different name' } })?.reply).toBeUndefined()
   })
 
+  it('restores a valid v2 mail recipient while leaving v1 records intact', () => {
+    const recipient = `0x${'a'.repeat(40)}`
+    const mailed = makeCharade('mailed', { recipient })
+    const v1 = { ...mailed, v: 1 }
+
+    expect(migrateCharade(mailed)?.recipient).toBe(recipient)
+    expect(migrateCharade(v1)?.recipient).toBeUndefined()
+    expect(migrateCharade({ ...mailed, recipient: 'not-an-address' })).toBeNull()
+  })
+
   it('migrates exact seen accounting beyond the former 200-id cap while defaulting garbage', () => {
     const seen = Array.from({ length: 205 }, (_, index) => `seen-${index}`)
     expect(migratePlayerStats({ ...makeStats({ seen }), v: 0 }, 'Fresh name', FIXED_NOW)).toMatchObject({
@@ -97,7 +107,12 @@ describe('state migrations', () => {
       pending: { triedYou: 2, gotYou: 1 }
     }
 
-    expect(migratePlayerStats(v1, 'Player', FIXED_NOW).pending).toEqual({ triedYou: 2, gotYou: 1, replies: 0 })
+    expect(migratePlayerStats(v1, 'Player', FIXED_NOW).pending).toEqual({
+      triedYou: 2,
+      gotYou: 1,
+      replies: 0,
+      mail: 0
+    })
   })
 
   it('rejects invalid daily keys and keeps only valid stamped UTC days', () => {
@@ -425,6 +440,33 @@ describe('state mutations', () => {
     expect(playbill.some((performer) => performer.name === 'House')).toBe(false)
     expect(ghost).toMatchObject({ charade: { id: 'show-0', isHouse: false }, title: '' })
   })
+
+  it('keeps mailed charades private while retaining bounded recipient delivery state', async () => {
+    const { state } = setup()
+    const recipient = `0x${'a'.repeat(40)}`
+    const sender = `0x${'b'.repeat(40)}`
+    const publicCharade = makeCharade('public', {
+      author: { address: recipient, name: 'Recipient' },
+      createdAt: FIXED_NOW - 1,
+      guesses: { total: 2, correct: 0 }
+    })
+    const mailed = makeCharade('private-mail', {
+      author: { address: sender, name: 'Sender' },
+      recipient,
+      guesses: { total: 5, correct: 0 }
+    })
+    state.upsertCharade(publicCharade)
+    state.upsertCharade(mailed)
+
+    expect(state.getPool().map((charade) => charade.id)).toEqual([publicCharade.id])
+    expect(state.getPlayerCharades().map((charade) => charade.id)).toEqual([publicCharade.id, mailed.id])
+    expect(state.getMailForRecipient(recipient, [])?.id).toBe(mailed.id)
+    expect(state.countMailForRecipient(recipient, [])).toBe(1)
+    expect(state.countMailForRecipient(recipient, [mailed.id])).toBe(0)
+    expect(state.boards.hardest.map((row) => row.charadeId)).toEqual([publicCharade.id])
+    expect((await state.getRecentPerformers()).map((performer) => performer.address)).toEqual([recipient])
+    expect(state.getKnownRecipient(recipient)).toMatchObject({ address: recipient, isGuest: false })
+  })
 })
 
 describe('player stats', () => {
@@ -434,7 +476,7 @@ describe('player stats', () => {
     storage.putPlayerJSON(
       'player',
       PLAYER_STATS_KEY,
-      makeStats({ seen, pending: { triedYou: 5, gotYou: 2, replies: 3 } })
+      makeStats({ seen, pending: { triedYou: 5, gotYou: 2, replies: 3, mail: 2 } })
     )
     for (const id of seen) state.upsertCharade(makeCharade(id))
 
@@ -445,8 +487,8 @@ describe('player stats', () => {
     state.upsertCharade(makeCharade('seen-205'))
     stats.seen.push('seen-100', 'seen-205')
 
-    expect(state.consumePending('player')).toEqual({ triedYou: 5, gotYou: 2, replies: 3 })
-    expect(stats.pending).toEqual({ triedYou: 0, gotYou: 0, replies: 0 })
+    expect(state.consumePending('player')).toEqual({ triedYou: 5, gotYou: 2, replies: 3, mail: 2 })
+    expect(stats.pending).toEqual({ triedYou: 0, gotYou: 0, replies: 0, mail: 0 })
     expect(stats.seen).toHaveLength(206)
     expect(new Set(stats.seen).size).toBe(206)
     expect(stats.seen.at(-1)).toBe('seen-205')
@@ -454,7 +496,7 @@ describe('player stats', () => {
 
     expect(storage.readPlayerJSON<typeof stats>('player', PLAYER_STATS_KEY)).toMatchObject({
       name: 'Renamed',
-      pending: { triedYou: 0, gotYou: 0, replies: 0 },
+      pending: { triedYou: 0, gotYou: 0, replies: 0, mail: 0 },
       seen: stats.seen,
       lastSeenAt: FIXED_NOW
     })
@@ -508,6 +550,6 @@ describe('player stats', () => {
 
   it('returns empty pending counts for an unknown player', () => {
     const { state } = setup()
-    expect(state.consumePending('missing')).toEqual({ triedYou: 0, gotYou: 0, replies: 0 })
+    expect(state.consumePending('missing')).toEqual({ triedYou: 0, gotYou: 0, replies: 0, mail: 0 })
   })
 })

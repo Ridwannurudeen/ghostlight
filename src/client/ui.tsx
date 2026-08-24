@@ -3,7 +3,7 @@ import ReactEcs, { Button, Label, UiEntity, type UiTransformProps } from '@dcl/s
 import { copyToClipboard } from '~system/RestrictedActions'
 import { INVITE_URL, THEMES } from '../shared/config'
 import type { Emote } from '../shared/deck'
-import { canAnswerBack, clientFlow, type ClientFlowState } from './flow'
+import { canAnswerBack, canSendMail, clientFlow, mailRecipients, type ClientFlowState } from './flow'
 import { getOpeningViewState, skipOpening, type OpeningViewState } from './opening-scene'
 import { REACTION_OPTIONS, sendReaction } from './reactions'
 import { getRevealViewState, type RevealViewState } from './reveal-scene'
@@ -169,10 +169,10 @@ function foyerScreen(state: ClientFlowState) {
       {actionButton('MAKE YOUR OWN', () => clientFlow.beginAuthoring(), false, 'secondary')}
       <UiEntity uiTransform={{ width: '100%', flexDirection: 'row' }}>
         <UiEntity uiTransform={{ width: '49%', margin: '0 2% 0 0' }}>
-          {actionButton('BOARDS', () => clientFlow.showBoards(), false, 'secondary')}
+          {actionButton('GHOST MAIL', () => clientFlow.showMail(), !canSendMail(state), 'secondary')}
         </UiEntity>
         <UiEntity uiTransform={{ width: '49%' }}>
-          {actionButton('INVITE', () => clientFlow.showInvite(), false, 'secondary')}
+          {actionButton('BOARDS', () => clientFlow.showBoards(), false, 'secondary')}
         </UiEntity>
       </UiEntity>
     </UiEntity>,
@@ -183,7 +183,7 @@ function foyerScreen(state: ClientFlowState) {
 function sinceScreen(state: ClientFlowState) {
   const since = state.since
   const sentence = since
-    ? `Since you left, ${since.triedYou} people tried to decode you, ${since.gotYou} got it, and ${since.replies} answered back.`
+    ? `Since you left: ${since.triedYou} tried your ghosts, ${since.replies} answered back, and ${since.mail} Ghost Mail waited.`
     : 'Your returning audience report is ready.'
   return screenShell(
     sentence,
@@ -231,7 +231,11 @@ function decodeScreen(state: ClientFlowState) {
   const charade = state.charade
   if (!charade) return wakingScreen(state)
   const performers = charade.reply ? `${charade.authorName} + ${charade.reply.name}` : charade.authorName
-  const label = charade.isHouse ? 'HOUSE GHOST' : `GHOST · ${performers.toUpperCase()}`
+  const label = charade.isHouse
+    ? 'HOUSE GHOST'
+    : charade.recipient
+      ? `GHOST MAIL · ${performers.toUpperCase()}`
+      : `GHOST · ${performers.toUpperCase()}`
   const waiting = state.pending.some((request) => request.kind === 'guess' || request.kind === 'roundGuess')
   return screenShell(
     `What ${charade.reply ? 'are' : 'is'} ${performers} saying?`,
@@ -239,26 +243,26 @@ function decodeScreen(state: ClientFlowState) {
       reactionMenu()
     ) : (
       <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column' }}>
-          <Label
-            value={label}
-            fontSize={18}
-            font="monospace"
-            color={charade.isHouse ? COLORS.gold : COLORS.muted}
-            textAlign="middle-left"
-            uiTransform={{ width: '100%', height: 38 }}
-          />
-          {charade.answers.map((answer, index) =>
-            actionButton(
-              answer.toUpperCase(),
-              () => clientFlow.guess(index),
-              waiting,
-              index === 0 ? 'primary' : 'secondary'
-            )
-          )}
-          <UiEntity uiTransform={{ width: '100%', flexDirection: 'row', justifyContent: 'space-between' }}>
-            <UiEntity uiTransform={{ width: '49%' }}>
-              {actionButton('REPLAY', () => clientFlow.replay(), waiting, 'secondary')}
-            </UiEntity>
+        <Label
+          value={label}
+          fontSize={18}
+          font="monospace"
+          color={charade.isHouse ? COLORS.gold : COLORS.muted}
+          textAlign="middle-left"
+          uiTransform={{ width: '100%', height: 38 }}
+        />
+        {charade.answers.map((answer, index) =>
+          actionButton(
+            answer.toUpperCase(),
+            () => clientFlow.guess(index),
+            waiting,
+            index === 0 ? 'primary' : 'secondary'
+          )
+        )}
+        <UiEntity uiTransform={{ width: '100%', flexDirection: 'row', justifyContent: 'space-between' }}>
+          <UiEntity uiTransform={{ width: '49%' }}>
+            {actionButton('REPLAY', () => clientFlow.replay(), waiting, 'secondary')}
+          </UiEntity>
           <UiEntity uiTransform={{ width: '49%' }}>
             {state.roundCharadeId
               ? actionButton('REACT', () => clientFlow.toggleReactionMenu(), waiting, 'secondary')
@@ -403,9 +407,10 @@ function authorScreen(state: ClientFlowState) {
   const readyToPost = author.selectedEmotes.length === 3
   const posting = state.pending.some((request) => request.kind === 'post')
   const replying = !!author.replyTo
+  const mailing = !!author.recipient
   const sentence =
     author.phase === 'phrase'
-      ? `${replying ? 'Answer back with' : 'Your phrase is'} “${author.phrase.text}”.`
+      ? `${replying ? 'Answer back with' : mailing ? `Send ${author.recipient!.name}` : 'Your phrase is'} “${author.phrase.text}”.`
       : author.phase === 'emotes'
         ? 'Choose three emotes in performance order.'
         : `Ready to perform “${author.phrase.text}”.`
@@ -440,7 +445,11 @@ function authorScreen(state: ClientFlowState) {
       ) : (
         <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', justifyContent: 'center' }}>
           {actionButton('PREVIEW', () => clientFlow.previewAuthor(), !readyToPost || posting, 'secondary')}
-          {actionButton(replying ? 'SEND REPLY' : 'POST', () => clientFlow.postAuthor(), !readyToPost || posting)}
+          {actionButton(
+            replying ? 'SEND REPLY' : mailing ? 'SEND GHOST MAIL' : 'POST',
+            () => clientFlow.postAuthor(),
+            !readyToPost || posting
+          )}
           {actionButton('CHANGE EMOTES', () => clientFlow.reviseAuthorEmotes(), posting, 'secondary')}
           {actionButton('BACK', () => clientFlow.backFromAuthor(), posting, 'secondary')}
         </UiEntity>
@@ -455,7 +464,9 @@ function postedScreen(state: ClientFlowState) {
   return screenShell(
     state.postedReplyTo
       ? `Your answer-back joined ${state.charade?.authorName ?? 'the original performer'}.`
-      : 'Your ghost is on stage for the next stranger.',
+      : state.postedRecipient
+        ? `Your Ghost Mail is waiting for ${state.boards.playbill.find((performer) => performer.address.toLowerCase() === state.postedRecipient.toLowerCase())?.name ?? 'its recipient'}.`
+        : 'Your ghost is on stage for the next stranger.',
     <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', justifyContent: 'center' }}>
       {actionButton('COPY INVITE', () => copyInvite(true))}
       {actionButton("TODAY'S BOARDS", () => clientFlow.showBoards(), false, 'secondary')}
@@ -465,6 +476,25 @@ function postedScreen(state: ClientFlowState) {
         !canDecode,
         'secondary'
       )}
+    </UiEntity>,
+    state
+  )
+}
+
+function mailScreen(state: ClientFlowState) {
+  const recipients = mailRecipients(state).slice(0, 4)
+  return screenShell(
+    'Choose a real recent performer for one private Ghost Mail.',
+    <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', justifyContent: 'center' }}>
+      {recipients.map((recipient) =>
+        actionButton(
+          recipient.name.toUpperCase(),
+          () => clientFlow.beginGhostMail(recipient.address),
+          false,
+          'secondary'
+        )
+      )}
+      {actionButton('BACK', () => clientFlow.showFoyer(), false, 'secondary')}
     </UiEntity>,
     state
   )
@@ -696,6 +726,8 @@ function currentScreen(state: ClientFlowState) {
       return boardsScreen(state)
     case 'invite':
       return inviteScreen(state)
+    case 'mail':
+      return mailScreen(state)
   }
 }
 

@@ -176,6 +176,7 @@ describe('flow reducer', () => {
         triedYou: 2,
         gotYou: 1,
         replies: 0,
+        mail: 2,
         rank: 4,
         daily: state.progress.daily,
         title: '',
@@ -203,16 +204,19 @@ describe('flow reducer', () => {
     expect(foyerState.screen).toBe('foyer')
     expect(foyerState.author).toBe(draft)
 
-    const revealedState = flowReducer({ ...authorState, authorReturnScreen: 'reveal' }, {
-      type: 'reveal',
-      reveal: {
-        charadeId: 'revealed',
-        correct: true,
-        phrase: 'A revealed phrase',
-        stats: { total: 1, correct: 1 },
-        yourScore: 1
+    const revealedState = flowReducer(
+      { ...authorState, authorReturnScreen: 'reveal' },
+      {
+        type: 'reveal',
+        reveal: {
+          charadeId: 'revealed',
+          correct: true,
+          phrase: 'A revealed phrase',
+          stats: { total: 1, correct: 1 },
+          yourScore: 1
+        }
       }
-    })
+    )
     const revealState = flowReducer(revealedState, { type: 'authorBack' })
     expect(revealState.screen).toBe('reveal')
     expect(revealState.author).toBe(draft)
@@ -220,6 +224,81 @@ describe('flow reducer', () => {
 })
 
 describe('flow lifecycle', () => {
+  it('authors Ghost Mail only to selectable real playbill performers', () => {
+    const sender = `0x${'1'.repeat(40)}`
+    const recipient = `0x${'2'.repeat(40)}`
+    const guest = `0x${'3'.repeat(40)}`
+    const { runtime, sent } = createFlowHarness({ address: sender })
+    runtime.receive({ type: 'ready', data: { instanceId: 'server-1', serverTime: FIXED_NOW } })
+    runtime.receive({
+      type: 'boards',
+      data: {
+        topDecoders: [],
+        hardestGhosts: [],
+        ghostOfNightId: '',
+        playbill: [
+          { address: recipient, name: 'Recipient', isGuest: false, title: '', performedAt: FIXED_NOW },
+          { address: guest, name: 'Guest', isGuest: true, title: '', performedAt: FIXED_NOW },
+          { address: sender, name: 'Self', isGuest: false, title: '', performedAt: FIXED_NOW }
+        ]
+      }
+    })
+
+    expect(runtime.canSendMail()).toBe(true)
+    expect(runtime.showMail()).toBe(true)
+    expect(runtime.getState().screen).toBe('mail')
+    expect(runtime.beginGhostMail(`0x${'4'.repeat(40)}`)).toBe(false)
+    expect(runtime.beginGhostMail(guest)).toBe(false)
+    expect(runtime.beginGhostMail(recipient)).toBe(true)
+    expect(runtime.getState()).toMatchObject({
+      screen: 'author',
+      authorReturnScreen: 'mail',
+      author: { recipient: { address: recipient, name: 'Recipient' } }
+    })
+    const firstPhrase = runtime.getState().author!.phrase.id
+    expect(runtime.shuffleAuthorPhrase()).toBe(true)
+    expect(runtime.getState().author).toMatchObject({ recipient: { address: recipient, name: 'Recipient' } })
+    expect(runtime.getState().author!.phrase.id).not.toBe(firstPhrase)
+    runtime
+      .getState()
+      .author!.offeredEmotes.slice(0, 3)
+      .forEach((emote) => runtime.selectAuthorEmote(emote))
+    expect(runtime.postAuthor()).toBe(true)
+    expect(messagesOfType(sent, 'post').at(-1)?.data).toMatchObject({ recipient })
+    expect(messagesOfType(sent, 'post').at(-1)?.data).not.toHaveProperty('replyTo')
+
+    runtime.receive({ type: 'posted', data: { charadeId: 'mailed', recipient } })
+    expect(runtime.getState()).toMatchObject({
+      screen: 'posted',
+      postedCharadeId: 'mailed',
+      postedRecipient: recipient
+    })
+  })
+
+  it('blocks Ghost Mail for guests even when a real performer is in the playbill', () => {
+    const guestSender = `0x${'5'.repeat(40)}`
+    const recipient = `0x${'6'.repeat(40)}`
+    const { runtime } = createFlowHarness({
+      address: guestSender,
+      getProfile: () => ({ address: guestSender, name: 'Guest', isGuest: true })
+    })
+    runtime.receive({ type: 'ready', data: { instanceId: 'server-1', serverTime: FIXED_NOW } })
+    runtime.receive({
+      type: 'boards',
+      data: {
+        topDecoders: [],
+        hardestGhosts: [],
+        ghostOfNightId: '',
+        playbill: [{ address: recipient, name: 'Recipient', isGuest: false, title: '', performedAt: FIXED_NOW }]
+      }
+    })
+
+    expect(runtime.canSendMail()).toBe(false)
+    expect(runtime.showMail()).toBe(false)
+    expect(runtime.beginGhostMail(recipient)).toBe(false)
+    expect(runtime.getState().screen).toBe('foyer')
+  })
+
   it('pairs a separate reply message with its charade even when it arrives first', () => {
     const { runtime, effects } = createFlowHarness()
     runtime.receive({ type: 'ready', data: { instanceId: 'server-1', serverTime: FIXED_NOW } })
