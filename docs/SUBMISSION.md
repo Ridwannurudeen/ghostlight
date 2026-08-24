@@ -46,14 +46,18 @@ then leave a performance for the next visitor.
 Ghostlight is a mobile-first, voice-free social World built around communication through avatar
 performance. A visitor watches a previous player's saved Decentraland avatar act out a phrase, chooses between
 three answers, and sees an eight-second theatrical reveal. The visitor can then choose a phrase from the curated
-deck and post a three-emote performance for whoever arrives next. A clearly labelled House ghost keeps the solo
-loop playable before real performances exist and is excluded from player statistics and boards.
+deck and post a three-emote performance for whoever arrives next. One of 11 clearly labelled House ghosts keeps
+the solo loop playable before real performances exist and is excluded from player statistics and boards.
 
 Tonight's Show changes by UTC day across six themes and prioritizes matching charades without blocking the
 queue when a theme has no eligible performance. Answer-Back Duets let a decoder perform a second take on the
 same phrase; future visitors watch both avatars alternate. When two or more players are present, the shared
 charade becomes a first-correct live race. Performances remain in the selectable pool for 14 days, so the release
 checklist requires genuine current-theme content to be renewed throughout judging.
+
+Signed-in players can also choose a real recent performer and send a persisted Ghost Mail that stays outside the
+public queue and boards and is served only when its recipient returns. English, Spanish, and Portuguese clients
+render the same canonical phrase and answer IDs in their own language, including the complete 120-phrase deck.
 
 ### How it was designed and optimized for mobile
 
@@ -63,6 +67,11 @@ action buttons because the scene does not use them, keeps the movement joystick 
 tap on a 3D object. Answers, verdicts, progress, and errors use explicit text; sound and stage colour reinforce
 the result instead of carrying it alone. No screen exposes more than five game buttons: authoring separates phrase,
 five-emote selection, and confirmation, while live reactions replace secondary actions when opened.
+
+A five-control Settings panel offers English, Spanish, Portuguese, full/quiet/off sound, reduced motion, and 20%
+larger text without typing. Reduced motion replaces the eight-second camera- and tween-heavy reveal with a
+three-second result path while retaining the explicit verdict, sound, statistics, and progress. Settings apply for
+the current visit.
 
 The generated asset library contains 15 GLBs totalling 6,324 unique triangles and five material names. The live
 theater instantiates 11,664 authored triangles across two declared parcels, below their combined 20,000-triangle
@@ -77,13 +86,15 @@ and tweens instead of particles or dynamic lights.
 
 The mobile client has no DMs, voice, or scene chat, so the performance is the message. The authoritative
 Multiplayer Server captures each author's real avatar look, wearables, profile name, and three chosen emotes,
-then serves that performance to another player later. Up to six recent visitors appear in the theater audience;
-live visitors can react through avatar emotes, and two or more concurrent visitors race on the same charade.
+then serves that performance to another player later. Up to six recent visitors appear in the theater audience.
+Players watching an active live round can press Laugh, Gasp, or Applause; a real press triggers one local avatar
+emote and stamp while the server rate-limits the address and relays the reaction only to the other players present.
+Two or more concurrent visitors race on the same charade.
 
-Social activity survives an empty room. Authors return to a “Since you left” report showing how many people
-tried their performance, how many solved it, and how many answered back. One decoder can attach an Answer-Back
-Duet to a charade, so the next visitor watches a conversation expressed entirely through two avatar
-performances. The House fallback is always labelled and never contributes to participation counts.
+Social activity survives an empty room. Authors return to a “Since you left” report showing attempts, Answer-Back
+replies, and waiting Ghost Mail. Ghost Mail lets a signed-in player target a real recent performer without free
+text; it stays out of the public pool and boards, is delivered only to that recipient, and can receive the
+recipient's Answer-Back. The House fallback is always labelled and never contributes to participation counts.
 
 ### Why players return, replay, share, and invite
 
@@ -91,7 +102,7 @@ Each UTC day brings a new Tonight's Show theme. For a signed-in player, three de
 earns a server-stored daily stamp. Verified participation unlocks Understudy, Scene Stealer, and Ghostlight
 Legend titles with visible top-hat, mask, and trophy props. The playbill shows recent performers, and the day's
 hardest real charade becomes Ghost of the Night. The server persists performances and duets; signed-in player
-scores, stamps, titles, and return reports make each visit a continuation rather than a reset.
+scores, stamps, titles, private Ghost Mail, and return reports make each visit a continuation rather than a reset.
 
 Players can replay a performance before guessing, make their own version after the reveal, or answer back to
 the same phrase. After posting, Copy Invite copies `Join me for Ghostlight:` plus the Decentraland World
@@ -103,8 +114,8 @@ charade. No engagement, visitor, guess, or board entry is fabricated.
 1. Watch a previous player's Decentraland avatar perform a three-emote charade.
 2. Choose the phrase from three answer cards and watch the eight-second stage verdict.
 3. Take a dealt phrase, select three emotes in order, preview them, and post your ghost.
-4. Answer back after a reveal so later visitors watch both performers alternate on the same phrase.
-5. If another player is present, race to become the first correct decoder of the shared performance.
+4. Answer back after a reveal, or send a private Ghost Mail to a recent real performer.
+5. If another player is present, race for first correct while spectators send server-relayed reaction stamps.
 
 ### Measured mobile result
 

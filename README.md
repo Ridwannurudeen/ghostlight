@@ -11,8 +11,8 @@ phrase, and ordered emote sequence; later visitors watch that ghost on a theater
 answers. The core loop uses performance instead of free-text input and does not depend on DMs, voice, or scene
 chat.
 
-When no eligible player performance exists, the server serves one clearly labelled `HOUSE GHOST`. House content
-is excluded from player statistics, boards, and progression.
+When no eligible player performance exists, the server serves one of 11 clearly labelled `HOUSE GHOST`
+performances spanning all six themes. House content is excluded from player statistics, boards, and progression.
 
 ## Game loop
 
@@ -23,14 +23,17 @@ is excluded from player statistics, boards, and progression.
 3. Choose one of three phrase cards. Replay restarts the performance from its first emote.
 4. The eight-second reveal locks the answers, pushes the camera toward the stage, changes the theater lighting,
    reveals the verdict, cues the audience, and reports the aggregate result.
-5. Answer back with a new performance of the same phrase, or make a new charade from the fixed phrase deck.
+5. Answer back with a new performance of the same phrase, make a new charade from the fixed phrase deck, or send
+   a private Ghost Mail to a recent real performer.
 6. Preview and post the ordered three-emote performance, inspect today's boards, or copy a general World invite
    for a friend. The server selects eligible content after arrival; the link does not target one charade.
-7. Return later to see how many people tried the performance, how many decoded it, and whether anyone answered
-   back.
+7. Return later to see how many people tried your ghosts, whether anyone answered back, and how much Ghost Mail is
+   waiting.
 
 With two or more players present, the Multiplayer Server serves a shared live round and accepts one first-correct
 winner. The winner moves directly into the author flow; solo visitors continue through the asynchronous loop.
+Players who are watching rather than actively decoding can press Laugh, Gasp, or Applause. The server rate-limits
+each address and relays the stamp to the other players present without changing the round state.
 
 ## Tonight's Show
 
@@ -69,6 +72,23 @@ and the original author receives a persisted return notification.
 Self-replies, House replies, replies before a completed guess, phrase changes, and second replies are rejected by
 the server.
 
+## Ghost Mail
+
+Signed-in players can choose a real recent performer from the playbill and author a private three-emote Ghost Mail
+without typing an address or message. The server persists it outside the public pool and boards, serves unseen mail
+only to its recipient, and allows that recipient to decode and Answer Back. Guests, self-sends, and unknown
+recipients are rejected.
+
+## Languages and accessibility
+
+English is the default; Settings cycles English, Spanish, and Portuguese without text entry. The client bundle
+contains 157 interface strings and all 120 phrase texts in each language under stable IDs. The server sends
+canonical phrase and answer IDs alongside compatibility fallback text, so authors and decoders can use different
+languages while retaining answer options from the same theme.
+
+For the current visit, Settings also offers full, quiet, or off sound, reduced motion, and 20% larger text. Reduced
+motion shortens the reveal to three seconds while retaining the verdict, sound, statistics, and progress.
+
 ## Controls
 
 | Action | Mobile-first behavior |
@@ -79,7 +99,9 @@ the server.
 | Watch again | Tap `REPLAY` to restart the current solo performance or duet. |
 | Make a charade | Tap `MAKE YOUR OWN`, accept or shuffle the dealt phrase, continue to five-emote selection, then choose three in order. The third choice advances to a separate Preview/Post confirmation. |
 | Answer back | After an eligible reveal, tap `ANSWER BACK`, choose three emotes for the same phrase, preview, then send the reply. |
-| React in a live round | Open `REACTIONS`; its three choices replace the secondary actions while open, and trigger a local player emote plus a remote audience reaction. |
+| Send Ghost Mail | Tap `GHOST MAIL`, choose a recent real performer, then use the normal phrase, emote, preview, and send flow. No address or message entry is required. |
+| React in a live round | While watching an active round in the stage area, open `REACT`. Laugh, Gasp, and Applause replace the other actions, trigger one local emote and stamp, and relay once to the other players present. |
+| Settings | From the foyer, switch language, sound level, reduced motion, or large text for the current visit. |
 | Invite | `COPY INVITE` copies a general World invitation configured in `src/shared/config.ts`; it does not route to a specific charade. |
 
 Desktop preview uses the normal Decentraland movement controls and the same on-screen game UI.
@@ -101,7 +123,7 @@ Authoritative Multiplayer Server
                          v
 Decentraland Storage
   scene: charades, daily indexes, boards, recent visitors
-  player: signed-in statistics, daily stamps, titles, return notifications
+  player: signed-in statistics, daily stamps, titles, return and mail notifications
 ```
 
 The client sends intents such as guess, post, and react. It never supplies the avatar look used for a stored
@@ -109,6 +131,9 @@ performance; the server snapshots Decentraland's player ECS data. All persisted 
 charade and player-stat records carry a schema version. Storage writes pass through a dirty queue, retry when the
 host returns `false`, and run in batches of at most eight. Requests that can mutate state carry IDs so a network
 retry does not double-count a guess or post.
+
+Localized copy stays in the client bundle. The server includes canonical phrase and answer IDs alongside the
+existing fallback fields, and each decoder renders those IDs in the language selected on that client.
 
 The presentation layer uses generated GLBs and emissive material changes rather than dynamic lights or particles.
 The avatar pool is capped at eight slots: one stage performer, six audience positions, and one preview/replier;
@@ -158,8 +183,10 @@ test, and real-device validation pass.
 
 ## Device testing and release state
 
-Automated tests cover the loop, reveal timing, duet pairing, title thresholds, live rounds, storage recovery,
-network retries, and generated-asset limits. Real-device validation remains a separate release gate; follow
+Automated tests cover the loop, reveal timing, duet pairing, Ghost Mail privacy, title thresholds, live rounds,
+spectator reaction relay and rate limits, localisation completeness and cross-language answers, accessibility
+settings, storage recovery, network retries, and generated-asset limits. Real-device validation remains a separate
+release gate; follow
 [`docs/DEVICE-CHECKLIST.md`](docs/DEVICE-CHECKLIST.md) for cold start, safe areas, sound latency, camera behavior,
 solo persistence, two-client rounds, and measured performance.
 
@@ -177,7 +204,7 @@ the shared scene pool, but durable personal title and return progress requires a
 src/
   client/   Client flow, ReactEcs UI, theater, ghosts, cameras, sound, reveals, rewards
   server/   Authoritative protocol handlers, live rounds, state, migrations, Storage queue
-  shared/   Message schemas, fixed phrase deck, themes, progression constants, selection logic
+  shared/   Message schemas, fixed phrase deck, localisation, themes, progression constants, selection logic
 test/       Vitest coverage for client, server, protocol, persistence, and asset budgets
 tools/
   blender/  Procedural GLB generator
