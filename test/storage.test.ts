@@ -1,14 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FLUSH_SECONDS } from '../src/shared/config'
 import {
+  MAX_CHECKPOINT_FLUSHES,
+  MAX_DIRTY_ENTRIES,
+  MAX_FLUSH_WRITES,
   PLAYER_STATS_KEY,
   RECENT_VISITORS_KEY,
+  StorageCapacityError,
+  StorageCorruptError,
   StorageUnavailableError,
   boardsKey,
   charadeKey,
   createStorageRepository,
   indexKey
 } from '../src/server/storage'
+import type { StoragePort } from '../src/server/storage'
 import { FakeStorage, deferred } from './test-helpers'
 
 vi.mock('@dcl/sdk/server', () => ({
@@ -33,6 +39,28 @@ describe('storage keys', () => {
 })
 
 describe('storage reads', () => {
+  it('treats SDK-style swallowed point and listing failures as unavailable', async () => {
+    const empty = { data: [], pagination: { offset: 0, total: 0 } }
+    const swallowedFailures: StoragePort = {
+      get: async () => null,
+      getValues: async () => empty,
+      set: async () => false,
+      player: {
+        get: async () => null,
+        getValues: async () => empty,
+        set: async () => false
+      }
+    }
+    const repository = createStorageRepository(swallowedFailures)
+
+    await expect(repository.loadJSON('existing-but-unreadable', null)).rejects.toBeInstanceOf(
+      StorageUnavailableError
+    )
+    await expect(repository.loadPlayerJSON('player', 'existing-but-unreadable', null)).rejects.toBeInstanceOf(
+      StorageUnavailableError
+    )
+  })
+
   it('parses confirmed values, falls back only for confirmed missing keys, and fails closed on corrupt data', async () => {
     const storage = new FakeStorage()
     const repository = createStorageRepository(storage)
@@ -45,9 +73,9 @@ describe('storage reads', () => {
 
     await expect(repository.loadJSON('valid', fallback)).resolves.toEqual({ v: 1, answer: 42 })
     await expect(repository.loadJSON('missing', fallback)).resolves.toBe(fallback)
-    await expect(repository.loadJSON('malformed', fallback)).rejects.toBeInstanceOf(StorageUnavailableError)
-    await expect(repository.loadJSON('non-string', fallback)).rejects.toBeInstanceOf(StorageUnavailableError)
-    await expect(repository.loadJSON('invalid-version', fallback)).rejects.toBeInstanceOf(StorageUnavailableError)
+    await expect(repository.loadJSON('malformed', fallback)).rejects.toBeInstanceOf(StorageCorruptError)
+    await expect(repository.loadJSON('non-string', fallback)).rejects.toBeInstanceOf(StorageCorruptError)
+    await expect(repository.loadJSON('invalid-version', fallback)).rejects.toBeInstanceOf(StorageCorruptError)
     await expect(repository.loadJSON('throws', fallback)).resolves.toBe(fallback)
   })
 
@@ -59,7 +87,7 @@ describe('storage reads', () => {
     storage.playerGetErrors.add('player:throws')
 
     await expect(repository.loadPlayerJSON('player', 'valid', null)).resolves.toEqual({ v: 1, score: 7 })
-    await expect(repository.loadPlayerJSON('player', 'malformed', null)).rejects.toBeInstanceOf(StorageUnavailableError)
+    await expect(repository.loadPlayerJSON('player', 'malformed', null)).rejects.toBeInstanceOf(StorageCorruptError)
     await expect(repository.loadPlayerJSON('player', 'throws', null)).resolves.toBeNull()
   })
 
@@ -80,6 +108,55 @@ describe('storage reads', () => {
     expect(storage.maxActiveHostCalls).toBe(32)
   })
 
+  it('reserves a released permit for the awakened waiter before admitting a new arrival', async () => {
+    const calls: Array<ReturnType<typeof deferred<unknown | null>>> = []
+    const callPromises: Array<Promise<unknown | null>> = []
+    let releaseNewCalls = false
+    let active = 0
+    let maxActive = 0
+    const storage: StoragePort = {
+      get: async () => {
+        active += 1
+        maxActive = Math.max(maxActive, active)
+        if (releaseNewCalls) {
+          active -= 1
+          return JSON.stringify({ v: 1 })
+        }
+        const call = deferred<unknown | null>()
+        calls.push(call)
+        const promise = call.promise.then((value) => {
+          active -= 1
+          return value
+        })
+        callPromises.push(promise)
+        return promise
+      },
+      getValues: async () => ({ data: [], pagination: { offset: 0, total: 0 } }),
+      set: async () => true,
+      player: {
+        get: async () => null,
+        getValues: async () => ({ data: [], pagination: { offset: 0, total: 0 } }),
+        set: async () => true
+      }
+    }
+    const repository = createStorageRepository(storage)
+    const initial = Array.from({ length: 32 }, (_, index) => repository.loadJSON(`initial-${index}`, null))
+    const waiting = repository.loadJSON('waiting', null)
+    let newcomer: Promise<unknown> | null = null
+    callPromises[0].then(() => {
+      newcomer = repository.loadJSON('newcomer', null)
+    })
+
+    calls[0].resolve(JSON.stringify({ v: 1 }))
+    await vi.waitFor(() => expect(newcomer).not.toBeNull())
+    expect(maxActive).toBe(32)
+
+    releaseNewCalls = true
+    calls.slice(1).forEach((call) => call.resolve(JSON.stringify({ v: 1 })))
+    await expect(Promise.all([...initial, waiting, newcomer!])).resolves.toHaveLength(34)
+    expect(maxActive).toBe(32)
+  })
+
   it('fails closed when both point reads and authoritative listings are unavailable', async () => {
     const storage = new FakeStorage()
     const repository = createStorageRepository(storage)
@@ -92,6 +169,16 @@ describe('storage reads', () => {
     await expect(repository.loadPlayerJSON('player', 'ambiguous', null)).rejects.toBeInstanceOf(StorageUnavailableError)
     expect(storage.sceneGets.filter((key) => key === 'ambiguous')).toHaveLength(3)
     expect(storage.playerGets.filter((call) => call.key === 'ambiguous')).toHaveLength(3)
+  })
+
+  it('distinguishes corrupt and oversized stored values from transport failures', async () => {
+    const storage = new FakeStorage()
+    const repository = createStorageRepository(storage)
+    storage.scene.set('malformed', '{')
+    storage.scene.set('oversized', `"${'x'.repeat(140_000)}"`)
+
+    await expect(repository.loadJSON('malformed', null)).rejects.toBeInstanceOf(StorageCorruptError)
+    await expect(repository.loadJSON('oversized', null)).rejects.toBeInstanceOf(StorageCorruptError)
   })
 })
 
@@ -119,6 +206,40 @@ describe('storage flushes', () => {
     await expect(repository.flush()).resolves.toEqual({ attempted: 2, saved: 2, failed: 0, remaining: 0 })
     expect(storage.readJSON('false-key')).toEqual({ value: 1 })
     expect(storage.readJSON('throw-key')).toEqual({ value: 2 })
+  })
+
+  it('rejects dirty writes atomically before the entry budget is exceeded', () => {
+    const repository = createStorageRepository(new FakeStorage())
+    for (let index = 0; index < MAX_DIRTY_ENTRIES - 1; index += 1) {
+      repository.markDirty(`key-${index}`, { index })
+    }
+
+    expect(() =>
+      repository.markDirtyBatch([
+        { key: 'last-valid', value: { valid: true } },
+        { key: 'over-budget', value: { valid: false } }
+      ])
+    ).toThrow(StorageCapacityError)
+    expect(repository.getDirtyKeys()).toHaveLength(MAX_DIRTY_ENTRIES - 1)
+    expect(repository.getDirtyKeys()).not.toContain('scene:last-valid')
+  })
+
+  it('accounts for replacement bytes without consuming another dirty entry', () => {
+    const repository = createStorageRepository(new FakeStorage())
+    repository.markDirty('same', { revision: 1 })
+    const firstBytes = repository.getDirtyBytes()
+
+    repository.markDirty('same', { revision: 2 })
+
+    expect(repository.getDirtyKeys()).toEqual(['scene:same'])
+    expect(repository.getDirtyBytes()).toBe(firstBytes)
+  })
+
+  it('rejects a dirty value that the read path would later reject as oversized', () => {
+    const repository = createStorageRepository(new FakeStorage())
+
+    expect(() => repository.markDirty('oversized', 'x'.repeat(140_000))).toThrow(StorageCapacityError)
+    expect(repository.getDirtyKeys()).toEqual([])
   })
 
   it('retains a newer value marked while the older value is in flight', async () => {
@@ -180,6 +301,22 @@ describe('storage flushes', () => {
     expect(storage.maxActiveWrites).toBe(8)
   })
 
+  it('bounds background flush work while preserving the remaining queue', async () => {
+    const storage = new FakeStorage()
+    const repository = createStorageRepository(storage)
+    for (let index = 0; index < MAX_FLUSH_WRITES + 5; index += 1) {
+      repository.markDirty(`bounded-${index}`, { index })
+    }
+
+    await expect(repository.flush()).resolves.toMatchObject({
+      attempted: MAX_FLUSH_WRITES,
+      saved: MAX_FLUSH_WRITES,
+      failed: 0,
+      remaining: 5
+    })
+    expect(storage.writes).toHaveLength(MAX_FLUSH_WRITES)
+  })
+
   it('serializes and flushes player-scoped writes', async () => {
     const storage = new FakeStorage()
     const repository = createStorageRepository(storage)
@@ -200,6 +337,20 @@ describe('storage flushes', () => {
     await expect(repository.flushNow()).rejects.toMatchObject({ keys: ['scene:required'] })
     expect(storage.writes).toHaveLength(3)
     expect(repository.getDirtyKeys()).toEqual(['scene:required'])
+  })
+
+  it('bounds checkpoint work even when each batch makes too little progress', async () => {
+    const storage = new FakeStorage()
+    const repository = createStorageRepository(storage)
+    for (let index = 0; index < MAX_DIRTY_ENTRIES; index += 1) {
+      repository.markDirty(`slow-${index}`, { index })
+    }
+    for (let batch = 0; batch < MAX_CHECKPOINT_FLUSHES + 2; batch += 1) {
+      storage.sceneWriteOutcomes.push(true, ...Array.from({ length: MAX_FLUSH_WRITES - 1 }, () => false))
+    }
+
+    await expect(repository.flushNow()).rejects.toBeInstanceOf(StorageUnavailableError)
+    expect(storage.writes.length).toBeLessThanOrEqual(MAX_CHECKPOINT_FLUSHES * MAX_FLUSH_WRITES)
   })
 })
 

@@ -4,6 +4,10 @@ import { HOUSE_CHARADE, HOUSE_CHARADES } from '../src/shared/deck'
 import { STORAGE_SCHEMA_VERSION } from '../src/shared/types'
 import {
   GhostlightState,
+  MAX_DAILY_DECODERS,
+  MAX_INDEX_IDS_PER_DAY,
+  MAX_PLAYER_SEEN_IDS,
+  UnsupportedStorageVersionError,
   computeProgress,
   computeTitle,
   dayKey,
@@ -12,8 +16,10 @@ import {
   migratePlayerStats
 } from '../src/server/state'
 import {
+  MAX_DIRTY_ENTRIES,
   PLAYER_STATS_KEY,
   RECENT_VISITORS_KEY,
+  StorageCapacityError,
   boardsKey,
   charadeKey,
   createStorageRepository,
@@ -47,6 +53,9 @@ describe('state migrations', () => {
     expect(migrateLook(null)).toBeNull()
     expect(migrateLook({ ...look, address: 4 })).toBeNull()
     expect(migrateLook({ ...look, skinColor: { r: 1, g: 1 } })).toBeNull()
+    expect(migrateLook({ ...look, skinColor: { r: Number.POSITIVE_INFINITY, g: 0, b: 0 } })).toBeNull()
+    expect(migrateLook({ ...look, eyeColor: { r: -1, g: 0, b: 0 } })).toBeNull()
+    expect(migrateLook({ ...look, hairColor: { r: 0, g: 0, b: 1.01 } })).toBeNull()
   })
 
   it('migrates v0 and v1 charades and rejects unsupported or malformed records', () => {
@@ -61,6 +70,8 @@ describe('state migrations', () => {
     expect(migrateCharade(v1)?.reply).toBeUndefined()
     expect(migrateCharade({ ...legacy, v: 99 })).toBeNull()
     expect(migrateCharade({ ...legacy, emotes: ['wave', 'clap'] })).toBeNull()
+    expect(migrateCharade({ ...legacy, emotes: ['wave', 'wave', 'wave'] })).toBeNull()
+    expect(migrateCharade({ ...legacy, emotes: ['wave', 'clap', 'not-an-emote'] })).toBeNull()
     expect(migrateCharade('{bad json')).toBeNull()
   })
 
@@ -163,6 +174,48 @@ describe('state migrations', () => {
     expect(migrateCharade({ ...makeCharade('fractional'), createdAt: 1.5 })).toBeNull()
     expect(migrateCharade({ ...makeCharade('unsafe'), createdAt: Number.MAX_VALUE })).toBeNull()
   })
+
+  it('rejects unknown phrases and timestamps outside their expected shard or future-skew window', () => {
+    const today = dayKey(FIXED_NOW)
+    expect(migrateCharade({ ...makeCharade('removed'), phraseId: 'removed-phrase' })).toBeNull()
+    expect(
+      migrateCharade(makeCharade('wrong-shard', { createdAt: FIXED_NOW - 86_400_000 }), {
+        expectedDay: today,
+        now: FIXED_NOW
+      })
+    ).toBeNull()
+    expect(
+      migrateCharade(makeCharade('future', { createdAt: FIXED_NOW + 10 * 60_000 }), {
+        expectedDay: today,
+        now: FIXED_NOW
+      })
+    ).toBeNull()
+  })
+
+  it('bounds stored histories, rejects future reward days, and preserves a monotonic revision', () => {
+    const seen = Array.from({ length: MAX_PLAYER_SEEN_IDS + 20 }, (_, index) => `seen-${index}`)
+    const migrated = migratePlayerStats(
+      makeStats({
+        revision: Number.MAX_SAFE_INTEGER,
+        seen,
+        stampedDays: ['2026-08-22', '2026-08-24'],
+        daily: { day: '2026-08-24', decoded: 3, authored: 1, stamped: true }
+      }),
+      'Player',
+      FIXED_NOW
+    )
+
+    expect(migrated.revision).toBe(2_147_483_647)
+    expect(migrated.seen).toEqual(seen.slice(-MAX_PLAYER_SEEN_IDS))
+    expect(migrated.stampedDays).toEqual(['2026-08-22'])
+    expect(migrated.daily).toEqual({ day: '2026-08-23', decoded: 0, authored: 0, stamped: false })
+  })
+
+  it('refuses to reinterpret future player schemas as empty writable stats', () => {
+    expect(() => migratePlayerStats({ ...makeStats(), v: STORAGE_SCHEMA_VERSION + 1 }, 'Player', FIXED_NOW)).toThrow(
+      UnsupportedStorageVersionError
+    )
+  })
 })
 
 describe('title progression', () => {
@@ -218,14 +271,38 @@ describe('state hydration', () => {
     expect(storage.sceneGets.filter((key) => key === charadeKey('today'))).toHaveLength(1)
   })
 
-  it('fails hydration closed when an indexed value cannot be read safely', async () => {
+  it('quarantines one corrupt indexed charade while retaining house fallback availability', async () => {
     const { storage, state } = setup()
     const today = dayKey(FIXED_NOW)
     storage.putJSON(indexKey(today), ['corrupt'])
     storage.scene.set(charadeKey('corrupt'), '{')
 
-    await expect(state.hydrate()).rejects.toMatchObject({ keys: [charadeKey('corrupt')] })
+    await expect(state.hydrate()).resolves.toBeUndefined()
     expect(state.getPool()).toEqual([])
+    expect(HOUSE_CHARADES.every((charade) => state.getCharade(charade.id) === charade)).toBe(true)
+  })
+
+  it('still fails hydration closed when an indexed charade is unavailable rather than corrupt', async () => {
+    const { storage, state } = setup()
+    const today = dayKey(FIXED_NOW)
+    storage.putJSON(indexKey(today), ['unavailable'])
+    storage.getErrors.add(charadeKey('unavailable'))
+    storage.getValuesErrors.add(charadeKey('unavailable'))
+
+    await expect(state.hydrate()).rejects.toMatchObject({ keys: [charadeKey('unavailable')] })
+  })
+
+  it('enters house-only read-only mode for a corrupt foundational index', async () => {
+    const { storage, state } = setup()
+    storage.scene.set(indexKey(dayKey(FIXED_NOW)), '{')
+
+    await expect(state.hydrate()).resolves.toBeUndefined()
+
+    expect(state.isReadOnly).toBe(true)
+    expect(state.getPool()).toEqual([])
+    expect(HOUSE_CHARADES.every((charade) => state.getCharade(charade.id) === charade)).toBe(true)
+    expect(state.upsertCharade(makeCharade('blocked'))).toBe(false)
+    expect(state.getCharade('blocked')).toBeNull()
   })
 
   it('tolerates missing and throwing storage reads', async () => {
@@ -278,6 +355,21 @@ describe('state hydration', () => {
     expect(state.recentVisitors.map((visitor) => visitor.address)).toEqual(['a', 'b', 'c', 'd', 'e', 'f'])
     expect(new Set(state.recentVisitors.map((visitor) => visitor.address)).size).toBe(AUDIENCE_SEATS)
     expect(state.recentVisitors[0].name).toBe('new a')
+  })
+
+  it('caps each hydrated index before issuing record reads and skips removed phrases', async () => {
+    const { storage, state } = setup()
+    const today = dayKey(FIXED_NOW)
+    const ids = Array.from({ length: MAX_INDEX_IDS_PER_DAY + 5 }, (_, index) => `indexed-${index}`)
+    storage.putJSON(indexKey(today), [...ids, 'removed-phrase'])
+    ids.forEach((id) => storage.putJSON(charadeKey(id), makeCharade(id)))
+    storage.putJSON(charadeKey('removed-phrase'), makeCharade('removed-phrase', { phraseId: 'no-longer-in-deck' }))
+
+    await state.hydrate()
+
+    expect(state.getPool()).toHaveLength(MAX_INDEX_IDS_PER_DAY - 1)
+    expect(storage.sceneGets.filter((key) => key.startsWith('gc:v1:charade:'))).toHaveLength(MAX_INDEX_IDS_PER_DAY)
+    expect(state.getCharade('removed-phrase')).toBeNull()
   })
 })
 
@@ -382,31 +474,117 @@ describe('state mutations', () => {
     expect(state.getPool().map((charade) => charade.id)).toEqual(['retained'])
   })
 
+  it('does not prune newer state or reset decoder standings when the clock moves backward', () => {
+    let now = FIXED_NOW
+    const state = new GhostlightState(
+      {
+        loadJSON: async (_key, fallback) => fallback,
+        loadPlayerJSON: async (_address, _key, fallback) => fallback,
+        markDirty: vi.fn(),
+        markDirtyBatch: vi.fn(),
+        markPlayerDirty: vi.fn()
+      },
+      () => now
+    )
+    state.upsertCharade(makeCharade('newer'))
+    state.recordDecoder('alice', 'Alice', true)
+    const stats = makeStats({ daily: { day: dayKey(FIXED_NOW), decoded: 1, authored: 0, stamped: false } })
+
+    now -= 86_400_000
+    state.rollover()
+
+    expect(state.getCharade('newer')).not.toBeNull()
+    expect(state.boards.decoders).toEqual([{ address: 'alice', name: 'Alice', correct: 1, total: 1 }])
+    expect(state.getDaily(stats)).toEqual({ day: dayKey(FIXED_NOW), decoded: 1, authored: 0, stamped: false })
+  })
+
+  it('rejects new charades before mutation when the daily durable budget is full', () => {
+    const markDirtyBatch = vi.fn()
+    const state = new GhostlightState(
+      {
+        loadJSON: async (_key, fallback) => fallback,
+        loadPlayerJSON: async (_address, _key, fallback) => fallback,
+        markDirty: vi.fn(),
+        markDirtyBatch,
+        markPlayerDirty: vi.fn()
+      },
+      () => FIXED_NOW
+    )
+    for (let index = 0; index < MAX_INDEX_IDS_PER_DAY; index += 1) {
+      expect(state.upsertCharade(makeCharade(`bounded-${index}`))).toBe(true)
+    }
+
+    expect(state.upsertCharade(makeCharade('over-budget'))).toBe(false)
+    expect(state.getCharade('over-budget')).toBeNull()
+    expect(markDirtyBatch).toHaveBeenCalledTimes(MAX_INDEX_IDS_PER_DAY)
+  })
+
+  it('admits every write required by a post before mutating state', () => {
+    const { repository, state } = setup()
+    for (let index = 0; index < MAX_DIRTY_ENTRIES - 3; index += 1) {
+      repository.markDirty(`occupied-${index}`, { index })
+    }
+
+    expect(() => state.upsertCharade(makeCharade('no-partial-post'))).toThrow(StorageCapacityError)
+    expect(state.getCharade('no-partial-post')).toBeNull()
+    expect(repository.getDirtyKeys().some((key) => key.includes('no-partial-post'))).toBe(false)
+  })
+
+  it('caps decoder retention and excludes guest performances from competitive surfaces', async () => {
+    const dirtyWrites: Array<{ key: string; value: unknown }> = []
+    const state = new GhostlightState(
+      {
+        loadJSON: async (_key, fallback) => fallback,
+        loadPlayerJSON: async (_address, _key, fallback) => fallback,
+        markDirty: (key, value) => dirtyWrites.push({ key, value }),
+        markDirtyBatch: vi.fn(),
+        markPlayerDirty: vi.fn()
+      },
+      () => FIXED_NOW
+    )
+    state.upsertCharade(makeCharade('guest-show', { author: { isGuest: true }, guesses: { total: 5, correct: 0 } }))
+    state.upsertCharade(makeCharade('wallet-show', { guesses: { total: 2, correct: 1 } }))
+    for (let index = 0; index < MAX_DAILY_DECODERS + 5; index += 1) {
+      state.recordDecoder(`decoder-${index}`, `Decoder ${index}`, index % 2 === 0)
+    }
+
+    const decoderWrite = dirtyWrites.filter((write) => write.key === decoderAggregateKey(dayKey(FIXED_NOW))).at(-1)
+    expect(decoderWrite?.value).toHaveLength(MAX_DAILY_DECODERS)
+    expect(state.boards.hardest.map((row) => row.charadeId)).toEqual(['wallet-show'])
+    expect((await state.getRecentPerformers()).map((performer) => performer.address)).toEqual([
+      makeCharade('wallet-show').author.address
+    ])
+  })
+
   it('restores decoder aggregates below tenth place after a server restart', async () => {
     const storage = new FakeStorage()
     const firstRepository = createStorageRepository(storage)
     const firstState = new GhostlightState(firstRepository, () => FIXED_NOW)
     for (let player = 0; player < 11; player += 1) {
-      firstState.recordDecoder(`player-${player}`, `Player ${player}`, false)
+      const address = `0x${(player + 1).toString(16).padStart(40, '0')}`
+      firstState.recordDecoder(address, `Player ${player}`, false)
       for (let correct = 0; correct < player; correct += 1) {
-        firstState.recordDecoder(`player-${player}`, `Player ${player}`, true)
+        firstState.recordDecoder(address, `Player ${player}`, true)
       }
     }
+    firstState.recordDecoder('guest-session', 'Guest', true)
     await firstRepository.flushNow()
-    expect(storage.readJSON<unknown[]>(decoderAggregateKey(dayKey(FIXED_NOW)))).toHaveLength(11)
+    expect(storage.readJSON<unknown[]>(decoderAggregateKey(dayKey(FIXED_NOW)))).toHaveLength(12)
 
     const secondRepository = createStorageRepository(storage)
     const secondState = new GhostlightState(secondRepository, () => FIXED_NOW)
     await secondState.hydrate()
-    secondState.recordDecoder('player-0', 'Player 0', true)
-    secondState.recordDecoder('player-0', 'Player 0', true)
+    const firstAddress = `0x${'1'.padStart(40, '0')}`
+    secondState.recordDecoder(firstAddress, 'Player 0', true)
+    secondState.recordDecoder(firstAddress, 'Player 0', true)
 
     expect(secondState.boards.decoders).toContainEqual({
-      address: 'player-0',
+      address: firstAddress,
       name: 'Player 0',
       correct: 2,
       total: 3
     })
+    expect(secondState.boards.decoders.some((row) => row.address === 'guest-session')).toBe(false)
   })
 
   it('builds the playbill from the latest six real performances and selects the hardest ghost of the night', async () => {
@@ -478,7 +656,9 @@ describe('player stats', () => {
       PLAYER_STATS_KEY,
       makeStats({ seen, pending: { triedYou: 5, gotYou: 2, replies: 3, mail: 2 } })
     )
-    for (const id of seen) state.upsertCharade(makeCharade(id))
+    seen.forEach((id, index) => {
+      state.upsertCharade(makeCharade(id, { createdAt: FIXED_NOW - Math.floor(index / 103) * 86_400_000 }))
+    })
 
     const stats = await state.getOrCreateStats('player', 'Current name')
     expect(stats.seen).toEqual(seen)
@@ -492,7 +672,7 @@ describe('player stats', () => {
     expect(stats.seen).toHaveLength(206)
     expect(new Set(stats.seen).size).toBe(206)
     expect(stats.seen.at(-1)).toBe('seen-205')
-    await repository.flush()
+    await repository.flushNow()
 
     expect(storage.readPlayerJSON<typeof stats>('player', PLAYER_STATS_KEY)).toMatchObject({
       name: 'Renamed',
@@ -551,5 +731,14 @@ describe('player stats', () => {
   it('returns empty pending counts for an unknown player', () => {
     const { state } = setup()
     expect(state.consumePending('missing')).toEqual({ triedYou: 0, gotYou: 0, replies: 0, mail: 0 })
+  })
+
+  it('advances and saturates the authoritative progression revision', () => {
+    const { state } = setup()
+    const stats = makeStats({ revision: 4 })
+
+    expect(state.advanceProgressRevision(stats)).toBe(5)
+    stats.revision = 2_147_483_647
+    expect(state.advanceProgressRevision(stats)).toBe(2_147_483_647)
   })
 })
