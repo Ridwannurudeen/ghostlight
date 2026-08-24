@@ -6,6 +6,7 @@
     "start": "sdk-commands start",
     "deploy": "sdk-commands deploy",
     "build": "sdk-commands build",
+    "preflight": "node tools/preflight.mjs",
     "test": "vitest run",
     "assets:models": "call \"C:\\Program Files\\Blender Foundation\\Blender 5.1\\blender.exe\" -b --python tools/blender/build_assets.py",
     "assets:sounds": "python tools/audio/build_sounds.py",
