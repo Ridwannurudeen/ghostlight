@@ -366,7 +366,8 @@ describe('deterministic headless soak simulation', () => {
         now: () => now,
         instanceId,
         lookAttempts: 1,
-        lookRetryMilliseconds: 0
+        lookRetryMilliseconds: 0,
+        random: () => 0.5
       })
       room.connectProtocol(protocol)
       return protocol
@@ -376,6 +377,7 @@ describe('deterministic headless soak simulation', () => {
 
     const connect = async (player: SimulatedPlayer) => {
       player.connected = true
+      await protocol.handleEnter(player.address)
       player.transportReady = true
       player.runtime.tick(2)
       await room.pump(player.address)
@@ -451,7 +453,8 @@ describe('deterministic headless soak simulation', () => {
     const mailSender = players[0]
     const mailRecipient = players[1]
     await connect(mailSender)
-    expect(mailSender.runtime.beginGhostMail(mailRecipient.address)).toBe(true)
+    expect(mailSender.runtime.selectGhostMailRecipient(mailRecipient.address)).toBe(true)
+    expect(mailSender.runtime.beginGhostMail()).toBe(true)
     selectDraftEmotes(mailSender)
     expect(mailSender.runtime.previewAuthor()).toBe(true)
     expect(mailSender.runtime.postAuthor()).toBe(true)
@@ -575,7 +578,7 @@ describe('deterministic headless soak simulation', () => {
       posted: payloadMaxima.get('server:posted'),
       charade: payloadMaxima.get('server:charade'),
       since: payloadMaxima.get('server:since')
-    }).toEqual({ post: 163, posted: 335, charade: 776, since: 250 })
+    }).toEqual({ post: 163, posted: 369, charade: 778, since: 263 })
     expect(avatarBudget.peak).toBeLessThanOrEqual(MAX_GHOSTS)
   })
 })

@@ -1,9 +1,21 @@
 import { describe, expect, it, vi } from 'vitest'
 import { PROTOCOL_VERSION, themeForTimestamp } from '../src/shared/config'
-import { DECK, HOUSE_CHARADE } from '../src/shared/deck'
-import { createServerProtocol, type ProtocolSend, type ServerProtocolOptions } from '../src/server/server'
+import { DECK, HOUSE_CHARADE, HOUSE_CHARADES } from '../src/shared/deck'
+import { pickDecoys, shuffleSeeded } from '../src/shared/pick'
+import {
+  createServerProtocol,
+  runServerHandler,
+  type ProtocolSend,
+  type ServerProtocolOptions
+} from '../src/server/server'
 import { GhostlightState } from '../src/server/state'
-import { PLAYER_STATS_KEY, StorageUnavailableError, createStorageRepository } from '../src/server/storage'
+import {
+  MAX_DIRTY_ENTRIES,
+  PLAYER_STATS_KEY,
+  StorageCapacityError,
+  StorageUnavailableError,
+  createStorageRepository
+} from '../src/server/storage'
 import { FIXED_NOW, FakeStorage, deferred, makeCharade, makeLook, makeReply, makeStats } from './test-helpers'
 
 vi.mock('@dcl/sdk/server', () => ({
@@ -58,13 +70,14 @@ type CharadeMessage = {
   id: string
   answers: string[]
   answerIds: string[]
+  emotes: string[]
   look: ReturnType<typeof makeLook>
   isHouse: boolean
   recipient?: string
 }
 
 type ErrorMessage = { code: string }
-type PostedMessage = { charadeId: string; replyTo?: string }
+type PostedMessage = { requestId: string; charadeId: string; replyTo?: string; revision: number }
 
 type CharadeReplyMessage = ReturnType<typeof makeReply> & {
   charadeId: string
@@ -84,13 +97,25 @@ function nextCharadeRequest(exclude: string[] = []) {
   return { requestId: `next-${++nextRequestSequence}`, exclude }
 }
 
-function negotiate(protocol: ReturnType<typeof createServerProtocol>, address: string) {
+async function negotiate(protocol: ReturnType<typeof createServerProtocol>, address: string) {
+  await protocol.handleEnter(address)
   return protocol.handleHello({ displayName: address, isGuest: false, protocolVersion: PROTOCOL_VERSION }, address)
 }
 
 async function createHarness(
   overrides: Partial<
-    Pick<ServerProtocolOptions, 'snapshotLook' | 'ready' | 'flush' | 'now' | 'lookAttempts' | 'lookRetryMilliseconds'>
+    Pick<
+      ServerProtocolOptions,
+      | 'snapshotLook'
+      | 'ready'
+      | 'flush'
+      | 'now'
+      | 'lookAttempts'
+      | 'lookRetryMilliseconds'
+      | 'random'
+      | 'roundDurationMilliseconds'
+      | 'send'
+    >
   > = {},
   storage = new FakeStorage()
 ) {
@@ -101,6 +126,7 @@ async function createHarness(
   const sent: SentMessage[] = []
   const send: ProtocolSend = async (type, data, to) => {
     sent.push({ type, data, to })
+    await overrides.send?.(type, data, to)
   }
   const snapshotLook = overrides.snapshotLook ?? (async (address: string) => makeLook(address, 'Player'))
   const checkpoint = vi.fn(overrides.flush ?? (async () => undefined))
@@ -113,7 +139,9 @@ async function createHarness(
     now,
     instanceId: 'test-instance',
     lookAttempts: overrides.lookAttempts ?? 1,
-    lookRetryMilliseconds: overrides.lookRetryMilliseconds ?? 0
+    lookRetryMilliseconds: overrides.lookRetryMilliseconds ?? 0,
+    random: overrides.random ?? (() => 0.5),
+    roundDurationMilliseconds: overrides.roundDurationMilliseconds
   })
   return { storage, repository, state, sent, snapshotLook, checkpoint, protocol }
 }
@@ -138,21 +166,47 @@ async function serveAndGuess(harness: ProtocolHarness, address: string, charadeI
 }
 
 describe('server readiness and welcome', () => {
-  it('does not answer before hydration and never welcomes from ping before protocol negotiation', async () => {
+  it('contains rejected fire-and-forget handlers at the production callback boundary', async () => {
+    const failure = new StorageCapacityError('saturated')
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    runServerHandler(Promise.reject(failure))
+
+    await vi.waitFor(() => expect(errorSpy).toHaveBeenCalledWith('[protocol] handler failed', failure))
+    errorSpy.mockRestore()
+  })
+
+  it('requires an enter generation before protocol negotiation', async () => {
+    const snapshotLook = vi.fn(async () => makeLook('player'))
+    const { sent, protocol } = await createHarness({ snapshotLook })
+
+    await protocol.handleHello({ displayName: 'Player', isGuest: false, protocolVersion: PROTOCOL_VERSION }, 'player')
+
+    expect(snapshotLook).not.toHaveBeenCalled()
+    expect(messagesOfType(sent, 'error')).toEqual([
+      { type: 'error', data: { code: 'protocol-required' }, to: ['player'] }
+    ])
+  })
+
+  it('bounds pre-hydration ping work and ignores pings from players who are not present', async () => {
     const ready = deferred<void>()
-    const { sent, protocol } = await createHarness({ ready: ready.promise })
-    const ping = protocol.handlePing({ seq: 7 }, '0xPlayer')
+    let timestamp = FIXED_NOW
+    const { sent, protocol } = await createHarness({ ready: ready.promise, now: () => timestamp })
+    const pings = Array.from({ length: 20 }, (_, seq) => protocol.handlePing({ seq }, '0xPlayer'))
 
     expect(sent).toEqual([])
+    expect(protocol.resourceCounts().outstandingRequests).toBe(4)
     ready.resolve()
-    await ping
+    await Promise.all(pings)
 
-    expect(sent[0]).toEqual({ type: 'pong', data: { seq: 7 }, to: ['0xPlayer'] })
+    expect(sent).toEqual([])
+    expect(protocol.resourceCounts().outstandingRequests).toBe(0)
     expect(messagesOfType(sent, 'since')).toEqual([])
     expect(messagesOfType(sent, 'progress')).toEqual([])
     expect(messagesOfType(sent, 'audience')).toEqual([])
     expect(messagesOfType(sent, 'boards')).toEqual([])
 
+    timestamp += 2_000
     await negotiate(protocol, '0xPlayer')
 
     expect(messagesOfType(sent, 'progress')).toHaveLength(1)
@@ -205,6 +259,7 @@ describe('server readiness and welcome', () => {
     const stats = await state.getOrCreateStats('0xplayer', 'Server Name')
     stats.pending = { triedYou: 3, gotYou: 1, replies: 2, mail: 0 }
 
+    await protocol.handleEnter('0xPlayer')
     await protocol.handleHello(
       { displayName: 'Spoofed Client Name', isGuest: true, protocolVersion: PROTOCOL_VERSION },
       '0xPlayer'
@@ -222,6 +277,7 @@ describe('server readiness and welcome', () => {
         mail: 0,
         rank: 1,
         daily: { day: '2026-08-23', decoded: 0, authored: 0, stamped: false },
+        revision: 0,
         title: '',
         nextUnlock: { nextTitle: 'Understudy', requirement: 'Post your first charade', progress: 0 }
       }
@@ -240,10 +296,13 @@ describe('server readiness and welcome', () => {
     const snapshotLook = vi.fn(async () => makeLook('player'))
     const { sent, protocol } = await createHarness({ snapshotLook })
 
+    await protocol.handleEnter('player')
     await protocol.handleHello({ displayName: 'Player', isGuest: false, protocolVersion: 999 }, 'player')
 
     expect(snapshotLook).not.toHaveBeenCalled()
-    expect(sent).toEqual([{ type: 'error', data: { code: 'protocol-version' }, to: ['player'] }])
+    expect(messagesOfType(sent, 'error')).toEqual([
+      { type: 'error', data: { code: 'protocol-version' }, to: ['player'] }
+    ])
   })
 
   it('sends only readiness on enter and gates every stateful action until a valid hello', async () => {
@@ -333,6 +392,7 @@ describe('server readiness and welcome', () => {
         mail: 0,
         rank: 0,
         daily: { day: '2026-08-23', decoded: 0, authored: 0, stamped: false },
+        revision: 0,
         title: '',
         nextUnlock: { nextTitle: 'Understudy', requirement: 'Post your first charade', progress: 0 }
       }
@@ -340,6 +400,127 @@ describe('server readiness and welcome', () => {
     expect(messagesOfType(sent, 'audience')).toHaveLength(1)
     expect(messagesOfType(sent, 'boards')).toHaveLength(1)
     expect(messagesOfType(sent, 'error')).toEqual([])
+  })
+
+  it('does not deliver an old welcome failure to a re-entered session', async () => {
+    const firstLook = deferred<ReturnType<typeof makeLook> | null>()
+    const secondLook = deferred<ReturnType<typeof makeLook> | null>()
+    const snapshotLook = vi
+      .fn<ServerProtocolOptions['snapshotLook']>()
+      .mockReturnValueOnce(firstLook.promise)
+      .mockReturnValueOnce(secondLook.promise)
+    const { sent, protocol } = await createHarness({ snapshotLook })
+
+    const firstEnter = negotiate(protocol, 'player')
+    await vi.waitFor(() => expect(snapshotLook).toHaveBeenCalledOnce())
+    await protocol.handleLeave('player')
+    const secondEnter = negotiate(protocol, 'player')
+    await vi.waitFor(() => expect(snapshotLook).toHaveBeenCalledTimes(2))
+    firstLook.reject(new StorageUnavailableError(['player:stats']))
+    await firstEnter
+    secondLook.resolve(makeLook('player', 'Fresh Player'))
+    await secondEnter
+
+    expect(messagesOfType(sent, 'error')).toEqual([])
+  })
+
+  it.each(['playerTitle', 'audience', 'boards'] as const)(
+    'stops an old welcome after a delayed %s send when the address re-enters',
+    async (heldType) => {
+      const sendGate = deferred<void>()
+      let held = false
+      const send = vi.fn<ProtocolSend>(async (type, _data, to) => {
+        if (!held && type === heldType && to?.[0] === 'player') {
+          held = true
+          await sendGate.promise
+        }
+      })
+      const { state, sent, protocol } = await createHarness({ send })
+      state.upsertCharade(makeCharade('welcome-ghost', { guesses: { total: 2, correct: 0 } }))
+      await negotiate(protocol, 'other')
+
+      const firstWelcome = negotiate(protocol, 'player')
+      await vi.waitFor(() => expect(held).toBe(true))
+      await protocol.handleLeave('player')
+      await negotiate(protocol, 'player')
+      const messageCount = sent.length
+      sendGate.resolve()
+      await firstWelcome
+
+      expect(sent).toHaveLength(messageCount)
+      expect(messagesOfType(sent, 'error')).toEqual([])
+    }
+  )
+
+  it('does not let a stale post mutate state after its session leaves', async () => {
+    const postLook = deferred<ReturnType<typeof makeLook> | null>()
+    const snapshotLook = vi
+      .fn<ServerProtocolOptions['snapshotLook']>()
+      .mockResolvedValueOnce(makeLook('player', 'Welcome'))
+      .mockReturnValueOnce(postLook.promise)
+    const { state, sent, protocol } = await createHarness({ snapshotLook })
+    await negotiate(protocol, 'player')
+    sent.length = 0
+
+    const posting = protocol.handlePost(
+      { requestId: 'stale-post', phraseId: DECK[0].id, emotes: [...DECK[0].suggested] },
+      'player'
+    )
+    await vi.waitFor(() => expect(snapshotLook).toHaveBeenCalledTimes(2))
+    await protocol.handleLeave('player')
+    postLook.resolve(makeLook('player', 'Stale'))
+    await posting
+
+    expect(state.getPool()).toEqual([])
+    expect(messagesOfType(sent, 'posted')).toEqual([])
+  })
+
+  it('releases session generations and request buckets after repeated guest churn', async () => {
+    const snapshotLook = async (address: string) => ({ ...makeLook(address, address), isGuest: true })
+    const { protocol } = await createHarness({ snapshotLook })
+
+    for (let index = 0; index < 64; index += 1) {
+      const address = `guest-${index}`
+      await negotiate(protocol, address)
+      await protocol.handleLeave(address)
+    }
+
+    expect(protocol.resourceCounts()).toMatchObject({
+      present: 0,
+      sessionGenerations: 0,
+      completedRequests: 0,
+      nextRequests: 0,
+      outstandingRequests: 0,
+      requestBuckets: 0
+    })
+  })
+
+  it('cleans protocol and round state when leave persistence exceeds the dirty budget', async () => {
+    const { repository, protocol } = await createHarness()
+    await negotiate(protocol, 'player')
+    await repository.flushNow()
+    for (let index = 0; index < MAX_DIRTY_ENTRIES; index += 1) {
+      repository.markDirty(`saturated-${index}`, { index })
+    }
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await expect(protocol.handleLeave('player')).resolves.toBeUndefined()
+
+    expect(protocol.resourceCounts()).toMatchObject({ present: 0, sessionGenerations: 0, requestBuckets: 0 })
+    expect(protocol.rounds.hasPlayer('player')).toBe(false)
+    expect(errorSpy).toHaveBeenCalledWith('[storage] leave persistence failed', expect.any(StorageCapacityError))
+    errorSpy.mockRestore()
+  })
+
+  it('normalizes authoritative player names and reserves first-party labels', async () => {
+    const snapshotLook = async (address: string) => makeLook(address, '\u202eHOUSE GHOST\u202c')
+    const { state, sent, protocol } = await createHarness({ snapshotLook })
+
+    await negotiate(protocol, 'player')
+
+    expect(state.recentVisitors[0].name).toBe('PLAYER')
+    expect(JSON.stringify(sent)).not.toContain('\u202e')
+    expect(JSON.stringify(sent)).not.toContain('\u202c')
   })
 
   it('changes ready and serving preference exactly at UTC midnight without restarting', async () => {
@@ -382,9 +563,142 @@ describe('server readiness and welcome', () => {
     await protocol.handleNextCharade(nextCharadeRequest(), 'player')
     expect(dataOf<CharadeMessage>(messagesOfType(sent, 'charade')[0]).id).toBe('after-midnight')
   })
+
+  it('does not send rollover state to a session that leaves during a player-stats read', async () => {
+    let timestamp = Date.UTC(2026, 7, 23, 23, 59, 59, 999)
+    const { state, sent, protocol } = await createHarness({ now: () => timestamp })
+    await negotiate(protocol, 'player')
+    state.evictStats('player')
+    const statsGate = deferred<ReturnType<typeof makeStats>>()
+    const statsSpy = vi.spyOn(state, 'getOrCreateStats').mockReturnValueOnce(statsGate.promise)
+    timestamp += 1
+    sent.length = 0
+
+    const ping = protocol.handlePing({ seq: 99 }, 'player')
+    await vi.waitFor(() => expect(statsSpy).toHaveBeenCalledOnce())
+    await protocol.handleLeave('player')
+    statsGate.resolve(makeStats())
+    await ping
+
+    expect(sent).toEqual([])
+  })
 })
 
 describe('charade serving and guesses', () => {
+  it('rejects oversized identifiers and exclusion sets before constructing request state', async () => {
+    const { sent, protocol } = await createHarness()
+    await negotiate(protocol, 'player')
+    sent.length = 0
+    const oversized = 'x'.repeat(65)
+
+    await protocol.handleNextCharade({ requestId: oversized, exclude: [] }, 'player')
+    await protocol.handleNextCharade(
+      { requestId: 'bounded', exclude: Array.from({ length: 21 }, (_, i) => `id-${i}`) },
+      'player'
+    )
+    await protocol.handleNextCharade({ requestId: 'bounded-2', exclude: [oversized] }, 'player')
+    await protocol.handleGuess({ requestId: oversized, charadeId: 'charade', answerIndex: 0 }, 'player')
+    await protocol.handleGuess({ requestId: 'guess', charadeId: oversized, answerIndex: 0 }, 'player')
+    await protocol.handlePost({ requestId: oversized, phraseId: DECK[0].id, emotes: [...DECK[0].suggested] }, 'player')
+
+    expect(messagesOfType(sent, 'error').map((message) => dataOf<ErrorMessage>(message).code)).toEqual([
+      'invalid-next-charade',
+      'invalid-next-charade',
+      'invalid-next-charade',
+      'invalid-guess',
+      'invalid-guess',
+      'invalid-post'
+    ])
+    expect(messagesOfType(sent, 'charade')).toEqual([])
+  })
+
+  it('bounds and expires per-player next-charade selections', async () => {
+    let timestamp = FIXED_NOW
+    const { sent, protocol } = await createHarness({ now: () => timestamp })
+    await negotiate(protocol, 'player')
+    sent.length = 0
+
+    await protocol.handleNextCharade({ requestId: 'oldest', exclude: [] }, 'player')
+    const original = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!).id
+    for (let index = 0; index < 33; index += 1) {
+      timestamp += 1_000
+      await protocol.handleNextCharade({ requestId: `fill-${index}`, exclude: [] }, 'player')
+    }
+    timestamp += 1_000
+    await protocol.handleNextCharade({ requestId: 'oldest', exclude: [] }, 'player')
+    const afterEviction = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!).id
+    timestamp += 16_000
+    await protocol.handleNextCharade({ requestId: 'oldest', exclude: [] }, 'player')
+    const afterExpiry = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!).id
+
+    expect(afterEviction).not.toBe(original)
+    expect(afterExpiry).not.toBe(afterEviction)
+    expect(messagesOfType(sent, 'error')).toEqual([])
+  })
+
+  it('bounds completed replay entries and consumes every served answer after one accepted guess', async () => {
+    let timestamp = FIXED_NOW
+    const { sent, protocol } = await createHarness({ now: () => timestamp })
+    await negotiate(protocol, 'player')
+    sent.length = 0
+
+    await protocol.handleNextCharade({ requestId: 'first-next', exclude: [] }, 'player')
+    const first = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+    const firstGuess = { requestId: 'oldest-guess', charadeId: first.id, answerIndex: 0 }
+    await protocol.handleGuess(firstGuess, 'player')
+    for (let index = 0; index < 33; index += 1) {
+      timestamp += 1_000
+      await protocol.handleNextCharade({ requestId: `next-${index}`, exclude: [] }, 'player')
+      const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+      await protocol.handleGuess({ requestId: `guess-${index}`, charadeId: served.id, answerIndex: 0 }, 'player')
+    }
+    sent.length = 0
+
+    await protocol.handleGuess(firstGuess, 'player')
+
+    expect(messagesOfType(sent, 'reveal')).toEqual([])
+    expect(messagesOfType(sent, 'error')).toEqual([
+      { type: 'error', data: { code: 'charade-not-served' }, to: ['player'] }
+    ])
+  })
+
+  it('caps concurrent handlers per player while allowing admitted requests to finish', async () => {
+    const gate = deferred<void>()
+    const send = vi.fn<ProtocolSend>(async (type) => {
+      if (type === 'charade') await gate.promise
+    })
+    const { sent, protocol } = await createHarness({ send })
+    await negotiate(protocol, 'player')
+    sent.length = 0
+    send.mockClear()
+
+    const admitted = Array.from({ length: 4 }, (_, index) =>
+      protocol.handleNextCharade({ requestId: `pending-${index}`, exclude: [] }, 'player')
+    )
+    await vi.waitFor(() => expect(messagesOfType(sent, 'charade')).toHaveLength(4))
+    await protocol.handleNextCharade({ requestId: 'rejected-fifth', exclude: [] }, 'player')
+
+    expect(messagesOfType(sent, 'charade')).toHaveLength(4)
+    expect(messagesOfType(sent, 'error')).toEqual([])
+    gate.resolve()
+    await Promise.all(admitted)
+  })
+
+  it('rate-limits sustained valid request traffic per player', async () => {
+    let timestamp = FIXED_NOW
+    const { sent, protocol } = await createHarness({ now: () => timestamp })
+    await negotiate(protocol, 'player')
+    timestamp += 2_000
+    sent.length = 0
+
+    for (let index = 0; index < 17; index += 1) {
+      await protocol.handleNextCharade({ requestId: `burst-${index}`, exclude: [] }, 'player')
+    }
+
+    expect(messagesOfType(sent, 'charade')).toHaveLength(16)
+    expect(messagesOfType(sent, 'error')).toEqual([])
+  })
+
   it('coalesces retried next-charade request ids and echoes the id on the same selection', async () => {
     const { state, sent, protocol } = await createHarness()
     state.upsertCharade(makeCharade('first', { author: { address: 'author-a' } }))
@@ -403,7 +717,33 @@ describe('charade serving and guesses', () => {
     expect(replies.map((reply) => reply.requestId)).toEqual(['same-next-request', 'same-next-request'])
   })
 
-  it('keeps answers stable, records one guess, and replays a completed request without mutating twice', async () => {
+  it('does not send a charade reply from an old session after a delayed charade send', async () => {
+    const sendGate = deferred<void>()
+    let held = false
+    const send = vi.fn<ProtocolSend>(async (type, _data, to) => {
+      if (!held && type === 'charade' && to?.[0] === 'player') {
+        held = true
+        await sendGate.promise
+      }
+    })
+    const { state, sent, protocol } = await createHarness({ send })
+    state.upsertCharade(makeCharade('reply-stage', { reply: makeReply('replier', 'Replier') }))
+    await negotiate(protocol, 'player')
+    sent.length = 0
+
+    const serving = protocol.handleNextCharade(nextCharadeRequest(), 'player')
+    await vi.waitFor(() => expect(held).toBe(true))
+    await protocol.handleLeave('player')
+    await negotiate(protocol, 'player')
+    const messageCount = sent.length
+    sendGate.resolve()
+    await serving
+
+    expect(sent).toHaveLength(messageCount)
+    expect(messagesOfType(sent, 'charadeReply')).toEqual([])
+  })
+
+  it('uses private answer entropy, records one guess, and replays a completed request without mutating twice', async () => {
     const { state, sent, checkpoint, protocol } = await createHarness()
     const charade = makeCharade('stage-ghost', { author: { address: '0xAuthor', name: 'Author' } })
     state.upsertCharade(charade)
@@ -419,24 +759,26 @@ describe('charade serving and guesses', () => {
     checkpoint.mockClear()
     await protocol.handleNextCharade(nextCharadeRequest(), '0xPlayer')
     const secondServed = dataOf<CharadeMessage>(messagesOfType(sent, 'charade')[0])
-    expect(secondServed.answers).toEqual(firstServed.answers)
-
+    expect(secondServed.id).toBe(firstServed.id)
     const phrase = DECK.find((candidate) => candidate.id === charade.phraseId)!
     const answerIndex = secondServed.answers.indexOf(phrase.text)
-    const answerPhrases = secondServed.answerIds.map((answerId) =>
-      DECK.find((candidate) => candidate.id === answerId)
-    )
+    const answerPhrases = secondServed.answerIds.map((answerId) => DECK.find((candidate) => candidate.id === answerId))
     expect(answerPhrases.every((answerPhrase) => answerPhrase !== undefined)).toBe(true)
     expect(answerPhrases.map((answerPhrase) => answerPhrase!.text)).toEqual(secondServed.answers)
-    expect(new Set(answerPhrases.map((answerPhrase) => answerPhrase!.category))).toEqual(
-      new Set([phrase.category])
-    )
+    expect(new Set(answerPhrases.map((answerPhrase) => answerPhrase!.category))).toEqual(new Set([phrase.category]))
     expect(new Set(answerPhrases.map((answerPhrase) => answerPhrase!.theme))).toEqual(new Set([phrase.theme]))
-    expect(secondServed.answerIds).toEqual(firstServed.answerIds)
+    const publiclyRecovered = secondServed.answerIds.filter((candidateId) => {
+      const candidate = DECK.find((entry) => entry.id === candidateId)!
+      const decoys = pickDecoys(candidate.id, DECK, charade.id)
+      const ordered = shuffleSeeded([candidate, ...decoys], `${charade.id}:answers`).map((entry) => entry.id)
+      return ordered.join('|') === secondServed.answerIds.join('|')
+    })
+    expect(publiclyRecovered).toEqual([])
     const guess = { charadeId: charade.id, answerIndex, requestId: 'guess-1' }
     sent.length = 0
     await protocol.handleGuess(guess, '0xPlayer')
     const firstReveal = messagesOfType(sent, 'reveal')[0]
+    expect(firstReveal.data).toMatchObject({ requestId: 'guess-1', revision: 1 })
     await protocol.handleGuess(guess, '0xPlayer')
 
     expect(messagesOfType(sent, 'reveal')).toHaveLength(2)
@@ -447,7 +789,7 @@ describe('charade serving and guesses', () => {
     expect(checkpoint).toHaveBeenCalledOnce()
 
     await protocol.handleGuess({ ...guess, requestId: 'guess-2' }, '0xPlayer')
-    expect(dataOf<ErrorMessage>(messagesOfType(sent, 'error').at(-1)!).code).toBe('already-guessed')
+    expect(dataOf<ErrorMessage>(messagesOfType(sent, 'error').at(-1)!).code).toBe('charade-not-served')
     expect(state.getCharade(charade.id)?.guesses.total).toBe(1)
     expect(sent.every((message) => message.to?.[0] === '0xPlayer')).toBe(true)
   })
@@ -488,6 +830,79 @@ describe('charade serving and guesses', () => {
     expect(state.getCharade(charade.id)?.guesses.total).toBe(1)
   })
 
+  it('does not deliver a stale checkpoint error after the same address re-enters', async () => {
+    const checkpointGate = deferred<void>()
+    let holdAndFail = false
+    const flush = vi.fn(async () => {
+      if (!holdAndFail) return
+      await checkpointGate.promise
+      throw new StorageUnavailableError(['scene:required'])
+    })
+    const { state, sent, protocol } = await createHarness({ flush })
+    const charade = makeCharade('stale-checkpoint', { author: { address: 'author' } })
+    state.upsertCharade(charade)
+    await negotiate(protocol, 'player')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'player')
+    const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+    const phrase = DECK.find((candidate) => candidate.id === charade.phraseId)!
+    holdAndFail = true
+
+    const guessing = protocol.handleGuess(
+      {
+        charadeId: served.id,
+        answerIndex: served.answers.indexOf(phrase.text),
+        requestId: 'stale-checkpoint-guess'
+      },
+      'player'
+    )
+    await vi.waitFor(() => expect(flush).toHaveBeenCalledTimes(2))
+    holdAndFail = false
+    await protocol.handleLeave('player')
+    await negotiate(protocol, 'player')
+    sent.length = 0
+    checkpointGate.resolve()
+    await guessing
+
+    expect(sent).toEqual([])
+  })
+
+  it('keeps a served guess retryable when the persistent author record is corrupt', async () => {
+    const author = `0x${'a'.repeat(40)}`
+    const decoder = `0x${'b'.repeat(40)}`
+    const { storage, state, sent, protocol } = await createHarness()
+    const charade = makeCharade('corrupt-guess-author', { author: { address: author, name: 'Author' } })
+    state.upsertCharade(charade)
+    storage.players.set(author, new Map([[PLAYER_STATS_KEY, '{']]))
+    await negotiate(protocol, decoder)
+    await protocol.handleNextCharade(nextCharadeRequest(), decoder)
+    const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+    const phrase = DECK.find((candidate) => candidate.id === charade.phraseId)!
+    const guess = {
+      charadeId: served.id,
+      answerIndex: served.answers.indexOf(phrase.text),
+      requestId: 'corrupt-author-guess'
+    }
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    sent.length = 0
+
+    await protocol.handleGuess(guess, decoder)
+
+    expect(messagesOfType(sent, 'error').map((message) => dataOf<ErrorMessage>(message).code)).toEqual([
+      'storage-unavailable'
+    ])
+    expect(messagesOfType(sent, 'reveal')).toEqual([])
+    expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 0, correct: 0 })
+    expect(state.playerStats.get(decoder)?.seen).not.toContain(charade.id)
+
+    storage.putPlayerJSON(author, PLAYER_STATS_KEY, makeStats({ name: 'Author' }))
+    sent.length = 0
+    await protocol.handleGuess(guess, decoder)
+    errorSpy.mockRestore()
+
+    expect(messagesOfType(sent, 'reveal')).toHaveLength(1)
+    expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 1, correct: 1 })
+  })
+
   it('rejects invalid guesses and guesses for charades not served to that player', async () => {
     const { state, sent, protocol } = await createHarness()
     state.upsertCharade(makeCharade('unserved'))
@@ -511,11 +926,13 @@ describe('charade serving and guesses', () => {
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       await protocol.handleNextCharade(nextCharadeRequest(), 'player')
       const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
-      const phrase = DECK.find((candidate) => candidate.id === state.getCharade(served.id)?.phraseId)!
+      expect(served.id).toMatch(/^house-[a-f0-9]{16}$/u)
+      expect(HOUSE_CHARADES.map((charade) => charade.id)).not.toContain(served.id)
+      expect(state.getCharade(served.id)).toBeNull()
       await protocol.handleGuess(
         {
           charadeId: served.id,
-          answerIndex: served.answers.indexOf(phrase.text),
+          answerIndex: 0,
           requestId: `house-${attempt}`
         },
         'player'
@@ -525,6 +942,20 @@ describe('charade serving and guesses', () => {
     expect(messagesOfType(sent, 'reveal')).toHaveLength(2)
     expect(messagesOfType(sent, 'error')).toEqual([])
     expect(state.playerStats.get('player')).toMatchObject({ decoded: 0, correct: 0, seen: [] })
+  })
+
+  it('skips stored charades with unknown phrases and immediately serves an opaque house fallback', async () => {
+    const { state, sent, protocol } = await createHarness()
+    state.upsertCharade(makeCharade('invalid-stored', { phraseId: 'removed-phrase' }))
+    await negotiate(protocol, 'player')
+    sent.length = 0
+
+    await protocol.handleNextCharade(nextCharadeRequest(), 'player')
+
+    const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+    expect(served).toMatchObject({ isHouse: true })
+    expect(served.id).not.toBe('invalid-stored')
+    expect(messagesOfType(sent, 'error')).toEqual([])
   })
 
   it('forgets served answers and completed requests when a player leaves', async () => {
@@ -555,6 +986,42 @@ describe('charade serving and guesses', () => {
 })
 
 describe('authoring protocol', () => {
+  it('keeps guest guesses and authoring out of persistent global effects', async () => {
+    const snapshotLook = async (address: string) => ({ ...makeLook(address, 'Guest'), isGuest: true })
+    const { state, sent, protocol } = await createHarness({ snapshotLook })
+    const charade = makeCharade('stable-charade', { author: { address: 'author', name: 'Author' } })
+    state.upsertCharade(charade)
+    await negotiate(protocol, 'guest-session')
+    sent.length = 0
+
+    await protocol.handleNextCharade(nextCharadeRequest(), 'guest-session')
+    const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+    const phrase = DECK.find((candidate) => candidate.id === charade.phraseId)!
+    await protocol.handleGuess(
+      {
+        requestId: 'guest-guess',
+        charadeId: served.id,
+        answerIndex: served.answers.indexOf(phrase.text)
+      },
+      'guest-session'
+    )
+    await protocol.handlePost(
+      { requestId: 'guest-post', phraseId: DECK[1].id, emotes: [...DECK[1].suggested] },
+      'guest-session'
+    )
+    await protocol.handleReact({ kind: 'applause' }, 'guest-session')
+
+    expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 0, correct: 0 })
+    expect(state.playerStats.get('guest-session')).toMatchObject({ decoded: 0, correct: 0, authoredCount: 0 })
+    expect(state.playerStats.has('author')).toBe(false)
+    expect(state.boards).toEqual({ decoders: [], hardest: [] })
+    expect(state.getPool().map((entry) => entry.id)).toEqual([charade.id])
+    expect(messagesOfType(sent, 'error').map((message) => dataOf<ErrorMessage>(message).code)).toEqual([
+      'post-guest',
+      'reaction-guest'
+    ])
+  })
+
   it('withholds posted acknowledgement until a failed checkpoint succeeds on retry', async () => {
     let failCheckpoint = false
     const flush = vi.fn(async () => {
@@ -583,6 +1050,31 @@ describe('authoring protocol', () => {
     expect(state.playerStats.get('player')?.authoredCount).toBe(1)
   })
 
+  it('returns server-busy without progression when the durable charade budget is full', async () => {
+    const { state, sent, protocol } = await createHarness()
+    for (let index = 0; index < 128; index += 1) {
+      expect(
+        state.upsertCharade(
+          makeCharade(`capacity-${index}`, {
+            author: { address: `author-${index}` },
+            createdAt: FIXED_NOW + index
+          })
+        )
+      ).toBe(true)
+    }
+    await negotiate(protocol, 'player')
+    sent.length = 0
+
+    await protocol.handlePost(
+      { requestId: 'over-capacity', phraseId: DECK[0].id, emotes: [...DECK[0].suggested] },
+      'player'
+    )
+
+    expect(messagesOfType(sent, 'posted')).toEqual([])
+    expect(messagesOfType(sent, 'error')).toEqual([{ type: 'error', data: { code: 'server-busy' }, to: ['player'] }])
+    expect(state.playerStats.get('player')).toMatchObject({ authored: [], authoredCount: 0, revision: 0 })
+  })
+
   it('validates phrase, emote tuple, and request id before snapshotting', async () => {
     const snapshotLook = vi.fn(async (address: string) => makeLook(address))
     const { state, sent, protocol } = await createHarness({ snapshotLook })
@@ -596,9 +1088,14 @@ describe('authoring protocol', () => {
       { phraseId: DECK[0].id, emotes: ['wave', 'clap', 'invalid'], requestId: 'three' },
       'player'
     )
+    await protocol.handlePost(
+      { phraseId: DECK[0].id, emotes: ['wave', 'wave', 'clap'], requestId: 'duplicate' },
+      'player'
+    )
     await protocol.handlePost({ phraseId: DECK[0].id, emotes: ['wave', 'clap', 'dab'], requestId: '' }, 'player')
 
     expect(messagesOfType(sent, 'error').map((message) => dataOf<ErrorMessage>(message).code)).toEqual([
+      'invalid-post',
       'invalid-post',
       'invalid-post',
       'invalid-post',
@@ -624,6 +1121,7 @@ describe('authoring protocol', () => {
 
     await protocol.handlePost(post, '0xPlayer')
     const firstPosted = dataOf<PostedMessage>(messagesOfType(sent, 'posted')[0])
+    expect(firstPosted).toMatchObject({ requestId: 'post-1', revision: 1 })
     const stored = state.getCharade(firstPosted.charadeId)!
     expect(stored.author).toMatchObject({ address: '0xPlayer', name: 'Fresh Post Look' })
     expect(stored.author.wearables).toHaveLength(12)
@@ -743,7 +1241,68 @@ describe('authoring protocol', () => {
 describe('Ghost Mail protocol', () => {
   const senderAddress = `0x${'1'.repeat(40)}`
   const recipientAddress = `0x${'2'.repeat(40)}`
+
+  it('never promotes a solo recipient\'s private mail into a shared live round', async () => {
+    const observerAddress = `0x${'3'.repeat(40)}`
+    const snapshotLook = async (address: string) => makeLook(address, address === recipientAddress ? 'Recipient' : 'Observer')
+    const { state, sent, protocol } = await createHarness({ snapshotLook })
+    await negotiate(protocol, recipientAddress)
+    await protocol.handleNextCharade(nextCharadeRequest(), recipientAddress)
+    const mail = makeCharade('private-live-cache', {
+      author: { address: senderAddress, name: 'Sender' },
+      recipient: recipientAddress
+    })
+    state.upsertCharade(mail)
+    sent.length = 0
+    await protocol.handleNextCharade(nextCharadeRequest(), recipientAddress)
+    expect(dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)).toMatchObject({
+      id: mail.id,
+      recipient: recipientAddress
+    })
+
+    await negotiate(protocol, observerAddress)
+    sent.length = 0
+    await protocol.handleNextCharade(nextCharadeRequest(), observerAddress)
+
+    const observerCharade = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+    expect(observerCharade.id).not.toBe(mail.id)
+    expect(observerCharade.recipient).toBeUndefined()
+    expect(protocol.rounds.current?.charadeId).not.toBe(mail.id)
+  })
   const otherAddress = `0x${'3'.repeat(40)}`
+
+  it('loads recipient stats before mutation and never reports an undurable mail retry as successful', async () => {
+    const storage = new FakeStorage()
+    const snapshotLook = async (address: string) =>
+      makeLook(address, address === senderAddress ? 'Sender' : 'Recipient')
+    const harness = await createHarness({ snapshotLook }, storage)
+    harness.state.recentVisitors = [{ ...makeLook(recipientAddress, 'Recipient'), lastSeenAt: FIXED_NOW }]
+    await negotiate(harness.protocol, senderAddress)
+    harness.sent.length = 0
+    storage.players.set(recipientAddress, new Map([[PLAYER_STATS_KEY, '{']]))
+    const post = {
+      requestId: 'staged-mail',
+      phraseId: DECK[0].id,
+      emotes: [...DECK[0].suggested],
+      recipient: recipientAddress
+    }
+
+    await harness.protocol.handlePost(post, senderAddress)
+
+    expect(harness.state.getPlayerCharades()).toEqual([])
+    expect(harness.state.playerStats.get(senderAddress)).toMatchObject({ authoredCount: 0, revision: 0 })
+    expect(messagesOfType(harness.sent, 'posted')).toEqual([])
+    expect(messagesOfType(harness.sent, 'error')).toEqual([
+      { type: 'error', data: { code: 'storage-unavailable' }, to: [senderAddress] }
+    ])
+
+    storage.putPlayerJSON(recipientAddress, PLAYER_STATS_KEY, makeStats({ name: 'Recipient' }))
+    harness.sent.length = 0
+    await harness.protocol.handlePost(post, senderAddress)
+
+    expect(messagesOfType(harness.sent, 'posted')).toHaveLength(1)
+    expect(harness.state.getPlayerCharades()).toHaveLength(1)
+  })
 
   it('delivers persisted mail only to its real recipient and returns the answer-back to its sender', async () => {
     const storage = new FakeStorage()
@@ -782,6 +1341,14 @@ describe('Ghost Mail protocol', () => {
     expect(first.state.getCharade(mailId)?.reply).toBeUndefined()
     expect(first.state.getPool().map((charade) => charade.id)).toEqual(['recipient-performance'])
     expect(first.state.getPlayerCharades().map((charade) => charade.id)).toContain(mailId)
+    expect(first.state.playerStats.get(senderAddress)).toMatchObject({
+      authored: [],
+      authoredCount: 0,
+      revision: 0,
+      daily: { authored: 0, stamped: false },
+      title: ''
+    })
+    expect(posted).toMatchObject({ stampAwarded: false, revision: 0, titleUnlocked: false })
     await first.repository.flushNow()
 
     const otherVisit = await createHarness({ snapshotLook }, storage)
@@ -823,6 +1390,14 @@ describe('Ghost Mail protocol', () => {
       },
       recipientAddress
     )
+    expect(recipientVisit.state.playerStats.get(recipientAddress)).toMatchObject({
+      decoded: 0,
+      correct: 0,
+      revision: 0,
+      daily: { decoded: 0, stamped: false }
+    })
+    expect(recipientVisit.state.getCharade(mailId)?.guesses).toEqual({ total: 0, correct: 0 })
+    expect(recipientVisit.state.boards.decoders).toEqual([])
     await recipientVisit.protocol.handlePost(
       {
         phraseId: mailedPhrase.id,
@@ -908,6 +1483,7 @@ describe('answer-back protocol', () => {
     await protocol.handlePost({ ...base, phraseId: '', requestId: 'empty-phrase' }, 'player')
     await protocol.handlePost({ ...base, emotes: ['wave', 'clap'], requestId: 'short-emotes' }, 'player')
     await protocol.handlePost({ ...base, emotes: ['wave', 'clap', 'invalid'], requestId: 'bad-emote' }, 'player')
+    await protocol.handlePost({ ...base, emotes: ['wave', 'wave', 'clap'], requestId: 'duplicate-emote' }, 'player')
     await protocol.handlePost({ ...base, replyTo: 'missing', requestId: 'missing-target' }, 'player')
     await protocol.handlePost(
       { ...base, phraseId: HOUSE_CHARADE.phraseId, replyTo: HOUSE_CHARADE.id, requestId: 'house-target' },
@@ -924,6 +1500,7 @@ describe('answer-back protocol', () => {
       'invalid-reply',
       'invalid-reply',
       'invalid-reply',
+      'invalid-reply',
       'reply-not-eligible',
       'reply-not-eligible',
       'reply-not-eligible',
@@ -933,6 +1510,41 @@ describe('answer-back protocol', () => {
     expect(snapshotLook).not.toHaveBeenCalled()
     expect(checkpoint).not.toHaveBeenCalled()
     expect(state.getCharade(target.id)?.reply).toBeUndefined()
+  })
+
+  it('keeps an answer-back retryable when the persistent author record is corrupt', async () => {
+    const author = `0x${'a'.repeat(40)}`
+    const replier = `0x${'b'.repeat(40)}`
+    const { storage, state, sent, protocol } = await createHarness()
+    const target = makeCharade('corrupt-reply-author', { author: { address: author, name: 'Author' } })
+    state.upsertCharade(target)
+    storage.players.set(author, new Map([[PLAYER_STATS_KEY, '{']]))
+    await negotiate(protocol, replier)
+    state.playerStats.get(replier)!.seen.push(target.id)
+    const reply = {
+      phraseId: target.phraseId,
+      emotes: [...DECK[0].suggested],
+      requestId: 'corrupt-author-reply',
+      replyTo: target.id
+    }
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    sent.length = 0
+
+    await protocol.handlePost(reply, replier)
+
+    expect(messagesOfType(sent, 'error').map((message) => dataOf<ErrorMessage>(message).code)).toEqual([
+      'storage-unavailable'
+    ])
+    expect(messagesOfType(sent, 'posted')).toEqual([])
+    expect(state.getCharade(target.id)?.reply).toBeUndefined()
+
+    storage.putPlayerJSON(author, PLAYER_STATS_KEY, makeStats({ name: 'Author' }))
+    sent.length = 0
+    await protocol.handlePost(reply, replier)
+    errorSpy.mockRestore()
+
+    expect(messagesOfType(sent, 'posted')).toHaveLength(1)
+    expect(state.getCharade(target.id)?.reply?.address).toBe(replier)
   })
 
   it('atomically accepts one of two concurrent replies and rejects the other as taken', async () => {
@@ -1041,6 +1653,7 @@ describe('live protocol', () => {
     let timestamp = FIXED_NOW
     const snapshotLook = async (address: string) => makeLook(address, address)
     const { state, sent, protocol } = await createHarness({ snapshotLook, now: () => timestamp })
+    state.upsertCharade(makeCharade('reaction-live', { author: { address: 'outside' } }))
     await negotiate(protocol, 'alice')
     await negotiate(protocol, 'bob')
     await negotiate(protocol, 'carol')
@@ -1079,6 +1692,7 @@ describe('live protocol', () => {
     let timestamp = FIXED_NOW
     const snapshotLook = async (address: string) => makeLook(address, address)
     const { state, sent, protocol } = await createHarness({ snapshotLook, now: () => timestamp })
+    state.upsertCharade(makeCharade('reaction-rate-live', { author: { address: 'outside' } }))
     await negotiate(protocol, 'alice')
     await negotiate(protocol, 'bob')
     await negotiate(protocol, 'carol')
@@ -1168,7 +1782,11 @@ describe('live protocol', () => {
     )
 
     expect(messagesOfType(sent, 'roundWinner')).toEqual([
-      { type: 'roundWinner', data: { address: 'alice', name: 'Alice' }, to: undefined }
+      {
+        type: 'roundWinner',
+        data: { roundId: '1', charadeId: charade.id, address: 'alice', name: 'Alice' },
+        to: undefined
+      }
     ])
     expect(messagesOfType(sent, 'reveal')).toHaveLength(1)
     expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 1, correct: 1 })
@@ -1187,7 +1805,7 @@ describe('live protocol', () => {
     await protocol.handleNextCharade(nextCharadeRequest(), 'alice')
     await protocol.handleNextCharade(nextCharadeRequest(), 'bob')
     expect(messagesOfType(sent, 'roundStart')).toEqual([
-      { type: 'roundStart', data: { charadeId: charade.id }, to: undefined }
+      { type: 'roundStart', data: { roundId: '1', charadeId: charade.id }, to: undefined }
     ])
     const served = messagesOfType(sent, 'charade').map((message) => dataOf<CharadeMessage>(message))
     expect(served.map((message) => message.id)).toEqual([charade.id, charade.id])
@@ -1203,13 +1821,17 @@ describe('live protocol', () => {
     await protocol.handleRoundGuess({ charadeId: charade.id, answerIndex: correctIndex, requestId: 'bob-guess' }, 'bob')
 
     expect(messagesOfType(sent, 'roundWinner')).toEqual([
-      { type: 'roundWinner', data: { address: 'alice', name: 'Alice' }, to: undefined }
+      {
+        type: 'roundWinner',
+        data: { roundId: '1', charadeId: charade.id, address: 'alice', name: 'Alice' },
+        to: undefined
+      }
     ])
     expect(messagesOfType(sent, 'reveal')).toHaveLength(2)
     expect(protocol.rounds.current?.winner).toEqual({ address: 'alice', name: 'Alice' })
   })
 
-  it('reveals house guesses across consecutive varied fallback rounds', async () => {
+  it('reveals house guesses without awarding a deterministic live-round winner', async () => {
     const snapshotLook = async (address: string) => makeLook(address, address)
     const { state, sent, protocol } = await createHarness({ snapshotLook })
     await negotiate(protocol, 'alice')
@@ -1219,34 +1841,24 @@ describe('live protocol', () => {
     await protocol.handleNextCharade(nextCharadeRequest(), 'alice')
     await protocol.handleNextCharade(nextCharadeRequest(), 'bob')
     const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade')[0])
-    const phrase = DECK.find((candidate) => candidate.id === state.getCharade(served.id)?.phraseId)!
-    const correctIndex = served.answers.indexOf(phrase.text)
-    const wrongIndex = (correctIndex + 1) % served.answers.length
-
+    const firstHouse = HOUSE_CHARADES.find((charade) => charade.emotes.join(':') === served.emotes.join(':'))!
+    const firstCorrect = served.answerIds.indexOf(firstHouse.phraseId)
     await protocol.handleRoundGuess(
-      { charadeId: served.id, answerIndex: correctIndex, requestId: 'alice-first' },
+      { charadeId: served.id, answerIndex: firstCorrect, requestId: 'alice-first' },
       'alice'
     )
-    await protocol.handleRoundGuess({ charadeId: served.id, answerIndex: wrongIndex, requestId: 'bob-first' }, 'bob')
+    await protocol.handleRoundGuess({ charadeId: served.id, answerIndex: 1, requestId: 'bob-first' }, 'bob')
     await protocol.handleNextCharade(nextCharadeRequest([served.id]), 'alice')
     await protocol.handleNextCharade(nextCharadeRequest([served.id]), 'bob')
     const nextServed = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
-    const nextPhrase = DECK.find((candidate) => candidate.id === state.getCharade(nextServed.id)?.phraseId)!
-    const nextCorrectIndex = nextServed.answers.indexOf(nextPhrase.text)
-    const nextWrongIndex = (nextCorrectIndex + 1) % nextServed.answers.length
     sent.length = 0
 
-    await protocol.handleRoundGuess(
-      { charadeId: nextServed.id, answerIndex: nextWrongIndex, requestId: 'bob-second' },
-      'bob'
-    )
-    await protocol.handleRoundGuess(
-      { charadeId: nextServed.id, answerIndex: nextCorrectIndex, requestId: 'alice-second' },
-      'alice'
-    )
+    await protocol.handleRoundGuess({ charadeId: nextServed.id, answerIndex: 0, requestId: 'bob-second' }, 'bob')
+    await protocol.handleRoundGuess({ charadeId: nextServed.id, answerIndex: 1, requestId: 'alice-second' }, 'alice')
 
     expect(nextServed.id).not.toBe(served.id)
     expect(messagesOfType(sent, 'reveal')).toHaveLength(2)
+    expect(messagesOfType(sent, 'roundWinner')).toEqual([])
     expect(messagesOfType(sent, 'error')).toEqual([])
   })
 
@@ -1283,6 +1895,38 @@ describe('live protocol', () => {
     const nextRound = messagesOfType(sent, 'charade').map((message) => dataOf<CharadeMessage>(message).id)
     expect(nextRound).toHaveLength(2)
     expect(nextRound.every((id) => id !== firstRound.id)).toBe(true)
+  })
+
+  it('reselects a solo charade already guessed before a second player starts the round', async () => {
+    const snapshotLook = async (address: string) => makeLook(address, address)
+    const { state, sent, protocol } = await createHarness({ snapshotLook })
+    const first = makeCharade('solo-first', { author: { address: 'outside-a' }, createdAt: FIXED_NOW - 2 })
+    const second = makeCharade('solo-second', { author: { address: 'outside-b' }, createdAt: FIXED_NOW - 1 })
+    state.upsertCharade(first)
+    state.upsertCharade(second)
+    await negotiate(protocol, 'alice')
+    sent.length = 0
+    await protocol.handleNextCharade(nextCharadeRequest(), 'alice')
+    const solo = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+    const phrase = DECK.find((candidate) => candidate.id === first.phraseId)!
+    await protocol.handleGuess(
+      {
+        charadeId: solo.id,
+        answerIndex: solo.answers.indexOf(phrase.text),
+        requestId: 'solo-guess'
+      },
+      'alice'
+    )
+
+    await negotiate(protocol, 'bob')
+    sent.length = 0
+    await protocol.handleNextCharade(nextCharadeRequest(), 'bob')
+
+    expect(dataOf<CharadeMessage>(messagesOfType(sent, 'charade')[0]).id).toBe(second.id)
+    expect(protocol.rounds.current?.charadeId).toBe(second.id)
+    expect(messagesOfType(sent, 'roundStart')).toEqual([
+      { type: 'roundStart', data: { roundId: '1', charadeId: second.id }, to: undefined }
+    ])
   })
 
   it('serves a fresh charade to a player who already guessed while the partner is idle', async () => {
@@ -1505,13 +2149,13 @@ describe('live protocol', () => {
     expect(Object.values(wireMeasurements).every((size) => size < 4_000)).toBe(true)
     expect(inlineCharade).toBeGreaterThan(4_000)
     expect({ ...wireMeasurements, inlineCharade }).toEqual({
-      charade: 2_497,
-      mailCharade: 2_554,
+      charade: 2_485,
+      mailCharade: 2_542,
       charadeReply: 2_278,
-      since: 231,
+      since: 244,
       boards: 3_263,
       ready: 110,
-      inlineCharade: 4_747
+      inlineCharade: 4_735
     })
   })
 

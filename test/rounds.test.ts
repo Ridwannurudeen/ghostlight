@@ -17,7 +17,7 @@ describe('live rounds', () => {
     expect(rounds.isLive).toBe(true)
     expect(rounds.start('charade-1')).toBe(true)
     expect(send).toHaveBeenCalledOnce()
-    expect(send).toHaveBeenCalledWith('roundStart', { charadeId: 'charade-1' })
+    expect(send).toHaveBeenCalledWith('roundStart', { roundId: '1', charadeId: 'charade-1' })
   })
 
   it('deduplicates player addresses without regard to case', () => {
@@ -39,7 +39,7 @@ describe('live rounds', () => {
     expect(rounds.guess('alice', 'stale', true)).toEqual({ accepted: false, winner: null })
     expect(rounds.guess('ALICE', 'active', false)).toEqual({ accepted: true, winner: null })
     expect(rounds.guess('alice', 'active', true)).toEqual({ accepted: false, winner: null })
-    expect(rounds.current).toEqual({ charadeId: 'active', guessed: ['alice'], winner: null })
+    expect(rounds.current).toEqual({ roundId: '1', charadeId: 'active', guessed: ['alice'], winner: null })
   })
 
   it('settles after every present player guesses without a winner', () => {
@@ -82,12 +82,17 @@ describe('live rounds', () => {
       accepted: true,
       winner: { address: 'bob', name: 'Bob' }
     })
-    expect(rounds.guess('alice', 'race', true)).toEqual({ accepted: true, winner: null })
-    expect(rounds.guess('carol', 'race', true)).toEqual({ accepted: true, winner: null })
+    expect(rounds.guess('alice', 'race', true)).toEqual({ accepted: false, winner: null })
+    expect(rounds.guess('carol', 'race', true)).toEqual({ accepted: false, winner: null })
     expect(rounds.current?.winner).toEqual({ address: 'bob', name: 'Bob' })
     expect(rounds.isSettled).toBe(true)
     expect(send).toHaveBeenCalledOnce()
-    expect(send).toHaveBeenCalledWith('roundWinner', { address: 'bob', name: 'Bob' })
+    expect(send).toHaveBeenCalledWith('roundWinner', {
+      roundId: '1',
+      charadeId: 'race',
+      address: 'bob',
+      name: 'Bob'
+    })
   })
 
   it('prevents duplicate starts before a winner and permits the next round after completion', () => {
@@ -100,12 +105,12 @@ describe('live rounds', () => {
     expect(rounds.start('same')).toBe(false)
     rounds.guess('alice', 'same', true)
     expect(rounds.start('same')).toBe(true)
-    expect(rounds.current).toEqual({ charadeId: 'same', guessed: [], winner: null })
+    expect(rounds.current).toEqual({ roundId: '2', charadeId: 'same', guessed: [], winner: null })
 
     rounds.guess('alice', 'same', false)
     rounds.guess('bob', 'same', false)
     expect(rounds.start('same')).toBe(true)
-    expect(rounds.current).toEqual({ charadeId: 'same', guessed: [], winner: null })
+    expect(rounds.current).toEqual({ roundId: '3', charadeId: 'same', guessed: [], winner: null })
   })
 
   it('ends the active round when attendance falls below two', () => {
@@ -123,6 +128,36 @@ describe('live rounds', () => {
     expect(rounds.current).toBeNull()
     expect(rounds.guess('alice', 'charade', true)).toEqual({ accepted: false, winner: null })
     expect(send).toHaveBeenCalledOnce()
-    expect(send).toHaveBeenCalledWith('roundStart', { charadeId: '' })
+    expect(send).toHaveBeenCalledWith('roundStart', { roundId: '2', charadeId: '' })
+
+    rounds.enter({ address: 'bob', name: 'Bob' })
+    expect(rounds.start('next')).toBe(true)
+    expect(send).toHaveBeenLastCalledWith('roundStart', { roundId: '3', charadeId: 'next' })
+  })
+
+  it('expires an abstained or idle participant without letting a late arrival extend the deadline', () => {
+    let now = 1_000
+    const rounds = new LiveRounds(
+      () => {},
+      () => now,
+      5_000
+    )
+    rounds.enter({ address: 'alice', name: 'Alice' })
+    rounds.enter({ address: 'bob', name: 'Bob' })
+    rounds.start('timed')
+    const roundId = rounds.current!.roundId
+
+    now = 4_000
+    rounds.enter({ address: 'carol', name: 'Carol' })
+    expect(rounds.isParticipant('carol')).toBe(false)
+    expect(rounds.guess('carol', 'timed', true)).toEqual({ accepted: false, winner: null })
+    expect(rounds.abstain('alice', roundId)).toBe(true)
+    expect(rounds.isSettled).toBe(false)
+
+    now = 6_000
+    expect(rounds.isSettled).toBe(true)
+    expect(rounds.start('next')).toBe(true)
+    expect(rounds.current).toMatchObject({ roundId: '2', charadeId: 'next', guessed: [] })
+    expect(rounds.isParticipant('carol')).toBe(true)
   })
 })

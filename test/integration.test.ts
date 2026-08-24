@@ -415,7 +415,8 @@ describe('full experience integration', () => {
       now: () => FIXED_NOW,
       instanceId: 'integration-server',
       lookAttempts: 1,
-      lookRetryMilliseconds: 0
+      lookRetryMilliseconds: 0,
+      random: () => 0.5
     })
     room.connectProtocol(protocol)
     room.connectClient(playerAddress, runtime)
@@ -438,6 +439,7 @@ describe('full experience integration', () => {
 
     readyGate.resolve()
     runtime.tick(2)
+    await protocol.handleEnter(playerAddress)
     await room.pumpClient(playerAddress)
     expect(room.messagesFrom(playerAddress).filter((message) => message.type === 'hello')).toHaveLength(9)
     expect(runtime.getState()).toMatchObject({ ready: true, transportReady: true, screen: 'decode' })
@@ -545,6 +547,7 @@ describe('full experience integration', () => {
       }
     })
     room.connectClient(replierAddress, replierRuntime)
+    await protocol.handleEnter(replierAddress)
     replierTransportReady = true
     replierRuntime.tick(0)
     await room.pumpClient(replierAddress)
