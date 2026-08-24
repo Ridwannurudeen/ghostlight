@@ -53,6 +53,7 @@ export type DailyProgress = {
 
 export type PlayerStats = {
   v: number
+  revision: number
   name: string
   decoded: number
   correct: number

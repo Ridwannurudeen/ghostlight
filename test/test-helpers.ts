@@ -211,6 +211,7 @@ export function makeCharade(
 export function makeStats(overrides: Partial<PlayerStats> = {}): PlayerStats {
   return {
     v: STORAGE_SCHEMA_VERSION,
+    revision: 0,
     name: 'Player',
     decoded: 0,
     correct: 0,

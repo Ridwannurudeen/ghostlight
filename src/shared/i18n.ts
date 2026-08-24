@@ -80,6 +80,9 @@ const ENGLISH_COPY = {
   'posted.boards': "TODAY'S BOARDS",
   'posted.decodeAnother': 'DECODE ANOTHER',
   'mail.choose': 'Choose a real recent performer for one private Ghost Mail.',
+  'mail.confirm': 'Confirm the exact wallet before composing private Ghost Mail.',
+  'mail.confirmAction': 'CONFIRM RECIPIENT',
+  'mail.chooseDifferent': 'CHOOSE SOMEONE ELSE',
   'settings.title': 'Settings and accessibility apply for this visit.',
   'settings.sound': 'SOUND: {value}',
   'settings.volume': 'VOLUME: {value}',
@@ -143,6 +146,7 @@ const ENGLISH_COPY = {
   'emote.tik': 'TIK',
   'emote.headexplode': 'MIND BLOWN',
   'error.storage-unavailable': 'The stage could not save your progress. Please try again.',
+  'error.server-busy': 'The stage is full. Please try again.',
   'error.protocol-required': 'Reconnect to join this show.',
   'error.protocol-version': 'This show needs a newer client version.',
   'error.look-not-ready': 'Your avatar is still getting ready.',
@@ -155,12 +159,14 @@ const ENGLISH_COPY = {
   'error.reply-not-eligible': 'That ghost cannot receive an answer-back.',
   'error.reply-taken': 'Someone already answered this ghost.',
   'error.invalid-post': 'That performance could not be posted.',
+  'error.post-guest': 'Sign in with a profile to post a performance.',
   'error.mail-guest': 'Sign in with a profile to use Ghost Mail.',
   'error.mail-recipient-invalid': 'Choose a valid Ghost Mail recipient.',
   'error.mail-recipient-unknown': 'That Ghost Mail recipient is no longer available.',
   'error.post-rate-limited': 'Please wait before posting another performance.',
   'error.invalid-reaction': 'That reaction could not be sent.',
   'error.reaction-rate-limited': 'Please wait before sending another reaction.',
+  'error.reaction-guest': 'Sign in with a profile to send live reactions.',
   'error.reaction_failed': 'That reaction did not reach the audience.',
   'error.copy_failed': 'The invitation could not be copied.',
   'error.request_timeout': 'The stage took too long to respond. Please try again.',
@@ -245,6 +251,9 @@ const SPANISH_COPY = {
   'posted.boards': 'TABLEROS DE HOY',
   'posted.decodeAnother': 'ADIVINAR OTRO',
   'mail.choose': 'Elige un artista reciente real para un Ghost Mail privado.',
+  'mail.confirm': 'Confirma la cartera exacta antes de crear un Ghost Mail privado.',
+  'mail.confirmAction': 'CONFIRMAR DESTINATARIO',
+  'mail.chooseDifferent': 'ELEGIR OTRA PERSONA',
   'settings.title': 'Los ajustes y la accesibilidad se aplican durante esta visita.',
   'settings.sound': 'SONIDO: {value}',
   'settings.volume': 'VOLUMEN: {value}',
@@ -308,6 +317,7 @@ const SPANISH_COPY = {
   'emote.tik': 'TIK',
   'emote.headexplode': 'MENTE EXPLOTADA',
   'error.storage-unavailable': 'No se pudo guardar tu progreso. Inténtalo de nuevo.',
+  'error.server-busy': 'El escenario está lleno. Inténtalo de nuevo.',
   'error.protocol-required': 'Vuelve a conectarte para entrar en la función.',
   'error.protocol-version': 'Esta función necesita una versión más reciente.',
   'error.look-not-ready': 'Tu avatar todavía se está preparando.',
@@ -320,12 +330,14 @@ const SPANISH_COPY = {
   'error.reply-not-eligible': 'Ese fantasma no puede recibir una respuesta.',
   'error.reply-taken': 'Alguien ya respondió a ese fantasma.',
   'error.invalid-post': 'No se pudo publicar esa actuación.',
+  'error.post-guest': 'Inicia sesión con un perfil para publicar una actuación.',
   'error.mail-guest': 'Inicia sesión con un perfil para usar Ghost Mail.',
   'error.mail-recipient-invalid': 'Elige un destinatario válido para Ghost Mail.',
   'error.mail-recipient-unknown': 'Ese destinatario ya no está disponible.',
   'error.post-rate-limited': 'Espera antes de publicar otra actuación.',
   'error.invalid-reaction': 'No se pudo enviar esa reacción.',
   'error.reaction-rate-limited': 'Espera antes de enviar otra reacción.',
+  'error.reaction-guest': 'Inicia sesión con un perfil para enviar reacciones en vivo.',
   'error.reaction_failed': 'Esa reacción no llegó al público.',
   'error.copy_failed': 'No se pudo copiar la invitación.',
   'error.request_timeout': 'El escenario tardó demasiado. Inténtalo de nuevo.',
@@ -406,6 +418,9 @@ const PORTUGUESE_COPY = {
   'posted.boards': 'PLACARES DE HOJE',
   'posted.decodeAnother': 'ADIVINHAR OUTRO',
   'mail.choose': 'Escolha alguém que se apresentou recentemente para um Ghost Mail privado.',
+  'mail.confirm': 'Confirme a carteira exata antes de criar um Ghost Mail privado.',
+  'mail.confirmAction': 'CONFIRMAR DESTINATÁRIO',
+  'mail.chooseDifferent': 'ESCOLHER OUTRA PESSOA',
   'settings.title': 'Os ajustes e a acessibilidade valem durante esta visita.',
   'settings.sound': 'SOM: {value}',
   'settings.volume': 'VOLUME: {value}',
@@ -469,6 +484,7 @@ const PORTUGUESE_COPY = {
   'emote.tik': 'TIK',
   'emote.headexplode': 'MENTE EXPLODINDO',
   'error.storage-unavailable': 'Não foi possível salvar seu progresso. Tente novamente.',
+  'error.server-busy': 'O palco está cheio. Tente novamente.',
   'error.protocol-required': 'Reconecte-se para entrar no show.',
   'error.protocol-version': 'Este show precisa de uma versão mais recente.',
   'error.look-not-ready': 'Seu avatar ainda está se preparando.',
@@ -481,12 +497,14 @@ const PORTUGUESE_COPY = {
   'error.reply-not-eligible': 'Esse fantasma não pode receber uma resposta.',
   'error.reply-taken': 'Alguém já respondeu a esse fantasma.',
   'error.invalid-post': 'Não foi possível publicar essa apresentação.',
+  'error.post-guest': 'Entre com um perfil para publicar uma apresentação.',
   'error.mail-guest': 'Entre com um perfil para usar o Ghost Mail.',
   'error.mail-recipient-invalid': 'Escolha um destinatário válido para o Ghost Mail.',
   'error.mail-recipient-unknown': 'Esse destinatário não está mais disponível.',
   'error.post-rate-limited': 'Espere antes de publicar outra apresentação.',
   'error.invalid-reaction': 'Não foi possível enviar essa reação.',
   'error.reaction-rate-limited': 'Espere antes de enviar outra reação.',
+  'error.reaction-guest': 'Entre com um perfil para enviar reações ao vivo.',
   'error.reaction_failed': 'Essa reação não chegou ao público.',
   'error.copy_failed': 'Não foi possível copiar o convite.',
   'error.request_timeout': 'O palco demorou demais. Tente novamente.',
@@ -759,13 +777,62 @@ export const PHRASE_TEXTS = {
 
 export type InterpolationValues = Readonly<Record<string, string | number>>
 
+const PLAYER_NAME_BYTES = 32
+const PLAYER_NAME_CONTROLS = /[\p{Cc}\p{Cf}]/gu
+const RESERVED_PLAYER_NAMES = new Set([
+  'GHOSTLIGHT',
+  'HOUSE GHOST',
+  'FANTASMA DE LA CASA',
+  'FANTASMA DA CASA',
+  'PLAYER',
+  'VISITOR',
+  'GUEST',
+  'HOUSE'
+])
+
+function utf8Bytes(value: string) {
+  let bytes = 0
+  for (const character of value) {
+    const codePoint = character.codePointAt(0)!
+    bytes += codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4
+  }
+  return bytes
+}
+
+function limitUtf8(value: string, maxBytes: number) {
+  if (utf8Bytes(value) <= maxBytes) return value
+  const kept: string[] = []
+  let bytes = 0
+  for (const character of value) {
+    const characterBytes = utf8Bytes(character)
+    if (bytes + characterBytes > maxBytes) break
+    kept.push(character)
+    bytes += characterBytes
+  }
+  return kept.join('')
+}
+
+export function normalizePlayerName(value: string, fallback = 'PLAYER'): string {
+  const normalized = value.normalize('NFKC').replace(PLAYER_NAME_CONTROLS, '').replace(/\s+/gu, ' ').trim()
+  const reservedCandidate = normalized.toLocaleUpperCase('en-US')
+  if (normalized === '' || RESERVED_PLAYER_NAMES.has(reservedCandidate)) return fallback
+  return limitUtf8(normalized, PLAYER_NAME_BYTES)
+}
+
+export function isolatePlayerText(value: string): string {
+  return `\u2068${normalizePlayerName(value)}\u2069`
+}
+
 export function normalizeLanguage(locale: string | null | undefined): Language {
   const language = locale?.trim().toLowerCase().split(/[-_]/u)[0]
   return language === 'es' || language === 'pt' ? language : 'en'
 }
 
 export function translate(key: CopyKey, language: Language, values: InterpolationValues = {}): string {
-  return COPY[language][key].replace(/\{([a-zA-Z0-9]+)\}/gu, (placeholder, name: string) =>
+  const catalog = COPY[language] as Readonly<Record<string, string>>
+  const english = COPY.en as Readonly<Record<string, string>>
+  const template = catalog[key] ?? english[key] ?? catalog['error.unknown']
+  return template.replace(/\{([a-zA-Z0-9]+)\}/gu, (placeholder, name: string) =>
     Object.prototype.hasOwnProperty.call(values, name) ? String(values[name]) : placeholder
   )
 }
@@ -817,8 +884,9 @@ export function themeLabel(theme: ThemeId, language: Language): string {
   return translate(THEME_KEYS[theme], language)
 }
 
-export function titleLabel(title: PlayerTitle, language: Language): string {
-  return translate(title === '' ? 'title.none' : TITLE_KEYS[title], language)
+export function titleLabel(title: string, language: Language): string {
+  const key = title === '' ? 'title.none' : (TITLE_KEYS[title as Exclude<PlayerTitle, ''>] ?? 'title.none')
+  return translate(key, language)
 }
 
 export function emoteLabel(emote: Emote, language: Language): string {

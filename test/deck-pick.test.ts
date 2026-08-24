@@ -298,7 +298,7 @@ describe('installed protocol codec', () => {
       ready: { instanceId: 'instance', serverTime: 1_777_000_000_000, theme: 'food', themeLabel: 'Kitchen Capers' },
       ping: { seq: 1 },
       pong: { seq: 1 },
-      progress: { daily, title: 'Understudy', nextUnlock },
+      progress: { daily, revision: 2, title: 'Understudy', nextUnlock },
       playerTitle: { address: maximalLook.address, title: 'Understudy' },
       nextCharade: { requestId: 'next-1', exclude: ['one'] },
       charade: {
@@ -317,6 +317,7 @@ describe('installed protocol codec', () => {
       },
       guess: { charadeId: 'ghost-1', answerIndex: 1, requestId: 'guess-1' },
       reveal: {
+        requestId: 'guess-1',
         charadeId: 'ghost-1',
         correct: true,
         phraseId: DECK[0].id,
@@ -324,6 +325,7 @@ describe('installed protocol codec', () => {
         stats: { total: 3, correct: 2 },
         yourScore: 2,
         daily,
+        revision: 2,
         stampAwarded: true,
         title: 'Understudy',
         nextUnlock,
@@ -336,15 +338,27 @@ describe('installed protocol codec', () => {
         recipient: `0x${'b'.repeat(40)}`
       },
       posted: {
+        requestId: 'post-1',
         charadeId: 'ghost-1',
         recipient: `0x${'b'.repeat(40)}`,
         daily,
+        revision: 3,
         stampAwarded: true,
         title: 'Understudy',
         nextUnlock,
         titleUnlocked: true
       },
-      since: { triedYou: 2, gotYou: 1, replies: 1, mail: 1, rank: 11, daily, title: 'Understudy', nextUnlock },
+      since: {
+        triedYou: 2,
+        gotYou: 1,
+        replies: 1,
+        mail: 1,
+        rank: 11,
+        daily,
+        revision: 2,
+        title: 'Understudy',
+        nextUnlock
+      },
       audience: { looks: [maximalLook] },
       boards: {
         topDecoders: [{ address: maximalLook.address, name: maximalLook.name, correct: 2, total: 3 }],
@@ -377,9 +391,9 @@ describe('installed protocol codec', () => {
         emotes: ['wave', 'clap', 'kiss'],
         createdAt: 1_777_000_000_000
       },
-      roundStart: { charadeId: 'ghost-1' },
+      roundStart: { roundId: '1', charadeId: 'ghost-1' },
       roundGuess: { charadeId: 'ghost-1', answerIndex: 1, requestId: 'round-1' },
-      roundWinner: { address: maximalLook.address, name: maximalLook.name },
+      roundWinner: { roundId: '1', charadeId: 'ghost-1', address: maximalLook.address, name: maximalLook.name },
       react: { kind: 'genius' },
       error: { code: 'storage-unavailable' }
     }

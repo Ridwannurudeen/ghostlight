@@ -9,7 +9,9 @@ import {
   errorLabel,
   localizeDeck,
   localizePhrase,
+  isolatePlayerText,
   normalizeLanguage,
+  normalizePlayerName,
   phraseById,
   phraseText,
   requirementLabel,
@@ -39,13 +41,16 @@ const ERROR_CODES = [
   'mail-guest',
   'mail-recipient-invalid',
   'mail-recipient-unknown',
+  'post-guest',
   'post-rate-limited',
   'protocol-required',
   'protocol-version',
   'reaction-rate-limited',
+  'reaction-guest',
   'reply-not-eligible',
   'reply-taken',
   'storage-unavailable',
+  'server-busy',
   'deck_exhausted',
   'invalid_reply_phrase',
   'player_look_unavailable',
@@ -57,7 +62,7 @@ const ERROR_CODES = [
 describe('localization copy', () => {
   it('has the same complete, non-empty player-copy key set in every language', () => {
     const expectedKeys = Object.keys(COPY.en).sort()
-    expect(expectedKeys).toHaveLength(157)
+    expect(expectedKeys).toHaveLength(163)
 
     for (const language of LANGUAGES) {
       expect(Object.keys(COPY[language]).sort(), language).toEqual(expectedKeys)
@@ -90,6 +95,25 @@ describe('localization copy', () => {
     expect(normalizeLanguage('EN-gb')).toBe('en')
     expect(normalizeLanguage('fr-FR')).toBe('en')
     expect(normalizeLanguage(null)).toBe('en')
+  })
+
+  it('normalizes player names without permitting system-label or bidi-control spoofing', () => {
+    expect(normalizePlayerName('  Alice\t  Example  ')).toBe('Alice Example')
+    expect(normalizePlayerName('بيت الأشباح')).toBe('بيت الأشباح')
+    expect(normalizePlayerName('HOUSE\u202e GHOST\u202c')).toBe('PLAYER')
+    expect(normalizePlayerName('HOUSE\u200b GHOST')).toBe('PLAYER')
+    expect(normalizePlayerName('Al\u200bice\u2060')).toBe('Alice')
+    expect(normalizePlayerName('Visitor')).toBe('PLAYER')
+    expect(normalizePlayerName('Guest')).toBe('PLAYER')
+    expect(normalizePlayerName('House')).toBe('PLAYER')
+    expect(normalizePlayerName('ＧＨＯＳＴＬＩＧＨＴ')).toBe('PLAYER')
+    expect(normalizePlayerName('😀'.repeat(20))).toBe('😀'.repeat(8))
+    expect(isolatePlayerText('بيت الأشباح')).toBe('\u2068بيت الأشباح\u2069')
+  })
+
+  it('falls back safely for runtime copy and title values outside their compile-time unions', () => {
+    expect(translate('not-a-copy-key' as never, 'en')).toBe(COPY.en['error.unknown'])
+    expect(titleLabel('HOUSE GHOST' as never, 'en')).toBe(COPY.en['title.none'])
   })
 })
 

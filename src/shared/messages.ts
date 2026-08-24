@@ -71,6 +71,7 @@ export const Messages = {
   pong: Schemas.Map({ seq: Schemas.Int }),
   progress: Schemas.Map({
     daily,
+    revision: Schemas.Int,
     title: Schemas.String,
     nextUnlock
   }),
@@ -102,6 +103,7 @@ export const Messages = {
     requestId: Schemas.String
   }),
   reveal: Schemas.Map({
+    requestId: Schemas.String,
     charadeId: Schemas.String,
     correct: Schemas.Boolean,
     phraseId: Schemas.String,
@@ -112,6 +114,7 @@ export const Messages = {
     }),
     yourScore: Schemas.Int,
     daily,
+    revision: Schemas.Int,
     stampAwarded: Schemas.Boolean,
     title: Schemas.String,
     nextUnlock,
@@ -125,10 +128,12 @@ export const Messages = {
     recipient: Schemas.Optional(Schemas.String)
   }),
   posted: Schemas.Map({
+    requestId: Schemas.String,
     charadeId: Schemas.String,
     replyTo: Schemas.Optional(Schemas.String),
     recipient: Schemas.Optional(Schemas.String),
     daily,
+    revision: Schemas.Int,
     stampAwarded: Schemas.Boolean,
     title: Schemas.String,
     nextUnlock,
@@ -141,6 +146,7 @@ export const Messages = {
     mail: Schemas.Int,
     rank: Schemas.Int,
     daily,
+    revision: Schemas.Int,
     title: Schemas.String,
     nextUnlock
   }),
@@ -168,13 +174,15 @@ export const Messages = {
     emotes: Schemas.Array(Schemas.String),
     createdAt: Schemas.Int64
   }),
-  roundStart: Schemas.Map({ charadeId: Schemas.String }),
+  roundStart: Schemas.Map({ roundId: Schemas.String, charadeId: Schemas.String }),
   roundGuess: Schemas.Map({
     charadeId: Schemas.String,
     answerIndex: Schemas.Int,
     requestId: Schemas.String
   }),
   roundWinner: Schemas.Map({
+    roundId: Schemas.String,
+    charadeId: Schemas.String,
     address: Schemas.String,
     name: Schemas.String
   }),
