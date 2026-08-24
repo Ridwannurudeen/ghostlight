@@ -202,4 +202,27 @@ describe('audience ghosts', () => {
     expect(entityCount).toBe(8)
     expect(engine.addEntity).toHaveBeenCalledTimes(8)
   })
+
+  it('bounds and validates local avatar data before writing AvatarShape', () => {
+    const validWearable = `urn:decentraland:matic:collections-v2:${'a'.repeat(64)}:0`
+    const look = {
+      ...makeLook('0xPlayer', ' HOUSE\u202e GHOST\u202c '),
+      bodyShape: 'not-a-urn',
+      skinColor: { r: Number.POSITIVE_INFINITY, g: -1, b: 2 },
+      wearables: ['x'.repeat(200_000), ...Array.from({ length: 1_000 }, () => validWearable)]
+    }
+
+    showPerformer(look, ['wave', 'clap', 'dab'])
+
+    const avatar = vi.mocked(AvatarShape.createOrReplace).mock.calls.at(-1)?.[1]
+    expect(avatar).toMatchObject({
+      id: '0xPlayer',
+      name: 'PLAYER',
+      bodyShape: 'urn:decentraland:off-chain:base-avatars:BaseMale',
+      skinColor: { r: 0.6, g: 0.46, b: 0.36 }
+    })
+    expect(avatar?.wearables.length).toBeLessThanOrEqual(20)
+    expect(avatar?.wearables.every((wearable) => wearable === validWearable)).toBe(true)
+    expect(JSON.stringify(avatar).length).toBeLessThan(2_800)
+  })
 })

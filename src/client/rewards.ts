@@ -3,6 +3,9 @@ import { getPlayer } from '@dcl/sdk/src/players'
 import { REWARD_PROPS, type PlayerTitle } from '../shared/config'
 
 export const MAX_VISIBLE_REWARD_PROPS = 16
+export const MAX_REWARD_CANDIDATES = 64
+
+const STABLE_ADDRESS = /^0x[0-9a-f]{40}$/i
 
 type RewardTitle = Exclude<PlayerTitle, ''>
 
@@ -115,12 +118,18 @@ export function createRewardController<TEntity>(port: RewardPort<TEntity>) {
   return {
     set(address: string, title: PlayerTitle) {
       const key = address.toLowerCase()
+      if (!STABLE_ADDRESS.test(key)) return
       if (title === '') {
         candidates.delete(key)
         sync()
         return
       }
       candidates.set(key, { address, title })
+      while (candidates.size > MAX_REWARD_CANDIDATES) {
+        const oldest = candidates.keys().next().value
+        if (oldest === undefined) break
+        candidates.delete(oldest)
+      }
       sync()
     },
     setStage(address: string, title: PlayerTitle) {
@@ -135,6 +144,7 @@ export function createRewardController<TEntity>(port: RewardPort<TEntity>) {
     },
     remove(address: string) {
       const key = address.toLowerCase()
+      if (!STABLE_ADDRESS.test(key)) return
       candidates.delete(key)
       sync()
     },

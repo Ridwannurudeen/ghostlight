@@ -1,7 +1,12 @@
 import { AvatarAnchorPointType } from '@dcl/sdk/ecs'
 import { describe, expect, it } from 'vitest'
 import { REWARD_PROPS } from '../src/shared/config'
-import { MAX_VISIBLE_REWARD_PROPS, createRewardController, type RewardPort } from '../src/client/rewards'
+import {
+  MAX_REWARD_CANDIDATES,
+  MAX_VISIBLE_REWARD_PROPS,
+  createRewardController,
+  type RewardPort
+} from '../src/client/rewards'
 
 type TransformRecord = {
   parent: number
@@ -37,15 +42,20 @@ function createRewardHarness() {
   }
 }
 
+function wallet(index: number) {
+  return `0x${index.toString(16).padStart(40, '0')}`
+}
+
 describe('title reward props', () => {
   it('attaches the Understudy hat to an explicit avatar through a transformed child', () => {
     const { controller, attachments, transforms, models, entityCount } = createRewardHarness()
 
-    controller.set('0xAlice', 'Understudy')
+    const address = wallet(1)
+    controller.set(address, 'Understudy')
 
     expect(entityCount()).toBe(2)
     expect(attachments.get(1)).toEqual({
-      avatarId: '0xAlice',
+      avatarId: address,
       anchorPointId: AvatarAnchorPointType.AAPT_HEAD
     })
     expect(transforms.get(2)).toMatchObject({ parent: 1 })
@@ -56,22 +66,23 @@ describe('title reward props', () => {
   it('reuses the same entities while updating head and hand rewards', () => {
     const { controller, attachments, transforms, models, entityCount } = createRewardHarness()
 
-    controller.set('0xAlice', 'Understudy')
-    controller.set('0xAlice', 'Scene Stealer')
+    const address = wallet(1)
+    controller.set(address, 'Understudy')
+    controller.set(address, 'Scene Stealer')
 
     expect(entityCount()).toBe(2)
     expect(attachments.get(1)).toEqual({
-      avatarId: '0xAlice',
+      avatarId: address,
       anchorPointId: AvatarAnchorPointType.AAPT_HEAD
     })
     expect(transforms.get(2)?.parent).toBe(1)
     expect(models.get(2)).toBe(REWARD_PROPS['Scene Stealer'])
 
-    controller.set('0xAlice', 'Ghostlight Legend')
+    controller.set(address, 'Ghostlight Legend')
 
     expect(entityCount()).toBe(2)
     expect(attachments.get(1)).toEqual({
-      avatarId: '0xAlice',
+      avatarId: address,
       anchorPointId: AvatarAnchorPointType.AAPT_RIGHT_HAND
     })
     expect(transforms.get(2)?.parent).toBe(1)
@@ -81,25 +92,26 @@ describe('title reward props', () => {
   it('does not leak entities across clears, restores, or repeated title updates', () => {
     const { controller, models, entityCount } = createRewardHarness()
 
-    controller.set('0xAlice', '')
+    const address = wallet(1)
+    controller.set(address, '')
     expect(entityCount()).toBe(0)
 
-    controller.set('0xAlice', 'Understudy')
+    controller.set(address, 'Understudy')
     for (let index = 0; index < 20; index += 1) {
-      controller.set('0xALICE', index % 2 === 0 ? 'Scene Stealer' : 'Ghostlight Legend')
+      controller.set(address.toUpperCase(), index % 2 === 0 ? 'Scene Stealer' : 'Ghostlight Legend')
     }
-    controller.set('0xAlice', '')
+    controller.set(address, '')
 
     expect(entityCount()).toBe(2)
     expect(models.size).toBe(0)
 
-    controller.set('0xAlice', 'Understudy')
+    controller.set(address, 'Understudy')
     expect(entityCount()).toBe(2)
     expect(models.get(2)).toBe(REWARD_PROPS.Understudy)
 
-    controller.remove('0xALICE')
+    controller.remove(address.toUpperCase())
     expect(models.size).toBe(0)
-    controller.set('0xAlice', 'Understudy')
+    controller.set(address, 'Understudy')
     expect(entityCount()).toBe(2)
   })
 
@@ -115,11 +127,13 @@ describe('title reward props', () => {
     expect(attachments.get(1)?.avatarId).toBe('0xAuthor-20')
     expect(models.get(2)).toBe(REWARD_PROPS['Scene Stealer'])
 
-    controller.set('0xAuthor-20', 'Scene Stealer')
+    const author = wallet(20)
+    controller.setStage(author, 'Scene Stealer')
+    controller.set(author, 'Scene Stealer')
     expect(entityCount()).toBe(4)
     expect(models.size).toBe(1)
 
-    controller.remove('0xAuthor-20')
+    controller.remove(author)
     expect(models.get(2)).toBe(REWARD_PROPS['Scene Stealer'])
 
     controller.clearStage()
@@ -129,16 +143,33 @@ describe('title reward props', () => {
   it('caps live rewards and replaces the farthest player when a nearer title appears', () => {
     const { controller, attachments, distances, entityCount } = createRewardHarness()
     for (let index = 0; index < MAX_VISIBLE_REWARD_PROPS; index += 1) {
-      const address = `player-${index}`
+      const address = wallet(index + 1)
       distances.set(address, index + 1)
       controller.set(address, 'Understudy')
     }
-    distances.set('nearest', 0)
-    controller.set('nearest', 'Scene Stealer')
+    const nearest = wallet(MAX_VISIBLE_REWARD_PROPS + 1)
+    distances.set(nearest, 0)
+    controller.set(nearest, 'Scene Stealer')
 
     const visibleAddresses = [...attachments.values()].map(({ avatarId }) => avatarId)
     expect(entityCount()).toBe(MAX_VISIBLE_REWARD_PROPS * 2)
-    expect(visibleAddresses).toContain('nearest')
-    expect(visibleAddresses).not.toContain(`player-${MAX_VISIBLE_REWARD_PROPS - 1}`)
+    expect(visibleAddresses).toContain(nearest)
+    expect(visibleAddresses).not.toContain(wallet(MAX_VISIBLE_REWARD_PROPS))
+  })
+
+  it('ignores guest title churn and bounds stable title candidates', () => {
+    const { controller, attachments, distances, entityCount } = createRewardHarness()
+
+    for (let index = 0; index < 1_000; index += 1) controller.set(`guest-${index}`, 'Understudy')
+    expect(entityCount()).toBe(0)
+
+    for (let index = 1; index <= MAX_REWARD_CANDIDATES + 10; index += 1) {
+      const address = wallet(index)
+      distances.set(address, index)
+      controller.set(address, 'Understudy')
+    }
+
+    expect(entityCount()).toBe(MAX_VISIBLE_REWARD_PROPS * 2)
+    expect([...attachments.values()].map(({ avatarId }) => avatarId)).not.toContain(wallet(1))
   })
 })

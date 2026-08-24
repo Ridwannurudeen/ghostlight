@@ -2,6 +2,7 @@ import { AvatarShape, Transform, engine, type Entity } from '@dcl/sdk/ecs'
 import { Quaternion, type Quaternion as QuaternionType, type Vector3 as Vector3Type } from '@dcl/sdk/math'
 import { AUDIENCE_SEATS, EMOTE_STEP_SECONDS, MAX_GHOSTS } from '../shared/config'
 import type { Look } from '../shared/types'
+import { sanitizeAvatarLook } from './look'
 import {
   AUDIENCE_POSITIONS,
   GHOST_OF_NIGHT_POSITION,
@@ -287,8 +288,9 @@ function spawnNextAudienceGhost(dt: number) {
 }
 
 function showGhost(slot: GhostSlot, look: Look, sequence: GhostEmotes | null) {
+  const safeLook = sanitizeAvatarLook(look)
   slot.active = true
-  slot.address = canonicalAddress(look.address)
+  slot.address = canonicalAddress(safeLook.address)
   slot.sequence = sequence
   slot.emoteIndex = 0
   slot.elapsed = 0
@@ -296,13 +298,13 @@ function showGhost(slot: GhostSlot, look: Look, sequence: GhostEmotes | null) {
   slot.frozen = false
 
   AvatarShape.createOrReplace(slot.entity, {
-    id: look.address,
-    name: look.name,
-    bodyShape: look.bodyShape,
-    skinColor: look.skinColor,
-    hairColor: look.hairColor,
-    eyeColor: look.eyeColor,
-    wearables: [...look.wearables],
+    id: safeLook.address,
+    name: safeLook.name,
+    bodyShape: safeLook.bodyShape,
+    skinColor: safeLook.skinColor,
+    hairColor: safeLook.hairColor,
+    eyeColor: safeLook.eyeColor,
+    wearables: safeLook.wearables,
     emotes: [],
     expressionTriggerId: sequence?.[0],
     expressionTriggerTimestamp: slot.lamport

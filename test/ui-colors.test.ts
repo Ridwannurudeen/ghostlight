@@ -4,13 +4,17 @@ const uiTest = vi.hoisted(() => ({
   region: 'house',
   canReply: false,
   opening: { active: false, instruction: '' },
-  state: {} as Record<string, unknown>
+  state: {} as Record<string, unknown>,
+  mailRecipients: [] as Array<{ address: string; name: string; isGuest: boolean; title: ''; performedAt: number }>
 }))
 
 const uiActions = vi.hoisted(() => ({
   showFoyer: vi.fn(),
   showInvite: vi.fn(),
   showSettings: vi.fn(),
+  selectGhostMailRecipient: vi.fn(),
+  clearGhostMailRecipient: vi.fn(),
+  beginGhostMail: vi.fn(),
   setInviteStatus: vi.fn()
 }))
 
@@ -40,13 +44,13 @@ vi.mock('../src/client/opening-scene', () => ({
 
 vi.mock('../src/client/flow', () => ({
   canAnswerBack: () => uiTest.canReply,
-  canSendMail: () => false,
+  canSendMail: () => uiTest.mailRecipients.length > 0,
   canSpectatorReact: (state: Record<string, unknown>) =>
     state.ready === true &&
     (state.screen === 'foyer' || (state.screen === 'reveal' && state.reveal?.correct === false)) &&
     state.roundCharadeId !== '' &&
     state.pending?.length === 0,
-  mailRecipients: () => [],
+  mailRecipients: () => uiTest.mailRecipients,
   clientFlow: {
     getState: () => uiTest.state,
     guess: vi.fn(),
@@ -66,6 +70,9 @@ vi.mock('../src/client/flow', () => ({
     showFoyer: uiActions.showFoyer,
     showInvite: uiActions.showInvite,
     showSettings: uiActions.showSettings,
+    selectGhostMailRecipient: uiActions.selectGhostMailRecipient,
+    clearGhostMailRecipient: uiActions.clearGhostMailRecipient,
+    beginGhostMail: uiActions.beginGhostMail,
     setInviteStatus: uiActions.setInviteStatus,
     reportError: vi.fn()
   }
@@ -77,6 +84,7 @@ import {
   formatPerformedAgo,
   localizedAnswers,
   performerPortraitBackground,
+  shortWalletAddress,
   uiFontSize,
   uiComponent
 } from '../src/client/ui'
@@ -175,6 +183,7 @@ beforeEach(() => {
   uiTest.region = 'house'
   uiTest.canReply = false
   uiTest.opening = { active: false, instruction: '' }
+  uiTest.mailRecipients = []
   uiTest.state = stateFor('decode')
   updateClientSettings(DEFAULT_CLIENT_SETTINGS)
 })
@@ -209,6 +218,35 @@ describe('UI colors', () => {
 })
 
 describe('mobile control budget', () => {
+  it('disambiguates identical Ghost Mail names by wallet and requires confirmation', () => {
+    const alice = `0x${'1'.repeat(40)}`
+    const otherAlice = `0x${'2'.repeat(40)}`
+    uiTest.mailRecipients = [
+      { address: alice, name: 'ALICE', isGuest: false, title: '', performedAt: 0 },
+      { address: otherAlice, name: 'ALICE', isGuest: false, title: '', performedAt: 0 }
+    ]
+    uiTest.state = { ...stateFor('decode'), screen: 'mail', mailRecipient: null }
+
+    const chooser = collectButtons(uiComponent())
+    expect(chooser).toHaveLength(3)
+    expect(chooser[0].value).toContain(shortWalletAddress(alice))
+    expect(chooser[1].value).toContain(shortWalletAddress(otherAlice))
+    ;(findButton(uiComponent(), chooser[0].value)?.onMouseDown as (() => void) | undefined)?.()
+    expect(uiActions.selectGhostMailRecipient).toHaveBeenCalledWith(alice)
+    expect(uiActions.beginGhostMail).not.toHaveBeenCalled()
+
+    uiTest.state = {
+      ...uiTest.state,
+      mailRecipient: { address: alice, name: 'ALICE' }
+    }
+    expect(collectButtons(uiComponent()).map(({ value }) => value)).toEqual([
+      'CONFIRM RECIPIENT',
+      'CHOOSE SOMEONE ELSE'
+    ])
+    ;(findButton(uiComponent(), 'CONFIRM RECIPIENT')?.onMouseDown as (() => void) | undefined)?.()
+    expect(uiActions.beginGhostMail).toHaveBeenCalledTimes(1)
+  })
+
   it.each([
     ['phrase', 3],
     ['emotes', 5],
@@ -263,9 +301,21 @@ describe('mobile control budget', () => {
     ])
   })
 
+  it('disables every Make Your Own control for guests', () => {
+    for (const screen of ['foyer', 'decode', 'reveal'] as const) {
+      uiTest.state = { ...stateFor(screen), playerIsGuest: true }
+      const makeButton = collectButtons(uiComponent()).find(({ value }) => value === 'MAKE YOUR OWN')
+      if (makeButton) expect(makeButton.disabled, screen).toBe(true)
+    }
+  })
+
   it('lets an incorrect round decoder react without stacking reveal actions', () => {
     uiTest.state = { ...stateFor('reveal'), roundCharadeId: 'charade-1' }
-    expect(collectButtons(uiComponent()).map(({ value }) => value).sort()).toEqual(['NEXT GHOST', 'REACT'])
+    expect(
+      collectButtons(uiComponent())
+        .map(({ value }) => value)
+        .sort()
+    ).toEqual(['NEXT GHOST', 'REACT'])
 
     uiTest.state = { ...uiTest.state, reactionMenuOpen: true }
     expect(collectButtons(uiComponent()).map(({ value }) => value)).toEqual([
@@ -293,7 +343,11 @@ describe('mobile control budget', () => {
       .reduce((total, [, value]) => total + value, 0)
     expect(usedHeight).toBeLessThanOrEqual(REVEAL_VERTICAL_BUDGET.panelHeight)
     uiTest.state = stateFor('reveal')
-    expect(collectButtons(uiComponent()).map(({ value }) => value).sort()).toEqual(['MAKE YOUR OWN', 'NEXT GHOST'])
+    expect(
+      collectButtons(uiComponent())
+        .map(({ value }) => value)
+        .sort()
+    ).toEqual(['MAKE YOUR OWN', 'NEXT GHOST'])
   })
 
   it('keeps the foyer at five controls with settings in the top area', () => {
@@ -334,7 +388,6 @@ describe('settings and accessibility', () => {
       largeText: true
     })
     expect(uiFontSize(20)).toBe(24)
-
     ;(findButton(uiComponent(), 'VOLVER')?.onMouseDown as (() => void) | undefined)?.()
     expect(uiActions.showFoyer).toHaveBeenCalledTimes(1)
   })
@@ -380,11 +433,7 @@ describe('localized answer rendering', () => {
   it('renders the same answer ids in the decoder language', () => {
     const charade = {
       ...stateFor('decode').charade,
-      answerIds: [
-        'everyday-wake-up-late',
-        'everyday-brush-your-teeth',
-        'everyday-miss-the-bus'
-      ]
+      answerIds: ['everyday-wake-up-late', 'everyday-brush-your-teeth', 'everyday-miss-the-bus']
     }
 
     expect(localizedAnswers(charade as never, 'es')).toEqual([

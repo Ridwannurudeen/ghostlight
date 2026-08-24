@@ -123,6 +123,47 @@ function serveCharade(
   runtime.receive({ type: 'charade', data: { ...charade, requestId: request!.requestId } })
 }
 
+function receiveReveal(
+  runtime: ReturnType<typeof createFlowRuntime>,
+  data: Omit<Extract<ServerMessage, { type: 'reveal' }>['data'], 'requestId' | 'revision'>,
+  revision = 0
+) {
+  const request = runtime
+    .getState()
+    .pending.find((candidate) => candidate.kind === 'guess' || candidate.kind === 'roundGuess')
+  expect(request).toBeDefined()
+  runtime.receive({ type: 'reveal', data: { ...data, requestId: request!.requestId, revision } })
+}
+
+function receivePosted(
+  runtime: ReturnType<typeof createFlowRuntime>,
+  data: Omit<Extract<ServerMessage, { type: 'posted' }>['data'], 'requestId' | 'revision'>,
+  revision = 0
+) {
+  const request = runtime.getState().pending.find((candidate) => candidate.kind === 'post')
+  expect(request).toBeDefined()
+  runtime.receive({ type: 'posted', data: { ...data, requestId: request!.requestId, revision } })
+}
+
+function receiveSince(
+  runtime: ReturnType<typeof createFlowRuntime>,
+  data: Omit<Extract<ServerMessage, { type: 'since' }>['data'], 'revision'>,
+  revision = 0
+) {
+  runtime.receive({ type: 'since', data: { ...data, revision } })
+}
+
+function announceRound(runtime: ReturnType<typeof createFlowRuntime>, charadeId: string, roundId = '1') {
+  runtime.receive({ type: 'roundStart', data: { roundId, charadeId } })
+}
+
+function announceWinner(
+  runtime: ReturnType<typeof createFlowRuntime>,
+  data: { address: string; name: string; charadeId: string; roundId?: string }
+) {
+  runtime.receive({ type: 'roundWinner', data: { ...data, roundId: data.roundId ?? '1' } })
+}
+
 function messagesOfType<T extends OutboundMessage['type']>(sent: OutboundMessage[], type: T) {
   return sent.filter((message): message is Extract<OutboundMessage, { type: T }> => message.type === type)
 }
@@ -175,11 +216,11 @@ describe('flow reducer', () => {
       serverTime: FIXED_NOW,
       now: FIXED_NOW
     })
-    state = flowReducer(state, { type: 'since', summary: { triedYou: 2, gotYou: 1, rank: 4 } })
+    state = flowReducer(state, { type: 'since', summary: { triedYou: 2, gotYou: 1, rank: 4, revision: 0 } })
     expect(state.screen).toBe('since')
 
     state = flowReducer(state, { type: 'dismissSince' })
-    state = flowReducer(state, { type: 'since', summary: { triedYou: 3, gotYou: 2, rank: 3 } })
+    state = flowReducer(state, { type: 'since', summary: { triedYou: 3, gotYou: 2, rank: 3, revision: 0 } })
     expect(state).toMatchObject({ screen: 'foyer', sinceShown: true })
   })
 
@@ -201,6 +242,7 @@ describe('flow reducer', () => {
         gotYou: 1,
         replies: 0,
         mail: 2,
+        revision: 0,
         rank: 4,
         daily: state.progress.daily,
         title: '',
@@ -233,6 +275,7 @@ describe('flow reducer', () => {
       {
         type: 'reveal',
         reveal: {
+          revision: 0,
           charadeId: 'revealed',
           correct: true,
           phrase: 'A revealed phrase',
@@ -271,9 +314,12 @@ describe('flow lifecycle', () => {
     expect(runtime.canSendMail()).toBe(true)
     expect(runtime.showMail()).toBe(true)
     expect(runtime.getState().screen).toBe('mail')
-    expect(runtime.beginGhostMail(`0x${'4'.repeat(40)}`)).toBe(false)
-    expect(runtime.beginGhostMail(guest)).toBe(false)
-    expect(runtime.beginGhostMail(recipient)).toBe(true)
+    expect(runtime.selectGhostMailRecipient(`0x${'4'.repeat(40)}`)).toBe(false)
+    expect(runtime.selectGhostMailRecipient(guest)).toBe(false)
+    expect(runtime.beginGhostMail()).toBe(false)
+    expect(runtime.selectGhostMailRecipient(recipient)).toBe(true)
+    expect(runtime.getState().mailRecipient).toEqual({ address: recipient, name: 'Recipient' })
+    expect(runtime.beginGhostMail()).toBe(true)
     expect(runtime.getState()).toMatchObject({
       screen: 'author',
       authorReturnScreen: 'mail',
@@ -291,7 +337,7 @@ describe('flow lifecycle', () => {
     expect(messagesOfType(sent, 'post').at(-1)?.data).toMatchObject({ recipient })
     expect(messagesOfType(sent, 'post').at(-1)?.data).not.toHaveProperty('replyTo')
 
-    runtime.receive({ type: 'posted', data: { charadeId: 'mailed', recipient } })
+    receivePosted(runtime, { charadeId: 'mailed', recipient })
     expect(runtime.getState()).toMatchObject({
       screen: 'posted',
       postedCharadeId: 'mailed',
@@ -319,8 +365,37 @@ describe('flow lifecycle', () => {
 
     expect(runtime.canSendMail()).toBe(false)
     expect(runtime.showMail()).toBe(false)
-    expect(runtime.beginGhostMail(recipient)).toBe(false)
+    expect(runtime.selectGhostMailRecipient(recipient)).toBe(false)
+    expect(runtime.beginGhostMail()).toBe(false)
     expect(runtime.getState().screen).toBe('foyer')
+  })
+
+  it('keeps guests out of every authoring path after the server rejects persistent guest posts', () => {
+    const guestAddress = 'guest-session'
+    const { runtime } = createFlowHarness({
+      address: guestAddress,
+      getProfile: () => ({ address: guestAddress, name: 'Guest', isGuest: true })
+    })
+    runtime.receive({ type: 'ready', data: { instanceId: 'server-1', serverTime: FIXED_NOW } })
+
+    expect(runtime.beginAuthoring()).toBe(false)
+    expect(runtime.getState().screen).toBe('foyer')
+
+    const charade = makeDecodeCharade('guest-decode')
+    serveCharade(runtime, charade)
+    runtime.guess(0)
+    receiveReveal(runtime, {
+      charadeId: charade.id,
+      correct: true,
+      phraseId: DECK[0].id,
+      phrase: DECK[0].text,
+      stats: { total: 1, correct: 1 },
+      yourScore: 1
+    })
+
+    expect(runtime.canAnswerBack()).toBe(false)
+    expect(runtime.beginAnswerBack()).toBe(false)
+    expect(runtime.getState().screen).toBe('reveal')
   })
 
   it('pairs a separate reply message with its charade even when it arrives first', () => {
@@ -358,16 +433,14 @@ describe('flow lifecycle', () => {
     runtime.receive({ type: 'ready', data: { instanceId: 'server-1', serverTime: FIXED_NOW } })
     const charade = makeDecodeCharade()
     serveCharade(runtime, charade)
-    runtime.receive({
-      type: 'reveal',
-      data: {
-        charadeId: charade.id,
-        correct: true,
-        phraseId: DECK[0].id,
-        phrase: DECK[0].text,
-        stats: { total: 1, correct: 1 },
-        yourScore: 1
-      }
+    runtime.guess(0)
+    receiveReveal(runtime, {
+      charadeId: charade.id,
+      correct: true,
+      phraseId: DECK[0].id,
+      phrase: DECK[0].text,
+      stats: { total: 1, correct: 1 },
+      yourScore: 1
     })
 
     expect(runtime.canAnswerBack()).toBe(true)
@@ -393,7 +466,7 @@ describe('flow lifecycle', () => {
       replyTo: charade.id
     })
 
-    runtime.receive({ type: 'posted', data: { charadeId: charade.id, replyTo: charade.id } })
+    receivePosted(runtime, { charadeId: charade.id, replyTo: charade.id })
     expect(runtime.getState()).toMatchObject({ screen: 'posted', postedReplyTo: charade.id })
   })
 
@@ -406,16 +479,14 @@ describe('flow lifecycle', () => {
     ]
     for (const charade of scenarios) {
       serveCharade(runtime, charade)
-      runtime.receive({
-        type: 'reveal',
-        data: {
-          charadeId: charade.id,
-          correct: true,
-          phraseId: DECK[0].id,
-          phrase: DECK[0].text,
-          stats: { total: 1, correct: 1 },
-          yourScore: 1
-        }
+      runtime.guess(0)
+      receiveReveal(runtime, {
+        charadeId: charade.id,
+        correct: true,
+        phraseId: DECK[0].id,
+        phrase: DECK[0].text,
+        stats: { total: 1, correct: 1 },
+        yourScore: 1
       })
       expect(runtime.canAnswerBack()).toBe(false)
       expect(runtime.beginAnswerBack()).toBe(false)
@@ -434,22 +505,21 @@ describe('flow lifecycle', () => {
         createdAt: FIXED_NOW
       }
     })
-    runtime.receive({
-      type: 'reveal',
-      data: {
-        charadeId: paired.id,
-        correct: true,
-        phraseId: DECK[0].id,
-        phrase: DECK[0].text,
-        stats: { total: 1, correct: 1 },
-        yourScore: 1
-      }
+    runtime.guess(0)
+    receiveReveal(runtime, {
+      charadeId: paired.id,
+      correct: true,
+      phraseId: DECK[0].id,
+      phrase: DECK[0].text,
+      stats: { total: 1, correct: 1 },
+      yourScore: 1
     })
     expect(runtime.canAnswerBack()).toBe(false)
     expect(runtime.beginAnswerBack()).toBe(false)
   })
 
   it('stores the real show theme, authoritative progression, visible titles, playbill, and Ghost of the Night', () => {
+    const authorAddress = `0x${'a'.repeat(40)}`
     const { runtime, effects } = createFlowHarness()
     runtime.receive({
       type: 'ready',
@@ -463,12 +533,13 @@ describe('flow lifecycle', () => {
     runtime.receive({
       type: 'progress',
       data: {
+        revision: 1,
         daily: { day: '2026-08-23', decoded: 2, authored: 1, stamped: false },
         title: 'Understudy',
         nextUnlock: { nextTitle: 'Scene Stealer', requirement: '10 correct decodes or 5 posts', progress: 0.4 }
       }
     })
-    runtime.receive({ type: 'playerTitle', data: { address: '0xAuthor', title: 'Scene Stealer' } })
+    runtime.receive({ type: 'playerTitle', data: { address: authorAddress, title: 'Scene Stealer' } })
     runtime.receive({
       type: 'boards',
       data: {
@@ -476,7 +547,7 @@ describe('flow lifecycle', () => {
         hardestGhosts: [],
         playbill: [
           {
-            address: '0xAuthor',
+            address: authorAddress,
             name: 'Author',
             isGuest: false,
             title: 'Scene Stealer',
@@ -488,10 +559,10 @@ describe('flow lifecycle', () => {
     })
     const ghost = {
       charadeId: 'hardest',
-      address: '0xAuthor',
+      address: authorAddress,
       name: 'Author',
       title: 'Scene Stealer',
-      look: makeLook('0xAuthor', 'Author'),
+      look: makeLook(authorAddress, 'Author'),
       total: 5,
       correct: 1
     }
@@ -501,14 +572,13 @@ describe('flow lifecycle', () => {
       theme: 'food',
       themeLabel: 'Kitchen Capers',
       serverClockOffset: 5_000,
-      playerName: 'Player',
+      playerName: 'PLAYER',
       progress: { title: 'Understudy', nextUnlock: { progress: 0.4 } },
-      playerTitles: { '0xauthor': 'Scene Stealer' },
       boards: { playbill: [{ name: 'Author' }], ghostOfNightId: 'hardest' },
       ghostOfNight: ghost
     })
     expect(effects.showReward).toHaveBeenCalledWith('0xPlayer', 'Understudy')
-    expect(effects.showReward).toHaveBeenCalledWith('0xAuthor', 'Scene Stealer')
+    expect(effects.showReward).toHaveBeenCalledWith(authorAddress, 'Scene Stealer')
     expect(effects.showGhostOfNight).toHaveBeenCalledWith(ghost)
   })
 
@@ -542,14 +612,107 @@ describe('flow lifecycle', () => {
       titleUnlocked: true
     } as const
 
-    runtime.receive({ type: 'reveal', data: reveal })
-    runtime.receive({ type: 'reveal', data: reveal })
+    runtime.guess(0)
+    const requestId = runtime.getState().pending.find((request) => request.kind === 'guess')!.requestId
+    runtime.receive({ type: 'reveal', data: { ...reveal, requestId, revision: 1 } })
+    runtime.receive({ type: 'reveal', data: { ...reveal, requestId, revision: 1 } })
 
     expect(runtime.getState().progress).toMatchObject({ title: 'Scene Stealer', daily: { stamped: true } })
     expect(runtime.getState().notices).toEqual([
       { id: `${charade.id}:stamp`, kind: 'stamp' },
       { id: `${charade.id}:title:Scene Stealer`, kind: 'title', title: 'Scene Stealer' }
     ])
+  })
+
+  it('ignores delayed reveal and posted replies after their exact requests have completed', () => {
+    const { runtime, effects } = createFlowHarness()
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+
+    const first = makeDecodeCharade('first')
+    serveCharade(runtime, first)
+    runtime.guess(0)
+    const guessRequestId = runtime.getState().pending.find(({ kind }) => kind === 'guess')!.requestId
+    const firstReveal = {
+      requestId: guessRequestId,
+      revision: 1,
+      charadeId: first.id,
+      correct: true,
+      phrase: first.answers[0],
+      stats: { total: 1, correct: 1 },
+      yourScore: 1
+    }
+    runtime.receive({ type: 'reveal', data: firstReveal })
+
+    const second = makeDecodeCharade('second')
+    serveCharade(runtime, second)
+    runtime.receive({ type: 'reveal', data: firstReveal })
+    expect(runtime.getState()).toMatchObject({ screen: 'decode', charade: { id: second.id } })
+    expect(effects.resolveReveal).toHaveBeenCalledTimes(1)
+
+    runtime.beginAuthoring()
+    runtime
+      .getState()
+      .author!.offeredEmotes.slice(0, 3)
+      .forEach((emote) => runtime.selectAuthorEmote(emote))
+    runtime.postAuthor()
+    const postRequestId = runtime.getState().pending.find(({ kind }) => kind === 'post')!.requestId
+    const posted = { requestId: postRequestId, revision: 2, charadeId: 'posted-first' }
+    runtime.receive({ type: 'posted', data: posted })
+    serveCharade(runtime, makeDecodeCharade('third'))
+    runtime.receive({ type: 'posted', data: posted })
+    expect(runtime.getState()).toMatchObject({ screen: 'decode', charade: { id: 'third' } })
+  })
+
+  it('keeps the newest progression revision when messages arrive out of order', () => {
+    const { runtime, effects } = createFlowHarness()
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    const daily = { day: '2026-08-24', decoded: 3, authored: 1, stamped: true }
+    const nextUnlock = {
+      nextTitle: 'Scene Stealer',
+      requirement: '10 correct decodes or 5 posts',
+      progress: 0.4
+    }
+
+    runtime.receive({
+      type: 'progress',
+      data: { revision: 2, daily, title: 'Understudy', nextUnlock }
+    })
+    runtime.receive({
+      type: 'progress',
+      data: {
+        revision: 1,
+        daily: { ...daily, decoded: 0, stamped: false },
+        title: '',
+        nextUnlock: { ...nextUnlock, progress: 0 }
+      }
+    })
+
+    expect(runtime.getState()).toMatchObject({
+      progressRevision: 2,
+      progress: { daily, title: 'Understudy', nextUnlock }
+    })
+    expect(effects.showReward).not.toHaveBeenCalledWith('0xPlayer', '')
+  })
+
+  it('caps and sanitizes authoritative board entries before rendering', () => {
+    const { runtime } = createFlowHarness()
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    const playbill = Array.from({ length: 7 }, (_, index) => ({
+      address: `0x${(index + 1).toString(16).padStart(40, '0')}`,
+      name: index === 0 ? 'HOUSE\u202e GHOST' : ` Player ${index} `,
+      isGuest: false,
+      title: index === 0 ? 'HOUSE GHOST' : '',
+      performedAt: FIXED_NOW
+    }))
+
+    runtime.receive({
+      type: 'boards',
+      data: { topDecoders: [], hardestGhosts: [], playbill, ghostOfNightId: '' }
+    })
+
+    expect(runtime.getState().boards.playbill).toHaveLength(6)
+    expect(runtime.getState().boards.playbill[0]).toMatchObject({ name: 'PLAYER', title: '' })
+    expect(runtime.getState().boards.playbill[1].name).toBe('Player 1')
   })
 
   it('closes waking to ready to decode to reveal to author to posted', () => {
@@ -582,7 +745,7 @@ describe('flow lifecycle', () => {
       stats: { total: 4, correct: 3 },
       yourScore: 2
     }
-    runtime.receive({ type: 'reveal', data: reveal })
+    receiveReveal(runtime, reveal)
     expect(runtime.getState()).toMatchObject({ screen: 'reveal', reveal })
     expect(effects.resolveReveal).toHaveBeenCalledWith(expect.objectContaining(reveal), charade)
 
@@ -597,7 +760,7 @@ describe('flow lifecycle', () => {
     expect(runtime.postAuthor()).toBe(false)
     expect(messagesOfType(sent, 'post')).toHaveLength(1)
 
-    runtime.receive({ type: 'posted', data: { charadeId: 'posted-1' } })
+    receivePosted(runtime, { charadeId: 'posted-1' })
     expect(runtime.getState()).toMatchObject({ screen: 'posted', postedCharadeId: 'posted-1', pending: [] })
   })
 
@@ -607,15 +770,12 @@ describe('flow lifecycle', () => {
     const charade = makeDecodeCharade()
     serveCharade(runtime, charade)
     runtime.guess(0)
-    runtime.receive({
-      type: 'reveal',
-      data: {
-        charadeId: charade.id,
-        correct: false,
-        phrase: 'Answer two',
-        stats: { total: 4, correct: 1 },
-        yourScore: 0
-      }
+    receiveReveal(runtime, {
+      charadeId: charade.id,
+      correct: false,
+      phrase: 'Answer two',
+      stats: { total: 4, correct: 1 },
+      yourScore: 0
     })
     sent.length = 0
 
@@ -630,15 +790,12 @@ describe('flow lifecycle', () => {
     const charade = makeDecodeCharade()
     serveCharade(runtime, charade)
     runtime.guess(0)
-    runtime.receive({
-      type: 'reveal',
-      data: {
-        charadeId: charade.id,
-        correct: true,
-        phrase: charade.answers[0],
-        stats: { total: 1, correct: 1 },
-        yourScore: 1
-      }
+    receiveReveal(runtime, {
+      charadeId: charade.id,
+      correct: true,
+      phrase: charade.answers[0],
+      stats: { total: 1, correct: 1 },
+      yourScore: 1
     })
     effects.cancelReveal.mockClear()
 
@@ -680,7 +837,7 @@ describe('flow lifecycle', () => {
     const { runtime, sent } = createFlowHarness()
     runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
     serveCharade(runtime, makeDecodeCharade('live'))
-    runtime.receive({ type: 'roundStart', data: { charadeId: 'live' } })
+    announceRound(runtime, 'live')
     sent.length = 0
 
     expect(runtime.guess(0)).toBe(true)
@@ -764,7 +921,23 @@ describe('heartbeats and request retries', () => {
     runtime.tick(0)
     expect(messagesOfType(sent, 'hello')).toHaveLength(1)
     runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
-    expect(runtime.getState()).toMatchObject({ playerAddress: '0xPlayer', playerName: 'Player' })
+    expect(runtime.getState()).toMatchObject({ playerAddress: '0xPlayer', playerName: 'PLAYER' })
+  })
+
+  it('bounds profile names in hello and retries negotiation after protocol-required', () => {
+    let profile = { address: '0xPlayer', name: '👻'.repeat(10_000), isGuest: false }
+    const { runtime, sent } = createFlowHarness({ getProfile: () => profile })
+
+    runtime.tick(0)
+    const firstHello = messagesOfType(sent, 'hello')[0]
+    expect(new TextEncoder().encode(firstHello.data.displayName).length).toBeLessThanOrEqual(32)
+
+    runtime.receive({ type: 'error', data: { code: 'protocol-required' } })
+    expect(messagesOfType(sent, 'hello')).toHaveLength(2)
+
+    profile = { ...profile, name: ' \u202e\u2066  ' }
+    runtime.receive({ type: 'error', data: { code: 'protocol-required' } })
+    expect(messagesOfType(sent, 'hello').at(-1)?.data.displayName).toBe('PLAYER')
   })
   it('moves to waking after a heartbeat timeout and recovers the previous screen on pong', () => {
     const { runtime, sent, advance } = createFlowHarness()
@@ -791,7 +964,7 @@ describe('heartbeats and request retries', () => {
     runtime.dispatch({ type: 'heartbeatTimeout' })
     sent.length = 0
 
-    runtime.receive({ type: 'roundStart', data: { charadeId: 'live' } })
+    announceRound(runtime, 'live')
     expect(messagesOfType(sent, 'nextCharade')).toHaveLength(0)
     runtime.receive({ type: 'pong', data: { seq: 1 } })
 
@@ -842,6 +1015,50 @@ describe('heartbeats and request retries', () => {
 })
 
 describe('audience and rounds', () => {
+  it('ignores delayed round starts and winners from an older round', () => {
+    const { runtime } = createFlowHarness()
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+
+    announceRound(runtime, 'round-a', '1')
+    announceRound(runtime, 'round-b', '2')
+    announceWinner(runtime, {
+      roundId: '1',
+      charadeId: 'round-a',
+      address: 'remote-a',
+      name: 'Remote A'
+    })
+    announceRound(runtime, 'round-a', '1')
+
+    expect(runtime.getState()).toMatchObject({
+      roundId: '2',
+      roundCharadeId: 'round-b',
+      latestRoundSequence: 2,
+      roundWinner: null
+    })
+
+    announceWinner(runtime, {
+      roundId: '2',
+      charadeId: 'round-b',
+      address: 'remote-b',
+      name: 'Remote B'
+    })
+    expect(runtime.getState()).toMatchObject({
+      roundId: '',
+      roundCharadeId: '',
+      roundWinner: { address: 'remote-b', name: 'Remote B' }
+    })
+  })
+
+  it('rejects malformed or unsafe round identifiers', () => {
+    const { runtime } = createFlowHarness()
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+
+    announceRound(runtime, 'bad-leading-zero', '01')
+    announceRound(runtime, 'bad-zero', '0')
+    announceRound(runtime, 'bad-overflow', '9007199254740992')
+
+    expect(runtime.getState()).toMatchObject({ roundId: '', roundCharadeId: '', latestRoundSequence: 0 })
+  })
   it('merges audience chunks case-insensitively, caps six, and resets only for a new server instance', () => {
     const { runtime } = createFlowHarness()
     runtime.receive({ type: 'ready', data: { instanceId: 'one', serverTime: FIXED_NOW } })
@@ -871,8 +1088,8 @@ describe('audience and rounds', () => {
     serveCharade(runtime, makeDecodeCharade('old'))
     sent.length = 0
 
-    runtime.receive({ type: 'roundStart', data: { charadeId: 'live' } })
-    runtime.receive({ type: 'roundStart', data: { charadeId: 'live' } })
+    announceRound(runtime, 'live')
+    announceRound(runtime, 'live')
     expect(runtime.getState().roundCharadeId).toBe('live')
     expect(messagesOfType(sent, 'nextCharade')).toHaveLength(1)
 
@@ -888,7 +1105,7 @@ describe('audience and rounds', () => {
     serveCharade(runtime, makeDecodeCharade('old'))
     sent.length = 0
 
-    runtime.receive({ type: 'roundStart', data: { charadeId: 'departed-round' } })
+    announceRound(runtime, 'departed-round')
     serveCharade(runtime, makeDecodeCharade('plain-1'))
     expect(messagesOfType(sent, 'nextCharade')).toHaveLength(2)
     expect(runtime.getState().charade?.id).toBe('old')
@@ -909,20 +1126,17 @@ describe('audience and rounds', () => {
     runtime.guess(0)
     sent.length = 0
 
-    runtime.receive({ type: 'roundStart', data: { charadeId: 'live' } })
+    announceRound(runtime, 'live')
 
     expect(runtime.getState()).toMatchObject({ screen: 'decode', charade: { id: 'old' }, roundCharadeId: 'live' })
     expect(messagesOfType(sent, 'nextCharade')).toHaveLength(0)
 
-    runtime.receive({
-      type: 'reveal',
-      data: {
-        charadeId: 'old',
-        correct: false,
-        phrase: 'Answer one',
-        stats: { total: 1, correct: 0 },
-        yourScore: 0
-      }
+    receiveReveal(runtime, {
+      charadeId: 'old',
+      correct: false,
+      phrase: 'Answer one',
+      stats: { total: 1, correct: 0 },
+      yourScore: 0
     })
     expect(runtime.getState()).toMatchObject({ screen: 'reveal', charade: { id: 'old' } })
     expect(runtime.requestNextCharade()).toBe(true)
@@ -936,7 +1150,7 @@ describe('audience and rounds', () => {
     runtime.guess(0)
     sent.length = 0
 
-    runtime.receive({ type: 'roundStart', data: { charadeId: 'live' } })
+    announceRound(runtime, 'live')
     runtime.receive({ type: 'error', data: { code: 'temporary-failure' } })
 
     expect(runtime.getState()).toMatchObject({ screen: 'decode', charade: { id: 'old' }, roundCharadeId: 'live' })
@@ -947,23 +1161,21 @@ describe('audience and rounds', () => {
     const { runtime } = createFlowHarness()
     runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
     serveCharade(runtime, makeDecodeCharade('live'))
-    runtime.receive({ type: 'roundStart', data: { charadeId: 'live' } })
+    announceRound(runtime, 'live')
 
-    runtime.receive({
-      type: 'reveal',
-      data: {
-        charadeId: 'live',
-        correct: false,
-        phrase: 'Answer one',
-        stats: { total: 1, correct: 0 },
-        yourScore: 0
-      }
+    runtime.guess(0)
+    receiveReveal(runtime, {
+      charadeId: 'live',
+      correct: false,
+      phrase: 'Answer one',
+      stats: { total: 1, correct: 0 },
+      yourScore: 0
     })
 
     expect(runtime.getState()).toMatchObject({ screen: 'reveal', roundCharadeId: 'live' })
     expect(canSpectatorReact(runtime.getState())).toBe(true)
 
-    runtime.receive({ type: 'roundWinner', data: { address: 'remote', name: 'Remote' } })
+    announceWinner(runtime, { address: 'remote', name: 'Remote', charadeId: 'live' })
 
     expect(runtime.getState().roundCharadeId).toBe('')
     expect(canSpectatorReact(runtime.getState())).toBe(false)
@@ -975,22 +1187,31 @@ describe('audience and rounds', () => {
       const { runtime, sent } = createFlowHarness()
       runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
       if (screen === 'since') {
-        runtime.receive({ type: 'since', data: { triedYou: 2, gotYou: 1, rank: 4 } })
+        receiveSince(runtime, { triedYou: 2, gotYou: 1, rank: 4 })
       } else if (screen === 'reveal') {
         serveCharade(runtime, makeDecodeCharade('old'))
-        runtime.receive({
-          type: 'reveal',
-          data: {
-            charadeId: 'old',
-            correct: false,
-            phrase: 'Answer one',
-            stats: { total: 1, correct: 0 },
-            yourScore: 0
-          }
+        runtime.guess(0)
+        receiveReveal(runtime, {
+          charadeId: 'old',
+          correct: false,
+          phrase: 'Answer one',
+          stats: { total: 1, correct: 0 },
+          yourScore: 0
         })
       } else if (screen === 'author' || screen === 'posted') {
         runtime.beginAuthoring()
-        if (screen === 'posted') runtime.receive({ type: 'posted', data: { charadeId: 'authored' } })
+        if (screen === 'posted') {
+          runtime.dispatch({
+            type: 'posted',
+            result: {
+              charadeId: 'authored',
+              revision: 0,
+              ...runtime.getState().progress,
+              stampAwarded: false,
+              titleUnlocked: false
+            }
+          })
+        }
       } else if (screen === 'boards') {
         runtime.showBoards()
       } else if (screen === 'invite') {
@@ -998,7 +1219,7 @@ describe('audience and rounds', () => {
       }
       sent.length = 0
 
-      runtime.receive({ type: 'roundStart', data: { charadeId: 'live' } })
+      announceRound(runtime, 'live')
 
       expect(runtime.getState()).toMatchObject({ screen, roundCharadeId: 'live' })
       if (screen === 'since') {
@@ -1014,16 +1235,16 @@ describe('audience and rounds', () => {
       const { runtime, sent } = createFlowHarness()
       runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
       if (screen === 'since') {
-        runtime.receive({ type: 'since', data: { triedYou: 2, gotYou: 1, rank: 4 } })
+        receiveSince(runtime, { triedYou: 2, gotYou: 1, rank: 4 })
       } else if (screen === 'decode') {
         serveCharade(runtime, makeDecodeCharade('mismatched'))
       } else if (screen === 'author') {
         runtime.beginAuthoring()
       }
-      runtime.dispatch({ type: 'roundStart', charadeId: 'live' })
+      runtime.dispatch({ type: 'roundStart', roundId: '1', charadeId: 'live', sequence: 1 })
       sent.length = 0
 
-      runtime.receive({ type: 'roundStart', data: { charadeId: '' } })
+      announceRound(runtime, '', '2')
 
       expect(runtime.getState()).toMatchObject({ screen, roundCharadeId: '' })
       if (screen === 'decode') expect(runtime.getState().charade?.id).toBe('mismatched')
@@ -1035,7 +1256,7 @@ describe('audience and rounds', () => {
     const { runtime, effects } = createFlowHarness()
     runtime.receive({ type: 'ready', data: { instanceId: 'one', serverTime: FIXED_NOW } })
     serveCharade(runtime, makeDecodeCharade('live'))
-    runtime.receive({ type: 'roundStart', data: { charadeId: 'live' } })
+    announceRound(runtime, 'live')
     runtime.dispatch({ type: 'heartbeatTimeout' })
     expect(runtime.getState().resumeScreen).toBe('decode')
     effects.cancelReveal.mockClear()
@@ -1062,15 +1283,15 @@ describe('audience and rounds', () => {
   it('moves the local winner directly to authoring and clears the winner toast after four seconds', () => {
     const { runtime, advance } = createFlowHarness({ address: '0xPlayer' })
     runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
-    runtime.receive({ type: 'roundStart', data: { charadeId: 'live' } })
+    announceRound(runtime, 'live')
 
-    runtime.receive({ type: 'roundWinner', data: { address: '0xPLAYER', name: 'Player' } })
+    announceWinner(runtime, { address: '0xPLAYER', name: 'Player', charadeId: 'live' })
 
     expect(runtime.getState()).toMatchObject({
       screen: 'author',
       roundCharadeId: '',
-      roundWinner: { address: '0xPLAYER', name: 'Player' },
-      toast: { winnerName: 'Player', shownAt: FIXED_NOW }
+      roundWinner: { address: '0xPLAYER', name: 'PLAYER' },
+      toast: { winnerName: 'PLAYER', shownAt: FIXED_NOW }
     })
     expect(runtime.getState().author).not.toBeNull()
     advance(4_000)
@@ -1082,18 +1303,15 @@ describe('audience and rounds', () => {
     runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
     const charade = makeDecodeCharade('live')
     serveCharade(runtime, charade)
-    runtime.receive({ type: 'roundStart', data: { charadeId: charade.id } })
+    announceRound(runtime, charade.id)
     runtime.guess(0)
-    runtime.receive({ type: 'roundWinner', data: { address: '0xPLAYER', name: 'Player' } })
-    runtime.receive({
-      type: 'reveal',
-      data: {
-        charadeId: charade.id,
-        correct: true,
-        phrase: charade.answers[0],
-        stats: { total: 1, correct: 1 },
-        yourScore: 1
-      }
+    announceWinner(runtime, { address: '0xPLAYER', name: 'Player', charadeId: charade.id })
+    receiveReveal(runtime, {
+      charadeId: charade.id,
+      correct: true,
+      phrase: charade.answers[0],
+      stats: { total: 1, correct: 1 },
+      yourScore: 1
     })
 
     runtime.backFromAuthor()
@@ -1103,10 +1321,35 @@ describe('audience and rounds', () => {
     expect(effects.showStageReward).toHaveBeenLastCalledWith(charade.authorAddress, charade.authorTitle)
   })
 
+  it('accepts the matching round winner when the reveal arrives first', () => {
+    const { runtime } = createFlowHarness({ address: '0xPlayer' })
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    const charade = makeDecodeCharade('live')
+    serveCharade(runtime, charade)
+    announceRound(runtime, charade.id)
+    runtime.guess(0)
+    receiveReveal(runtime, {
+      charadeId: charade.id,
+      correct: true,
+      phrase: charade.answers[0],
+      stats: { total: 1, correct: 1 },
+      yourScore: 1
+    })
+
+    announceWinner(runtime, { address: '0xPLAYER', name: 'Player', charadeId: charade.id })
+
+    expect(runtime.getState()).toMatchObject({
+      screen: 'author',
+      roundId: '',
+      roundCharadeId: '',
+      roundWinner: { address: '0xPLAYER', name: 'PLAYER' }
+    })
+  })
+
   it('does not move a remote winner into authoring', () => {
     const { runtime } = createFlowHarness({ address: 'local' })
     runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
-    runtime.receive({ type: 'roundWinner', data: { address: 'remote', name: 'Remote' } })
+    announceWinner(runtime, { address: 'remote', name: 'Remote', charadeId: 'missing' })
 
     expect(runtime.getState().screen).toBe('foyer')
     expect(runtime.getState().author).toBeNull()
@@ -1178,15 +1421,12 @@ describe('author controls and request guards', () => {
     expect(runtime.guess(3)).toBe(false)
     expect(runtime.guess(0)).toBe(true)
     expect(runtime.guess(1)).toBe(false)
-    runtime.receive({
-      type: 'reveal',
-      data: {
-        charadeId: 'charade-1',
-        correct: false,
-        phrase: 'Answer one',
-        stats: { total: 1, correct: 0 },
-        yourScore: 0
-      }
+    receiveReveal(runtime, {
+      charadeId: 'charade-1',
+      correct: false,
+      phrase: 'Answer one',
+      stats: { total: 1, correct: 0 },
+      yourScore: 0
     })
 
     expect(runtime.beginAuthoring()).toBe(true)
