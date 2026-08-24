@@ -1,4 +1,4 @@
-export const WORLD_NAME = 'ghostcharades.dcl.eth'
+export const WORLD_NAME = 'ghostlight.dcl.eth'
 export const INVITE_URL = 'https://decentraland.org/jump/?realm=' + WORLD_NAME
 
 export const EMOTE_STEP_SECONDS = 2.5

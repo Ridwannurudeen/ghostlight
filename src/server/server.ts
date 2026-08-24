@@ -7,7 +7,7 @@ import { chooseCharadeFor, pickDecoys, shuffleSeeded } from '../shared/pick'
 import type { Charade, Look, PlayerProgress } from '../shared/types'
 import { STORAGE_SCHEMA_VERSION } from '../shared/types'
 import { LiveRounds } from './rounds'
-import { GhostCharadesState, dayKey, gameState } from './state'
+import { GhostlightState, dayKey, gameState } from './state'
 import { StorageUnavailableError, flushNow, startFlushLoop } from './storage'
 
 type HelloPayload = { displayName: string; isGuest: boolean; protocolVersion: number }
@@ -24,7 +24,7 @@ type RevealPayload = {
   phrase: string
   stats: { total: number; correct: number }
   yourScore: number
-  daily: ReturnType<GhostCharadesState['getDaily']>
+  daily: ReturnType<GhostlightState['getDaily']>
   stampAwarded: boolean
   title: PlayerProgress['title']
   nextUnlock: PlayerProgress['nextUnlock']
@@ -34,7 +34,7 @@ type RevealPayload = {
 type PostedPayload = {
   charadeId: string
   replyTo?: string
-  daily: ReturnType<GhostCharadesState['getDaily']>
+  daily: ReturnType<GhostlightState['getDaily']>
   stampAwarded: boolean
   title: PlayerProgress['title']
   nextUnlock: PlayerProgress['nextUnlock']
@@ -44,7 +44,7 @@ type PostedPayload = {
 export type ProtocolSend = (type: string, data: unknown, to?: string[]) => void | Promise<void>
 
 export type ServerProtocolOptions = {
-  state: GhostCharadesState
+  state: GhostlightState
   send: ProtocolSend
   snapshotLook: (address: string) => Look | null | Promise<Look | null>
   ready?: Promise<void>
@@ -341,7 +341,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     }
   }
 
-  function progressFor(stats: Awaited<ReturnType<GhostCharadesState['getOrCreateStats']>>) {
+  function progressFor(stats: Awaited<ReturnType<GhostlightState['getOrCreateStats']>>) {
     const progress = options.state.getPlayerProgress(stats)
     return { title: progress.title, nextUnlock: { ...progress.nextUnlock } }
   }

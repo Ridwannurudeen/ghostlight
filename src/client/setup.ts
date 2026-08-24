@@ -6,7 +6,7 @@ import { getPerformerEntity, initializeGhosts } from './ghosts'
 import { initializeSounds, startRoomTone } from './sound'
 import { STAGE_CAMERA_POSITION, createTheater, getTheaterRegion, isInDecodeArea, type TheaterRegion } from './theater'
 
-const SETUP_SYSTEM = 'ghost-charades::client-setup'
+const SETUP_SYSTEM = 'ghostlight::client-setup'
 
 export type TheaterCamera = 'foyer' | 'stage' | 'reveal'
 

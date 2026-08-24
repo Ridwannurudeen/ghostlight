@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { PROTOCOL_VERSION, themeForTimestamp } from '../src/shared/config'
 import { DECK, HOUSE_CHARADE } from '../src/shared/deck'
 import { createServerProtocol, type ProtocolSend, type ServerProtocolOptions } from '../src/server/server'
-import { GhostCharadesState } from '../src/server/state'
+import { GhostlightState } from '../src/server/state'
 import { PLAYER_STATS_KEY, StorageUnavailableError, createStorageRepository } from '../src/server/storage'
 import { FIXED_NOW, FakeStorage, deferred, makeCharade, makeLook, makeReply, makeStats } from './test-helpers'
 
@@ -94,7 +94,7 @@ async function createHarness(
 ) {
   const repository = createStorageRepository(storage)
   const now = overrides.now ?? (() => FIXED_NOW)
-  const state = new GhostCharadesState(repository, now)
+  const state = new GhostlightState(repository, now)
   await state.hydrate()
   const sent: SentMessage[] = []
   const send: ProtocolSend = async (type, data, to) => {

@@ -1,4 +1,4 @@
-# Ghost Charades — Roadmap
+# Ghostlight — Roadmap
 
 *Drafted 2026-08-23 by the owner's two AI builders from three independent inputs: a primary-source research
 pass on Decentraland's programs and levers plus two independent AI-assisted roadmap drafts. Every external fact below
@@ -9,7 +9,7 @@ plan does not depend on it.*
 
 ## 0. Vision
 
-In twelve months Ghost Charades is Decentraland's **asynchronous avatar theater network**: a set of
+In twelve months Ghostlight is Decentraland's **asynchronous avatar theater network**: a set of
 connected venues where every visit leaves a performance that entertains the next stranger, tours other
 creators' Worlds, and grows into duets, troupes, and seasonal shows. It creates a category the platform
 does not have — **time-shifted social play** — and it is the conversation layer the mobile client lacks:
@@ -89,7 +89,7 @@ performances, seven consecutive days without a progression-loss or session-block
 
 ## 4. Phase 2 — The Show Network (Oct → Dec)
 
-**Deliverable:** "Ghost Charades Network Beta." **Gate:** three connected venues, five external creators,
+**Deliverable:** "Ghostlight Network Beta." **Gate:** three connected venues, five external creators,
 600 monthly visitors, 99 % successful cross-World ghost retrieval.
 
 Build order (ranked):

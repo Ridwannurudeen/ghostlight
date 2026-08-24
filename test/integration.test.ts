@@ -109,7 +109,7 @@ import {
 import { INVITE_URL, MAX_GHOSTS, themeForTimestamp } from '../src/shared/config'
 import { DECK } from '../src/shared/deck'
 import { createServerProtocol, type ProtocolSend } from '../src/server/server'
-import { GhostCharadesState } from '../src/server/state'
+import { GhostlightState } from '../src/server/state'
 import { PLAYER_STATS_KEY, createStorageRepository } from '../src/server/storage'
 import { FIXED_NOW, FakeStorage, deferred, makeCharade, makeLook, makeStats } from './test-helpers'
 
@@ -316,7 +316,7 @@ describe('full experience integration', () => {
     const replierAddress = '0xReplier'
     const storage = new FakeStorage()
     const repository = createStorageRepository(storage)
-    const state = new GhostCharadesState(repository, () => FIXED_NOW)
+    const state = new GhostlightState(repository, () => FIXED_NOW)
     await state.hydrate()
     const target = makeCharade('opening-target', {
       author: { address: '0xAuthor', name: 'Maya' },
@@ -595,11 +595,11 @@ describe('full experience integration', () => {
     replierRuntime.showInvite()
     replierRuntime.setInviteStatus('copied')
     expect(replierRuntime.getState()).toMatchObject({ screen: 'invite', inviteStatus: 'copied' })
-    expect(INVITE_URL).toBe('https://decentraland.org/jump/?realm=ghostcharades.dcl.eth')
+    expect(INVITE_URL).toBe('https://decentraland.org/jump/?realm=ghostlight.dcl.eth')
 
     await repository.flushNow()
     const restartedRepository = createStorageRepository(storage)
-    const restartedState = new GhostCharadesState(restartedRepository, () => FIXED_NOW)
+    const restartedState = new GhostlightState(restartedRepository, () => FIXED_NOW)
     await restartedState.hydrate()
     const restored = restartedState.getCharade(authoredCharadeId)!
     expect(restored).toMatchObject({ author: { address: playerAddress, name: 'Decoder' } })
@@ -607,7 +607,7 @@ describe('full experience integration', () => {
 
     const requestedAudience = Array.from({ length: 6 }, (_, index) => makeLook(`audience-${index}`))
     setAudience(requestedAudience)
-    const ghostSystem = ecsHarness.systems.get('ghost-charades::ghosts')!
+    const ghostSystem = ecsHarness.systems.get('ghostlight::ghosts')!
     for (let index = 0; index < requestedAudience.length; index += 1) ghostSystem(1 / 3)
     showDuet(
       { look: restored.author, emotes: restored.emotes },

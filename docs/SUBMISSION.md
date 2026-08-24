@@ -1,4 +1,4 @@
-# Ghost Charades — Submission Packet
+# Ghostlight — Submission Packet
 
 ## Submission timing and judging facts
 
@@ -11,13 +11,13 @@ This section is for submission preparation; the paste-ready project copy begins 
   Performance and Optimization; Creativity and Originality; Retention and Discovery Value; and Overall
   Execution.
 - Ties prioritize Mobile-First Experience, Retention and Discovery Value, and Overall Execution.
-- The candidate is configured for `ghostcharades.dcl.eth`; the owner must prove control of that NAME before the
+- The candidate is configured for `ghostlight.dcl.eth`; the owner must prove control of that NAME before the
   World link is final.
 
 ## Hard release gates - do not deploy or submit
 
-- Confirm ownership of `ghostcharades.dcl.eth`; verify the exact release candidate retains
-  `worldConfiguration.name: "ghostcharades.dcl.eth"`, `authoritativeMultiplayer: true`, and no `fixedAdapter` or
+- Confirm ownership of `ghostlight.dcl.eth`; verify the exact release candidate retains
+  `worldConfiguration.name: "ghostlight.dcl.eth"`, `authoritativeMultiplayer: true`, and no `fixedAdapter` or
   `placesConfig.optOut`.
 - Publish the repository first. Replace the repository/licence preparation note below with working absolute public
   HTTPS URLs to the repository and `LICENSE`; relative links are prohibited in the submitted copy.
@@ -34,16 +34,16 @@ This section is for submission preparation; the paste-ready project copy begins 
 
 ### Project title
 
-Ghost Charades
+Ghostlight
 
 ### Hook
 
-Ghost Charades turns Decentraland mobile's missing chat into the game: decode a stranger's three-emote ghost,
+Ghostlight turns Decentraland mobile's missing chat into the game: decode a stranger's three-emote ghost,
 then leave a performance for the next visitor.
 
 ### Project description
 
-Ghost Charades is a mobile-first, voice-free social World built around communication through avatar
+Ghostlight is a mobile-first, voice-free social World built around communication through avatar
 performance. A visitor watches a previous player's saved Decentraland avatar act out a phrase, chooses between
 three answers, and sees an eight-second theatrical reveal. The visitor can then choose a phrase from the curated
 deck and post a three-emote performance for whoever arrives next. A clearly labelled House ghost keeps the solo
@@ -58,7 +58,7 @@ checklist requires genuine current-theme content to be renewed throughout judgin
 ### How it was designed and optimized for mobile
 
 Every game action is an on-screen button with a minimum 96 px touch target. The UI renders inside the mobile
-client's interactable safe area on a fixed 1600 × 720 virtual canvas. Ghost Charades hides the client's native
+client's interactable safe area on a fixed 1600 × 720 virtual canvas. Ghostlight hides the client's native
 action buttons because the scene does not use them, keeps the movement joystick available, and never requires a
 tap on a 3D object. Answers, verdicts, progress, and errors use explicit text; sound and stage colour reinforce
 the result instead of carrying it alone. No screen exposes more than five game buttons: authoring separates phrase,
@@ -94,7 +94,7 @@ hardest real charade becomes Ghost of the Night. The server persists performance
 scores, stamps, titles, and return reports make each visit a continuation rather than a reset.
 
 Players can replay a performance before guessing, make their own version after the reveal, or answer back to
-the same phrase. After posting, Copy Invite copies `Join me for Ghost Charades:` plus the Decentraland World
+the same phrase. After posting, Copy Invite copies `Join me for Ghostlight:` plus the Decentraland World
 URL. The server still selects the friend's eligible performance; the invite does not claim to target the inviter's
 charade. No engagement, visitor, guess, or board entry is fabricated.
 

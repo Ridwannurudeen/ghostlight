@@ -72,7 +72,7 @@ export function initializeGhosts() {
   slots.push(createSlot(STAGE_PREVIEW_POSITION, FACE_AUDIENCE))
 
   initialized = true
-  engine.addSystem(ghostSystem, undefined, 'ghost-charades::ghosts')
+  engine.addSystem(ghostSystem, undefined, 'ghostlight::ghosts')
 }
 
 export function showPerformer(look: Look, emotes: GhostEmotes) {

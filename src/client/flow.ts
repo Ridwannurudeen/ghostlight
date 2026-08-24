@@ -680,10 +680,10 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
   function emit(message: OutboundMessage) {
     try {
       void Promise.resolve(options.send(message)).catch((error: unknown) => {
-        console.error(`Ghost Charades message ${message.type} failed`, error)
+        console.error(`Ghostlight message ${message.type} failed`, error)
       })
     } catch (error: unknown) {
-      console.error(`Ghost Charades message ${message.type} failed`, error)
+      console.error(`Ghostlight message ${message.type} failed`, error)
     }
   }
 
@@ -1220,7 +1220,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
       dispatch({ type: 'dismissNotice', id })
     },
     reportError(code: string, error?: unknown) {
-      if (error !== undefined) console.error(`Ghost Charades ${code}`, error)
+      if (error !== undefined) console.error(`Ghostlight ${code}`, error)
       requests.clear()
       dispatch({ type: 'error', code })
     }

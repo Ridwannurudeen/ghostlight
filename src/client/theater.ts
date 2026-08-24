@@ -178,7 +178,7 @@ export function createTheater() {
   marqueeTextEntity = engine.addEntity()
   Transform.create(marqueeTextEntity, { position: Vector3.create(8, 5.38, 5.45) })
   Billboard.create(marqueeTextEntity, {})
-  marquee.setText('GHOST CHARADES')
+  marquee.setText('GHOSTLIGHT')
 
   createModel('poster_frame.glb', Vector3.create(2.45, 0, 3.5))
   createModel('poster_frame.glb', Vector3.create(13.55, 0, 3.5))

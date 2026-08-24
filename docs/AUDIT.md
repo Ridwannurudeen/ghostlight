@@ -34,7 +34,7 @@ baseline, before this fix pass.
 | S-10 | MEDIUM | `src/server/state.ts:335`, `:439`, `:568` | FIXED (`3285294`) — UTC rollover prunes expired live indexes/charades, inactive stats use a dirty-safe bounded cache, and authored history uses an exact count plus bounded IDs. |
 | S-11 | MEDIUM | `src/shared/config.ts:11`, `src/server/server.ts:402`, `:436` | FIXED (`3285294`) — protocol v2 negotiation is tracked separately and gates every stateful handler until leave. |
 | S-12 | LOW | `src/server/state.ts:52`, `:178`, `src/shared/messages.ts:87` | FIXED (`3285294`) — wire counters saturate at Int32 max and stored timestamps must be non-negative safe integers in the valid date range; the real codec is exercised. |
-| A-01 | BLOCKER | `scene.json:17` | FIXED (`32ae040`) — the candidate declares `worldConfiguration.name: "ghostcharades.dcl.eth"`; ownership remains an explicit owner gate. |
+| A-01 | BLOCKER | `scene.json:17` | FIXED (`32ae040`) — the candidate declares `worldConfiguration.name: "ghostlight.dcl.eth"`; ownership remains an explicit owner gate. |
 | A-02 | BLOCKER | `src/server/state.ts:387`, `src/server/server.ts:522` | ACCEPTED — this duplicates S-01 and cannot be truthfully repaired with repository-generated activity. The hard genuine-content and cold-rehydration gates are in `f367167`. |
 | A-03 | HIGH | `src/client/ui.tsx:429` | FIXED (`3285294`) — duplicate of C-01; all-state regressions include live reactions. |
 | A-04 | HIGH | `scene.json:18`, `docs/PERFORMANCE.md:17`, `test/asset-budget.test.ts:187` | FIXED (`32ae040`) — two adjacent parcels are declared and exact theater plus capped reward instancing is tested at 16,492 triangles and 79 entities. |
@@ -79,7 +79,7 @@ By report: CLIENT 16 fixed; SERVER/SHARED 11 fixed and 1 accepted; ASSETS/TESTS/
 
 ## Owner's exact pre-deploy and release checklist
 
-1. Confirm ownership of `ghostcharades.dcl.eth`; verify `scene.json` still has that exact `worldConfiguration.name`,
+1. Confirm ownership of `ghostlight.dcl.eth`; verify `scene.json` still has that exact `worldConfiguration.name`,
    `authoritativeMultiplayer: true`, parcels `0,0` and `1,0`, and no `fixedAdapter` or `placesConfig.optOut`.
 2. Publish this repository, verify its public HTTPS repository and `LICENSE` URLs, and replace the preparation note
    in `docs/SUBMISSION.md`. Do not invent or retain relative links.

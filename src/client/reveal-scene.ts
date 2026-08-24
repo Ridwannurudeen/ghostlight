@@ -102,7 +102,7 @@ export function createSceneRevealController(audio: RevealAudioPort, clock?: Reve
     if (floatingEntity !== null && TextShape.has(floatingEntity)) TextShape.deleteFrom(floatingEntity)
   }
 
-  engine.addSystem(revealPresentationSystem, undefined, 'ghost-charades::reveal-presentation')
+  engine.addSystem(revealPresentationSystem, undefined, 'ghostlight::reveal-presentation')
 
   const effects: RevealEffects = {
     playSound: audio.play,

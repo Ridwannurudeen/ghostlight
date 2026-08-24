@@ -1,6 +1,6 @@
 ## `#rl-mobile-featuring`
 
-**Ghost Charades**
+**Ghostlight**
 
 World: `<WORLD LINK>`
 
@@ -42,11 +42,11 @@ and the Answer-Back duet. Use only real-device gameplay, with no desktop or edit
 
 ## `#rl-mobile-curation`
 
-**iOS curation request — Ghost Charades**
+**iOS curation request — Ghostlight**
 
 World: `<WORLD LINK>`
 
-Ghost Charades is a mobile-first, asynchronous avatar-charades World. Watch a three-emote ghost performance,
+Ghostlight is a mobile-first, asynchronous avatar-charades World. Watch a three-emote ghost performance,
 choose what it means from three large answer cards, then author your own for the next visitor. Signed-in
 players can return for their results, complete the daily themed Tonight's Show, or add an Answer-Back
 performance that becomes an alternating duet. On the iOS mobile client, where there are no DMs, voice, or

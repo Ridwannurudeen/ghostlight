@@ -1,6 +1,6 @@
-# Ghost Charades — Build Plan (A → Z)
+# Ghostlight — Build Plan (A → Z)
 
-Companion to `docs/superpowers/specs/2026-08-23-ghost-charades-design.md` (the spec: WHAT). This file is the
+Companion to `docs/superpowers/specs/2026-08-23-ghostlight-design.md` (the spec: WHAT). This file is the
 HOW: task order, file ownership, acceptance criteria, and the rules. Read the spec first, then this, then build.
 
 ## 0. Ground rules (non-negotiable)
@@ -82,7 +82,7 @@ The spike files (`src/client/spike.ts`, the current `src/server/server.ts`, `src
 ## 3. Tasks in order
 
 ### T1 — Foundations (lead, before any fan-out)
-- `config.ts`: `WORLD_NAME = 'ghostcharades.dcl.eth'` (placeholder until the owner buys the NAME),
+- `config.ts`: `WORLD_NAME = 'ghostlight.dcl.eth'` (placeholder until the owner buys the NAME),
   `INVITE_URL = 'https://decentraland.org/jump/?realm=' + WORLD_NAME`, `EMOTE_STEP_SECONDS = 2.5`,
   `MAX_GHOSTS = 8`, `AUDIENCE_SEATS = 6`, `HEARTBEAT_SECONDS = 2`, `FLUSH_SECONDS = 30`,
   `AUTHOR_COOLDOWN_SECONDS = 60`, `PROTOCOL_VERSION = 1`.

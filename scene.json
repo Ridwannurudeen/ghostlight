@@ -2,7 +2,7 @@
   "ecs7": true,
   "runtimeVersion": "7",
   "display": {
-    "title": "Ghost Charades",
+    "title": "Ghostlight",
     "description": "Guess what a stranger's ghost is acting out, then leave your own charade.",
     "navmapThumbnail": "images/scene-thumbnail.png"
   },
@@ -33,7 +33,7 @@
     }
   ],
   "worldConfiguration": {
-    "name": "ghostcharades.dcl.eth"
+    "name": "ghostlight.dcl.eth"
   },
   "featureToggles": {
     "voiceChat": "enabled",

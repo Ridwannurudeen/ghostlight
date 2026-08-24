@@ -1,4 +1,4 @@
-# Ghost Charades — Build Plan 2: Opening Night (Phase 0 of `docs/ROADMAP.md`)
+# Ghostlight — Build Plan 2: Opening Night (Phase 0 of `docs/ROADMAP.md`)
 
 The functional core (`d157934`: loop, server, persistence, 113 tests) is done and frozen. This plan adds
 everything the judge *sees and hears*. Read `docs/ROADMAP.md` §2 for the why; this file is the how.

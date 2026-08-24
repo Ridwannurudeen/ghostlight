@@ -1,4 +1,4 @@
-# Ghost Charades — Design Spec
+# Ghostlight — Design Spec
 
 **Event:** Decentraland Friendzone Mobile Buildathon (DoraHacks). Deadline shown on the campaign page:
 2026-09-04 00:00 (timezone not stated — our wall is **Tue 2 Sep 18:00 local**). Judging 5–11 Sep, every
@@ -67,7 +67,7 @@ pressing player's avatar, visible to all.
 Decentraland SDK 7, TypeScript, ECS. `@dcl/sdk@auth-server` + `@dcl/js-runtime@auth-server`
 (the Multiplayer Server branch; a commit-suffixed pre-release tag — **pin the resolved version in
 `package-lock.json` and do not upgrade after 28 Aug**). `scene.json`: `"authoritativeMultiplayer": true`,
-`worldConfiguration.name = ghostcharades.dcl.eth`, **never** `fixedAdapter: "offline:offline"`,
+`worldConfiguration.name = ghostlight.dcl.eth`, **never** `fixedAdapter: "offline:offline"`,
 `placesConfig.optOut` unset.
 
 ```
@@ -153,9 +153,9 @@ no TTL.
   isMobile() ? 'interactable' : 'device' })`, explicit virtual screen `1600×720` on mobile.
 - Screens: Waking · Decode (banner + 3 answers + Replay) · Reveal · Author (phrase + Shuffle, 5 emote
   buttons, Preview, Post) · Boards · Invite. Each screen: one sentence, big buttons, nothing bottom-right.
-- Invite: copy a general World invitation for `https://decentraland.org/jump/?realm=ghostcharades.dcl.eth`.
+- Invite: copy a general World invitation for `https://decentraland.org/jump/?realm=ghostlight.dcl.eth`.
   Whether that https link opens the mobile app is **unverified** — day-1 test on the Android; fallback
-  `decentraland://?realm=ghostcharades.dcl.eth`.
+  `decentraland://?realm=ghostlight.dcl.eth`.
 
 ### 5.7 Cold start and readiness
 The server shuts down ~2 min after the last player leaves and cold-starts in ~15 s; messages sent before

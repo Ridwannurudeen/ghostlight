@@ -275,7 +275,7 @@ def main():
     }
 
     manifest_entries = []
-    with tempfile.TemporaryDirectory(prefix="ghost-charades-audio-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="ghostlight-audio-") as temporary:
         temporary_path = Path(temporary)
         for filename, samples in sounds.items():
             wav_path = temporary_path / filename.replace(".mp3", ".wav")

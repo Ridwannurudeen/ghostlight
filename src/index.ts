@@ -167,7 +167,7 @@ export function main() {
       opening.tick(deltaSeconds)
     },
     undefined,
-    'ghost-charades::opening'
+    'ghostlight::opening'
   )
   startClientFlow()
 }

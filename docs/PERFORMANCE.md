@@ -1,4 +1,4 @@
-# Ghost Charades performance profile
+# Ghostlight performance profile
 
 Measured on 2026-08-23 from the generated GLB JSON chunks and the entity creation paths in `src/client`.
 This is a deterministic authored-scene profile, not a substitute for the Android and iOS renderer counters in

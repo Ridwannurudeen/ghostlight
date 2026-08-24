@@ -244,7 +244,7 @@ describe('invite handoff', () => {
 
     expect(uiActions.showInvite).toHaveBeenCalledTimes(1)
     expect(restrictedActions.copyToClipboard).toHaveBeenCalledWith({
-      text: 'Join me for Ghost Charades: https://decentraland.org/jump/?realm=ghostcharades.dcl.eth'
+      text: 'Join me for Ghostlight: https://decentraland.org/jump/?realm=ghostlight.dcl.eth'
     })
     expect(uiActions.setInviteStatus).toHaveBeenCalledWith('copied')
   })

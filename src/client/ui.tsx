@@ -583,7 +583,7 @@ function boardsScreen(state: ClientFlowState) {
 
 function copyInvite(showInvite = false) {
   if (showInvite) clientFlow.showInvite()
-  void copyToClipboard({ text: `Join me for Ghost Charades: ${INVITE_URL}` }).then(
+  void copyToClipboard({ text: `Join me for Ghostlight: ${INVITE_URL}` }).then(
     () => clientFlow.setInviteStatus('copied'),
     (error: unknown) => {
       clientFlow.setInviteStatus('failed')
@@ -598,7 +598,7 @@ function inviteScreen(state: ClientFlowState) {
       ? 'Your invitation is copied and ready to share.'
       : state.inviteStatus === 'failed'
         ? 'The invitation could not be copied on this device.'
-        : 'Copy a link to invite a friend to Ghost Charades.'
+        : 'Copy a link to invite a friend to Ghostlight.'
   return screenShell(
     sentence,
     <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', justifyContent: 'center' }}>

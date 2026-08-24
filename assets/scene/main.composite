@@ -311,7 +311,7 @@
       "data": {
         "0": {
           "json": {
-            "name": "Ghost Charades",
+            "name": "Ghostlight",
             "description": "Guess what a stranger's ghost is acting out, then leave your own charade.",
             "thumbnail": "images/scene-thumbnail.png",
             "categories": ["game", "social"],

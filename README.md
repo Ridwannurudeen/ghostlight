@@ -1,12 +1,12 @@
 <div align="center">
-  <h1>Ghost Charades</h1>
+  <h1>Ghostlight</h1>
   <p><strong>Decode another player's three-emote performance, then leave one for the next visitor.</strong></p>
   <p>A mobile-first social World built with Decentraland SDK7 and its authoritative Multiplayer Server.</p>
 </div>
 
 ## Concept
 
-Ghost Charades turns player avatars into asynchronous performers. The server records a player's avatar look,
+Ghostlight turns player avatars into asynchronous performers. The server records a player's avatar look,
 phrase, and ordered emote sequence; later visitors watch that ghost on a theater stage and choose between three
 answers. The core loop uses performance instead of free-text input and does not depend on DMs, voice, or scene
 chat.
@@ -163,7 +163,7 @@ network retries, and generated-asset limits. Real-device validation remains a se
 [`docs/DEVICE-CHECKLIST.md`](docs/DEVICE-CHECKLIST.md) for cold start, safe areas, sound latency, camera behavior,
 solo persistence, two-client rounds, and measured performance.
 
-`scene.json` configures the candidate for `ghostcharades.dcl.eth`. Deployment remains blocked until the owner
+`scene.json` configures the candidate for `ghostlight.dcl.eth`. Deployment remains blocked until the owner
 proves control of that NAME, completes the device checklist, publishes absolute public repository/licence URLs,
 and verifies that production Storage rehydrates at least three genuine recent current-theme performances and a
 real Answer-Back duet after server sleep. This repository does not claim a live deployment.

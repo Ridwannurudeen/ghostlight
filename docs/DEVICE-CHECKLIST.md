@@ -1,4 +1,4 @@
-# Ghost Charades mobile device acceptance checklist
+# Ghostlight mobile device acceptance checklist
 
 Run this checklist in the released Decentraland mobile clients on the exact deployment candidate. Desktop
 preview and automated tests do not count as device evidence. Any unchecked item is a release blocker unless the
@@ -10,7 +10,7 @@ Do not deploy, record final media, or submit until every item in this section is
 honest fallback, not acceptable release content, and no visitor, guess, reply, performance, or board entry may be
 fabricated to satisfy these gates.
 
-- [ ] Confirm the owner controls `ghostcharades.dcl.eth`, and confirm the release candidate's `scene.json` has
+- [ ] Confirm the owner controls `ghostlight.dcl.eth`, and confirm the release candidate's `scene.json` has
       `worldConfiguration.name` set to that exact name, `authoritativeMultiplayer: true`, and neither
       `fixedAdapter` nor `placesConfig.optOut`.
 - [ ] Publish the source repository, then record working absolute public HTTPS URLs for both the repository and
@@ -208,11 +208,11 @@ recording. Retain the iOS set for the mobile curation/featuring packet.
 ## Invite copy and open
 
 - [ ] The posted screen's first COPY INVITE tap changes the UI to the copied confirmation and places exactly
-      `Join me for Ghost Charades: https://decentraland.org/jump/?realm=ghostcharades.dcl.eth` on the clipboard.
+      `Join me for Ghostlight: https://decentraland.org/jump/?realm=ghostlight.dcl.eth` on the clipboard.
 - [ ] Paste into a neutral notes field to verify the text, then tap the HTTPS link from a real messaging app on both
-      Android and iOS. It opens the installed Decentraland client at `ghostcharades.dcl.eth`.
+      Android and iOS. It opens the installed Decentraland client at `ghostlight.dcl.eth`.
 - [ ] If HTTPS fails to deep-link, record the OS/app behavior and separately test
-      `decentraland://?realm=ghostcharades.dcl.eth`; do not change production copy during the checklist.
+      `decentraland://?realm=ghostlight.dcl.eth`; do not change production copy during the checklist.
 
 Evidence: clipboard paste screenshots and start-to-arrival recordings for Android and iOS.
 

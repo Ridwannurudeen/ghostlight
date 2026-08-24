@@ -361,7 +361,7 @@ export function dayKey(timestamp: number) {
   return new Date(timestamp).toISOString().slice(0, 10)
 }
 
-export class GhostCharadesState {
+export class GhostlightState {
   readonly charades = new Map<string, Charade>()
   readonly playerStats = new Map<string, PlayerStats>()
   recentVisitors: RecentVisitor[] = []
@@ -698,4 +698,4 @@ export class GhostCharadesState {
   }
 }
 
-export const gameState = new GhostCharadesState()
+export const gameState = new GhostlightState()

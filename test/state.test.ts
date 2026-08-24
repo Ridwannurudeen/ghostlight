@@ -3,7 +3,7 @@ import { AUDIENCE_SEATS, HYDRATION_DAYS } from '../src/shared/config'
 import { HOUSE_CHARADE } from '../src/shared/deck'
 import { STORAGE_SCHEMA_VERSION } from '../src/shared/types'
 import {
-  GhostCharadesState,
+  GhostlightState,
   computeProgress,
   computeTitle,
   dayKey,
@@ -36,7 +36,7 @@ vi.mock('@dcl/sdk/server', () => ({
 function setup(now = FIXED_NOW) {
   const storage = new FakeStorage()
   const repository = createStorageRepository(storage)
-  const state = new GhostCharadesState(repository, () => now)
+  const state = new GhostlightState(repository, () => now)
   return { storage, repository, state }
 }
 
@@ -339,7 +339,7 @@ describe('state mutations', () => {
 
   it('resets decoder standings when the UTC day changes', () => {
     let now = FIXED_NOW
-    const changingState = new GhostCharadesState(
+    const changingState = new GhostlightState(
       {
         loadJSON: async (_key, fallback) => fallback,
         loadPlayerJSON: async (_address, _key, fallback) => fallback,
@@ -369,7 +369,7 @@ describe('state mutations', () => {
   it('restores decoder aggregates below tenth place after a server restart', async () => {
     const storage = new FakeStorage()
     const firstRepository = createStorageRepository(storage)
-    const firstState = new GhostCharadesState(firstRepository, () => FIXED_NOW)
+    const firstState = new GhostlightState(firstRepository, () => FIXED_NOW)
     for (let player = 0; player < 11; player += 1) {
       firstState.recordDecoder(`player-${player}`, `Player ${player}`, false)
       for (let correct = 0; correct < player; correct += 1) {
@@ -380,7 +380,7 @@ describe('state mutations', () => {
     expect(storage.readJSON<unknown[]>(decoderAggregateKey(dayKey(FIXED_NOW)))).toHaveLength(11)
 
     const secondRepository = createStorageRepository(storage)
-    const secondState = new GhostCharadesState(secondRepository, () => FIXED_NOW)
+    const secondState = new GhostlightState(secondRepository, () => FIXED_NOW)
     await secondState.hydrate()
     secondState.recordDecoder('player-0', 'Player 0', true)
     secondState.recordDecoder('player-0', 'Player 0', true)
@@ -486,7 +486,7 @@ describe('player stats', () => {
   it('awards one daily stamp at three decodes and one authored charade and restores it after server sleep', async () => {
     const storage = new FakeStorage()
     const firstRepository = createStorageRepository(storage)
-    const firstState = new GhostCharadesState(firstRepository, () => FIXED_NOW)
+    const firstState = new GhostlightState(firstRepository, () => FIXED_NOW)
     const stats = await firstState.getOrCreateStats('player', 'Player')
 
     expect(firstState.recordDailyAuthor(stats)).toBe(false)
@@ -498,7 +498,7 @@ describe('player stats', () => {
     await firstRepository.flushNow()
 
     const secondRepository = createStorageRepository(storage)
-    const secondState = new GhostCharadesState(secondRepository, () => FIXED_NOW)
+    const secondState = new GhostlightState(secondRepository, () => FIXED_NOW)
     const restored = await secondState.getOrCreateStats('player', 'Player')
 
     expect(restored.daily).toEqual({ day: '2026-08-23', decoded: 4, authored: 1, stamped: true })
