@@ -2,7 +2,7 @@ import { AvatarBase, AvatarEquippedData, PlayerIdentityData, engine } from '@dcl
 import { onEnterScene, onLeaveScene } from '@dcl/sdk/src/players'
 import { AUTHOR_COOLDOWN_SECONDS, PROTOCOL_VERSION, WIRE_INT_MAX, themeForTimestamp } from '../shared/config'
 import { DECK, EMOTE_VOCABULARY } from '../shared/deck'
-import { Messages, room } from '../shared/messages'
+import { Messages, REACTION_KINDS, room } from '../shared/messages'
 import { chooseCharadeFor, chooseHouseCharade, pickDecoys, shuffleSeeded } from '../shared/pick'
 import type { Charade, Look, PlayerProgress } from '../shared/types'
 import { STORAGE_SCHEMA_VERSION } from '../shared/types'
@@ -56,7 +56,8 @@ export type ServerProtocolOptions = {
   lookRetryMilliseconds?: number
 }
 
-const REACTION_KINDS = new Set(['laugh', 'confused', 'genius'])
+const VALID_REACTION_KINDS = new Set<string>(REACTION_KINDS)
+const REACTION_COOLDOWN_MILLISECONDS = 1_000
 const EMOTES = new Set<string>(EMOTE_VOCABULARY)
 const MAX_WEARABLE_URNS = 20
 const MAX_WIRE_ADDRESS_BYTES = 48
@@ -172,6 +173,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
   const answerIndexes = new Map<string, number>()
   const lastAuthors = new Map<string, string>()
   const lastPosts = new Map<string, number>()
+  const lastReactions = new Map<string, number>()
   const completedRequests = new Map<
     string,
     {
@@ -577,8 +579,13 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     if (!phrase) return null
     const decoys = pickDecoys(phrase.id, DECK, charade.id)
     if (decoys.length !== 2) return null
-    const answers = shuffleSeeded([phrase.text, decoys[0].text, decoys[1].text], `${charade.id}:answers`)
-    return { phrase, answers, correctIndex: answers.indexOf(phrase.text) }
+    const shuffled = shuffleSeeded([phrase, decoys[0], decoys[1]], `${charade.id}:answers`)
+    return {
+      phrase,
+      answers: shuffled.map((answer) => answer.text),
+      answerIds: shuffled.map((answer) => answer.id),
+      correctIndex: shuffled.findIndex((answer) => answer.id === phrase.id)
+    }
   }
 
   async function sendCharade(address: string, requestId: string, charade: Charade) {
@@ -604,6 +611,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       look: authorLook,
       emotes: [...charade.emotes],
       answers: answers.answers,
+      answerIds: answers.answerIds,
       createdAt: charade.createdAt,
       isHouse: charade.isHouse,
       authorTitle,
@@ -1024,11 +1032,21 @@ export function createServerProtocol(options: ServerProtocolOptions) {
   async function handleReact(data: ReactPayload, address: string) {
     await ready
     if (!(await ensureWelcome(address))) return
-    if (!REACTION_KINDS.has(data.kind)) {
+    if (!VALID_REACTION_KINDS.has(data.kind)) {
       await sendError(address, 'invalid-reaction')
       return
     }
     const sender = canonicalAddress(address)
+    const currentTime = now()
+    const previousReaction = lastReactions.get(sender)
+    if (previousReaction !== undefined && currentTime - previousReaction < REACTION_COOLDOWN_MILLISECONDS) {
+      await sendError(address, 'reaction-rate-limited')
+      return
+    }
+    for (const [reactor, lastReaction] of lastReactions) {
+      if (currentTime - lastReaction >= REACTION_COOLDOWN_MILLISECONDS) lastReactions.delete(reactor)
+    }
+    lastReactions.set(sender, currentTime)
     const recipients = [...looks.values()]
       .filter((look) => canonicalAddress(look.address) !== sender)
       .map((look) => look.address)

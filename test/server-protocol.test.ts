@@ -57,6 +57,7 @@ type SentMessage = {
 type CharadeMessage = {
   id: string
   answers: string[]
+  answerIds: string[]
   look: ReturnType<typeof makeLook>
   isHouse: boolean
   recipient?: string
@@ -422,6 +423,16 @@ describe('charade serving and guesses', () => {
 
     const phrase = DECK.find((candidate) => candidate.id === charade.phraseId)!
     const answerIndex = secondServed.answers.indexOf(phrase.text)
+    const answerPhrases = secondServed.answerIds.map((answerId) =>
+      DECK.find((candidate) => candidate.id === answerId)
+    )
+    expect(answerPhrases.every((answerPhrase) => answerPhrase !== undefined)).toBe(true)
+    expect(answerPhrases.map((answerPhrase) => answerPhrase!.text)).toEqual(secondServed.answers)
+    expect(new Set(answerPhrases.map((answerPhrase) => answerPhrase!.category))).toEqual(
+      new Set([phrase.category])
+    )
+    expect(new Set(answerPhrases.map((answerPhrase) => answerPhrase!.theme))).toEqual(new Set([phrase.theme]))
+    expect(secondServed.answerIds).toEqual(firstServed.answerIds)
     const guess = { charadeId: charade.id, answerIndex, requestId: 'guess-1' }
     sent.length = 0
     await protocol.handleGuess(guess, '0xPlayer')
@@ -1026,20 +1037,113 @@ describe('answer-back protocol', () => {
 })
 
 describe('live protocol', () => {
-  it('relays valid reactions only to other present players', async () => {
+  it('relays every valid reaction only to other present players', async () => {
+    let timestamp = FIXED_NOW
+    const snapshotLook = async (address: string) => makeLook(address, address)
+    const { sent, protocol } = await createHarness({ snapshotLook, now: () => timestamp })
+    await negotiate(protocol, 'alice')
+    await negotiate(protocol, 'bob')
+    await negotiate(protocol, 'carol')
+    sent.length = 0
+
+    for (const kind of ['laugh', 'confused', 'genius', 'gasp', 'applause']) {
+      await protocol.handleReact({ kind }, 'alice')
+      timestamp += 1_000
+    }
+
+    expect(messagesOfType(sent, 'react').map((message) => message.data)).toEqual([
+      { kind: 'laugh' },
+      { kind: 'confused' },
+      { kind: 'genius' },
+      { kind: 'gasp' },
+      { kind: 'applause' }
+    ])
+    expect(messagesOfType(sent, 'react').every((message) => message.to?.join(',') === 'bob,carol')).toBe(true)
+    expect(messagesOfType(sent, 'react').every((message) => !message.to?.includes('alice'))).toBe(true)
+  })
+
+  it('rate-limits reactions per address without sleeps', async () => {
+    let timestamp = FIXED_NOW
+    const snapshotLook = async (address: string) => makeLook(address, address)
+    const { sent, protocol } = await createHarness({ snapshotLook, now: () => timestamp })
+    await negotiate(protocol, 'alice')
+    await negotiate(protocol, 'bob')
+    sent.length = 0
+
+    await protocol.handleReact({ kind: 'applause' }, 'alice')
+    await protocol.handleReact({ kind: 'gasp' }, 'alice')
+    await protocol.handleReact({ kind: 'laugh' }, 'bob')
+    timestamp += 999
+    await protocol.handleReact({ kind: 'laugh' }, 'alice')
+    timestamp += 1
+    await protocol.handleReact({ kind: 'laugh' }, 'alice')
+
+    expect(messagesOfType(sent, 'react')).toEqual([
+      { type: 'react', data: { kind: 'applause' }, to: ['bob'] },
+      { type: 'react', data: { kind: 'laugh' }, to: ['alice'] },
+      { type: 'react', data: { kind: 'laugh' }, to: ['bob'] }
+    ])
+    expect(messagesOfType(sent, 'error')).toEqual([
+      { type: 'error', data: { code: 'reaction-rate-limited' }, to: ['alice'] },
+      { type: 'error', data: { code: 'reaction-rate-limited' }, to: ['alice'] }
+    ])
+  })
+
+  it('does not relay malformed or ineligible reaction requests', async () => {
     const snapshotLook = async (address: string) => makeLook(address, address)
     const { sent, protocol } = await createHarness({ snapshotLook })
     await negotiate(protocol, 'alice')
     await negotiate(protocol, 'bob')
     sent.length = 0
 
-    await protocol.handleReact({ kind: 'genius' }, 'alice')
     await protocol.handleReact({ kind: 'invalid' }, 'alice')
+    await protocol.handleReact({ kind: 'applause' }, 'not-present')
 
-    expect(messagesOfType(sent, 'react')).toEqual([{ type: 'react', data: { kind: 'genius' }, to: ['bob'] }])
+    expect(messagesOfType(sent, 'react')).toEqual([])
     expect(messagesOfType(sent, 'error')).toEqual([
-      { type: 'error', data: { code: 'invalid-reaction' }, to: ['alice'] }
+      { type: 'error', data: { code: 'invalid-reaction' }, to: ['alice'] },
+      { type: 'error', data: { code: 'protocol-required' }, to: ['not-present'] }
     ])
+  })
+
+  it('leaves the active decode and reveal state unchanged', async () => {
+    const snapshotLook = async (address: string) => makeLook(address, address === 'alice' ? 'Alice' : 'Bob')
+    const { state, sent, protocol } = await createHarness({ snapshotLook })
+    const charade = makeCharade('reaction-stage', { author: { address: 'outside', name: 'Outside' } })
+    state.upsertCharade(charade)
+    await negotiate(protocol, 'alice')
+    await negotiate(protocol, 'bob')
+    sent.length = 0
+    await protocol.handleNextCharade(nextCharadeRequest(), 'alice')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'bob')
+    const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade')[0])
+    const phrase = DECK.find((candidate) => candidate.id === charade.phraseId)!
+    const beforeRound = protocol.rounds.current
+    const beforeGuesses = { ...state.getCharade(charade.id)!.guesses }
+    sent.length = 0
+
+    await protocol.handleReact({ kind: 'applause' }, 'alice')
+
+    expect(protocol.rounds.current).toEqual(beforeRound)
+    expect(state.getCharade(charade.id)?.guesses).toEqual(beforeGuesses)
+    expect(messagesOfType(sent, 'roundStart')).toEqual([])
+    expect(messagesOfType(sent, 'roundWinner')).toEqual([])
+    expect(messagesOfType(sent, 'reveal')).toEqual([])
+
+    await protocol.handleRoundGuess(
+      {
+        charadeId: charade.id,
+        answerIndex: served.answers.indexOf(phrase.text),
+        requestId: 'reaction-safe-guess'
+      },
+      'alice'
+    )
+
+    expect(messagesOfType(sent, 'roundWinner')).toEqual([
+      { type: 'roundWinner', data: { address: 'alice', name: 'Alice' }, to: undefined }
+    ])
+    expect(messagesOfType(sent, 'reveal')).toHaveLength(1)
+    expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 1, correct: 1 })
   })
 
   it('serves one authoritative live charade and broadcasts only the first correct winner', async () => {
@@ -1373,13 +1477,13 @@ describe('live protocol', () => {
     expect(Object.values(wireMeasurements).every((size) => size < 4_000)).toBe(true)
     expect(inlineCharade).toBeGreaterThan(4_000)
     expect({ ...wireMeasurements, inlineCharade }).toEqual({
-      charade: 2_403,
-      mailCharade: 2_460,
+      charade: 2_497,
+      mailCharade: 2_554,
       charadeReply: 2_278,
       since: 231,
       boards: 3_263,
       ready: 110,
-      inlineCharade: 4_653
+      inlineCharade: 4_747
     })
   })
 
