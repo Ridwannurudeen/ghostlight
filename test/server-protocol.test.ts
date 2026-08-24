@@ -1350,6 +1350,7 @@ describe('live protocol', () => {
     const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).byteLength
     const wireMeasurements = {
       charade: bytes(charade),
+      mailCharade: bytes({ ...charade, recipient: `0x${'c'.repeat(40)}` }),
       charadeReply: bytes(reply),
       since: bytes(since),
       boards: bytes(boards),
@@ -1373,6 +1374,7 @@ describe('live protocol', () => {
     expect(inlineCharade).toBeGreaterThan(4_000)
     expect({ ...wireMeasurements, inlineCharade }).toEqual({
       charade: 2_403,
+      mailCharade: 2_460,
       charadeReply: 2_278,
       since: 231,
       boards: 3_263,
