@@ -1,5 +1,7 @@
+import { t, type Language } from '../shared/i18n'
+
 export const OPENING_DURATION_SECONDS = 10
-export const OPENING_INSTRUCTION = "Guess what they're saying"
+export const OPENING_INSTRUCTION = t('opening.instruction', 'en')
 
 export type OpeningCamera = 'foyer' | 'stage'
 
@@ -15,6 +17,7 @@ export type OpeningEffects = {
 export type OpeningContext = {
   effects: OpeningEffects
   themeLabel: string
+  language: Language
 }
 
 export type OpeningBeat = {
@@ -32,7 +35,8 @@ export const OPENING_TIMELINE: readonly OpeningBeat[] = [
   {
     name: 'marquee',
     at: 1,
-    run: ({ effects, themeLabel }) => effects.setMarquee(`TONIGHT'S SHOW: ${themeLabel}`)
+    run: ({ effects, themeLabel, language }) =>
+      effects.setMarquee(t('marquee.tonightShow', language, { theme: themeLabel }))
   },
   {
     name: 'doors-open',
@@ -52,7 +56,7 @@ export const OPENING_TIMELINE: readonly OpeningBeat[] = [
   {
     name: 'instruction',
     at: 8,
-    run: ({ effects }) => effects.showInstruction(OPENING_INSTRUCTION)
+    run: ({ effects, language }) => effects.showInstruction(t('opening.instruction', language))
   },
   {
     name: 'decode',
@@ -74,9 +78,10 @@ export function createOpeningController(effects: OpeningEffects, session = creat
   let nextBeat = 0
   let running = false
   let themeLabel = ''
+  let language: Language = 'en'
 
   function runDueBeats() {
-    const context = { effects, themeLabel }
+    const context = { effects, themeLabel, language }
     while (nextBeat < OPENING_TIMELINE.length && OPENING_TIMELINE[nextBeat].at <= elapsedSeconds) {
       OPENING_TIMELINE[nextBeat].run(context)
       nextBeat += 1
@@ -85,10 +90,11 @@ export function createOpeningController(effects: OpeningEffects, session = creat
   }
 
   return {
-    start(nextThemeLabel: string) {
+    start(nextThemeLabel: string, nextLanguage: Language = 'en') {
       if (session.played) return false
       session.played = true
       themeLabel = nextThemeLabel
+      language = nextLanguage
       running = true
       runDueBeats()
       return true

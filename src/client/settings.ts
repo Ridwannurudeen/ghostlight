@@ -1,8 +1,11 @@
+import type { Language } from '../shared/i18n'
+
 export type SoundVolume = 0.5 | 1
 
 export type ClientSettings = Readonly<{
   soundEnabled: boolean
   soundVolume: SoundVolume
+  language: Language
   reducedMotion: boolean
   largeText: boolean
 }>
@@ -10,6 +13,7 @@ export type ClientSettings = Readonly<{
 export const DEFAULT_CLIENT_SETTINGS: ClientSettings = {
   soundEnabled: true,
   soundVolume: 1,
+  language: 'en',
   reducedMotion: false,
   largeText: false
 }
@@ -28,6 +32,7 @@ export function updateClientSettings(patch: Partial<ClientSettings>) {
   if (
     nextSettings.soundEnabled === settings.soundEnabled &&
     nextSettings.soundVolume === settings.soundVolume &&
+    nextSettings.language === settings.language &&
     nextSettings.reducedMotion === settings.reducedMotion &&
     nextSettings.largeText === settings.largeText
   ) {

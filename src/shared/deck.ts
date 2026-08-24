@@ -704,6 +704,8 @@ const PHRASE_SOURCES = [
   }
 ] as const satisfies readonly PhraseSource[]
 
+export type PhraseId = (typeof PHRASE_SOURCES)[number]['id']
+
 export const DECK: readonly Phrase[] = PHRASE_SOURCES.map((phrase) => ({ ...phrase, theme: phrase.category }))
 
 const HOUSE_CHARADE_SOURCES = [

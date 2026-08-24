@@ -18,6 +18,7 @@ import {
   type Color3 as Color3Type,
   type Vector3 as Vector3Type
 } from '@dcl/sdk/math'
+import { t } from '../shared/i18n'
 
 export type TheaterRegion = 'outside' | 'foyer' | 'house' | 'stage'
 export type LightMood = 'house' | 'tension' | 'hit' | 'miss' | 'applause'
@@ -178,7 +179,7 @@ export function createTheater() {
   marqueeTextEntity = engine.addEntity()
   Transform.create(marqueeTextEntity, { position: Vector3.create(8, 5.38, 5.45) })
   Billboard.create(marqueeTextEntity, {})
-  marquee.setText('GHOSTLIGHT')
+  marquee.setText(t('brand.name', 'en'))
 
   createModel('poster_frame.glb', Vector3.create(2.45, 0, 3.5))
   createModel('poster_frame.glb', Vector3.create(13.55, 0, 3.5))

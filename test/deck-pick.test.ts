@@ -309,6 +309,7 @@ describe('installed protocol codec', () => {
         look: maximalLook,
         emotes: ['wave', 'clap', 'kiss'],
         answers: ['Wake up late', 'Brush your teeth', 'Miss the bus'],
+        answerIds: ['everyday-wake-up-late', 'everyday-brush-your-teeth', 'everyday-miss-the-bus'],
         createdAt: 1_777_000_000_000,
         isHouse: false,
         authorTitle: 'Understudy',
@@ -394,6 +395,13 @@ describe('installed protocol codec', () => {
       }
       if (type === 'charade' || type === 'charadeReply') {
         expect((decoded.payload as { createdAt: number }).createdAt).toBe(1_777_000_000_000)
+      }
+      if (type === 'charade') {
+        expect((decoded.payload as { answerIds: string[] }).answerIds).toEqual([
+          'everyday-wake-up-late',
+          'everyday-brush-your-teeth',
+          'everyday-miss-the-bus'
+        ])
       }
     }
 

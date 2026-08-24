@@ -1,3 +1,4 @@
+import type { Language } from '../shared/i18n'
 import { createOpeningController } from './opening'
 import { play } from './sound'
 import { releaseTheaterCamera, switchTheaterCamera } from './setup'
@@ -41,9 +42,9 @@ export function createSceneOpeningController(enterPerformer: () => void, showDec
   })
 
   const sceneController = {
-    start(themeLabel: string) {
+    start(themeLabel: string, language: Language = 'en') {
       openingView = { active: true, instruction: '' }
-      const started = controller.start(themeLabel)
+      const started = controller.start(themeLabel, language)
       if (!started) openingView = { ...EMPTY_OPENING_VIEW }
       return started
     },

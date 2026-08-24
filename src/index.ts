@@ -2,6 +2,7 @@ import { engine } from '@dcl/sdk/ecs'
 import { isServer } from '@dcl/sdk/network'
 import { onLeaveScene } from '@dcl/sdk/src/players'
 import { THEMES } from './shared/config'
+import { t, themeLabel } from './shared/i18n'
 import { clientFlow, startClientFlow } from './client/flow'
 import {
   clearPerformer,
@@ -18,6 +19,7 @@ import {
 import { createSceneOpeningController } from './client/opening-scene'
 import { createSceneRevealController } from './client/reveal-scene'
 import { isPlayerInDecodeArea, startClientSetup } from './client/setup'
+import { getClientSettings, subscribeClientSettings } from './client/settings'
 import { duckForReveal, play, restoreAfterReveal } from './client/sound'
 import {
   clearStageRewardProp,
@@ -72,12 +74,15 @@ export function main() {
 
   clientFlow.setEffects({
     showPerformer: (look, emotes) => {
+      const presentedLook = clientFlow.getState().charade?.isHouse
+        ? { ...look, name: t('decode.houseGhost', getClientSettings().language) }
+        : look
       if (opening.isRunning() && !openingReadyForPerformer) {
-        stagedPerformer = [look, emotes]
+        stagedPerformer = [presentedLook, emotes]
         stagedDuet = null
         return
       }
-      showPerformer(look, emotes)
+      showPerformer(presentedLook, emotes)
     },
     showDuet: (author, reply) => {
       if (opening.isRunning() && !openingReadyForPerformer) {
@@ -109,13 +114,20 @@ export function main() {
   let reactionSequence = 0
   let screen = clientFlow.getState().screen
   let theme = ''
+  let language = getClientSettings().language
   const playedNotices = new Set<string>()
+
+  function syncMarquee() {
+    const state = clientFlow.getState()
+    marquee.setText(t('marquee.tonightShow', language, { theme: themeLabel(state.theme, language) }))
+  }
+
   clientFlow.subscribe((state) => {
     if (state.theme !== theme) {
       theme = state.theme
       const accent = THEMES.find((candidate) => candidate.id === theme)?.accent
       if (accent) lights.setThemeAccent(accent)
-      marquee.setText(`TONIGHT'S SHOW: ${state.themeLabel}`)
+      syncMarquee()
     }
 
     for (const notice of state.notices) {
@@ -143,6 +155,12 @@ export function main() {
     }
   })
 
+  subscribeClientSettings((settings) => {
+    if (settings.language === language) return
+    language = settings.language
+    syncMarquee()
+  })
+
   onLeaveScene((address) => removeRewardProp(address))
 
   startClientSetup(uiComponent)
@@ -160,7 +178,7 @@ export function main() {
         state.screen === 'foyer' &&
         !opening.hasPlayed() &&
         isPlayerInDecodeArea() &&
-        opening.start(state.themeLabel)
+        opening.start(themeLabel(state.theme, language), language)
       ) {
         clientFlow.requestNextCharade()
       }

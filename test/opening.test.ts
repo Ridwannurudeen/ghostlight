@@ -82,6 +82,17 @@ describe('cold open', () => {
     expect(controller.isRunning()).toBe(false)
   })
 
+  it('renders the marquee and instruction in the selected language', () => {
+    const { events, effects } = createOpeningHarness()
+    const controller = createOpeningController(effects)
+
+    controller.start('Grandes emociones', 'es')
+    controller.tick(OPENING_DURATION_SECONDS)
+
+    expect(events).toContain('marquee:FUNCIÓN DE HOY: Grandes emociones')
+    expect(events).toContain('instruction:Adivina qué están diciendo')
+  })
+
   it('never runs twice in one session, including across controllers', () => {
     const first = createOpeningHarness()
     const second = createOpeningHarness()

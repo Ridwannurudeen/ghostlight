@@ -144,7 +144,7 @@ describe('client presentation integration', () => {
     harness.listener!(harness.state)
     const openingSystem = vi.mocked(engine.addSystem).mock.calls[0][0]
     openingSystem(0)
-    expect(opening.start).toHaveBeenCalledWith('Kitchen Capers')
+    expect(opening.start).toHaveBeenCalledWith('Kitchen Capers', 'en')
     expect(flow.requestNextCharade).toHaveBeenCalledTimes(1)
 
     Object.assign(harness.state, { screen: 'posted', notices: [{ id: 'daily-1', kind: 'stamp' }] })

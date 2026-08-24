@@ -1,3 +1,5 @@
+import { t } from '../shared/i18n'
+
 export const REVEAL_DURATION_SECONDS = 8
 export const REDUCED_MOTION_REVEAL_DURATION_SECONDS = 3
 
@@ -25,6 +27,8 @@ export type RevealOutcome = {
   titleProgress: number
   unlockedTitle: string
   stampAwarded: boolean
+  hitText?: string
+  missText?: string
 }
 
 export type RevealEffects = {
@@ -38,7 +42,7 @@ export type RevealEffects = {
   releaseCamera: () => void
   fadeWrongAnswers: () => void
   setSpotlightColor: (color: 'white') => void
-  showFloatingVerdict: (text: 'YOU GOT IT') => void
+  showFloatingVerdict: (text: string) => void
   showMissVerdictCard: (text: string) => void
   reactAudience: (reaction: RevealAudienceReaction) => void
   playPerformerEmote: (emote: 'wave') => void
@@ -104,14 +108,17 @@ export const REVEAL_TIMELINE: readonly RevealTimelineEntry[] = [
       if (outcome.correct) {
         effects.setLights('hit')
         effects.playSound('hit')
-        effects.showFloatingVerdict('YOU GOT IT')
+        effects.showFloatingVerdict(outcome.hitText ?? t('reveal.hit', 'en'))
         effects.reactAudience('clap')
         return
       }
 
       effects.setLights('miss')
       effects.playSound('miss')
-      effects.showMissVerdictCard(`${outcome.authorName.toUpperCase()} MEANT: ${outcome.phrase.toUpperCase()}`)
+      effects.showMissVerdictCard(
+        outcome.missText ??
+          t('reveal.miss', 'en', { author: outcome.authorName.toUpperCase(), phrase: outcome.phrase.toUpperCase() })
+      )
       effects.reactAudience('shrug')
     }
   },
@@ -171,13 +178,16 @@ export const REDUCED_MOTION_REVEAL_TIMELINE: readonly RevealTimelineEntry[] = [
       if (outcome.correct) {
         effects.setLights('hit')
         effects.playSound('hit')
-        effects.showFloatingVerdict('YOU GOT IT')
+        effects.showFloatingVerdict(outcome.hitText ?? t('reveal.hit', 'en'))
         return
       }
 
       effects.setLights('miss')
       effects.playSound('miss')
-      effects.showMissVerdictCard(`${outcome.authorName.toUpperCase()} MEANT: ${outcome.phrase.toUpperCase()}`)
+      effects.showMissVerdictCard(
+        outcome.missText ??
+          t('reveal.miss', 'en', { author: outcome.authorName.toUpperCase(), phrase: outcome.phrase.toUpperCase() })
+      )
     }
   },
   {

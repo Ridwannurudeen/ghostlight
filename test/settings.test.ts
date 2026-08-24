@@ -15,12 +15,19 @@ describe('client settings', () => {
     const listener = vi.fn()
     const unsubscribe = subscribeClientSettings(listener)
 
-    updateClientSettings({ soundEnabled: false, soundVolume: 0.5, reducedMotion: true, largeText: true })
+    updateClientSettings({
+      soundEnabled: false,
+      soundVolume: 0.5,
+      language: 'es',
+      reducedMotion: true,
+      largeText: true
+    })
     updateClientSettings({ largeText: true })
 
     expect(getClientSettings()).toEqual({
       soundEnabled: false,
       soundVolume: 0.5,
+      language: 'es',
       reducedMotion: true,
       largeText: true
     })
