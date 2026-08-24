@@ -1,5 +1,5 @@
 import type { ThemeId } from './config'
-import { CATEGORIES, DECK, EMOTE_VOCABULARY, type Emote, type Phrase } from './deck'
+import { CATEGORIES, DECK, EMOTE_VOCABULARY, HOUSE_CHARADE, HOUSE_CHARADES, type Emote, type Phrase } from './deck'
 import type { Charade } from './types'
 
 export type Seed = string | number
@@ -72,6 +72,14 @@ export function chooseCharadeFor(
   })
 
   return eligible[0] ?? null
+}
+
+export function chooseHouseCharade(seed: Seed, preferredTheme?: ThemeId): Charade {
+  const eligible = preferredTheme
+    ? HOUSE_CHARADES.filter((charade) => phraseTheme(charade.phraseId) === preferredTheme)
+    : HOUSE_CHARADES
+
+  return shuffleSeeded(eligible, seed)[0] ?? HOUSE_CHARADE
 }
 
 export function phraseTheme(phraseId: string): ThemeId | null {

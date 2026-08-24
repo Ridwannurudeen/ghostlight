@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { AUDIENCE_SEATS, HYDRATION_DAYS } from '../src/shared/config'
-import { HOUSE_CHARADE } from '../src/shared/deck'
+import { HOUSE_CHARADE, HOUSE_CHARADES } from '../src/shared/deck'
 import { STORAGE_SCHEMA_VERSION } from '../src/shared/types'
 import {
   GhostlightState,
@@ -117,7 +117,7 @@ describe('state migrations', () => {
   it('recomputes titles from verified participation and excludes duplicate and house authored ids', () => {
     const migrated = migratePlayerStats(
       makeStats({
-        authored: [HOUSE_CHARADE.id, 'player-charade', 'player-charade'],
+        authored: [...HOUSE_CHARADES.map((charade) => charade.id), 'player-charade', 'player-charade'],
         title: 'Ghostlight Legend'
       }),
       'Player',
@@ -176,7 +176,7 @@ describe('title progression', () => {
 })
 
 describe('state hydration', () => {
-  it('loads today and yesterday, skips garbage and stored house records, and always installs the house fallback', async () => {
+  it('loads today and yesterday, skips garbage and stored house records, and installs every house fallback', async () => {
     const { storage, state } = setup()
     const today = dayKey(FIXED_NOW)
     const yesterday = dayKey(FIXED_NOW - 24 * 60 * 60 * 1000)
@@ -191,7 +191,7 @@ describe('state hydration', () => {
 
     await state.hydrate()
 
-    expect(state.getCharade(HOUSE_CHARADE.id)).toEqual(HOUSE_CHARADE)
+    expect(HOUSE_CHARADES.every((charade) => state.getCharade(charade.id) === charade)).toBe(true)
     expect(
       state
         .getPool()
@@ -220,7 +220,7 @@ describe('state hydration', () => {
 
     await expect(state.hydrate()).resolves.toBeUndefined()
     expect(state.getPool()).toEqual([])
-    expect(state.getCharade(HOUSE_CHARADE.id)).toEqual(HOUSE_CHARADE)
+    expect(HOUSE_CHARADES.every((charade) => state.getCharade(charade.id) === charade)).toBe(true)
   })
 
   it('hydrates a charade indexed ten days ago and keeps the pool ordered by creation time', async () => {
@@ -325,7 +325,7 @@ describe('state mutations', () => {
         guesses: { total: 10, correct: 0 }
       })
     )
-    state.upsertCharade(HOUSE_CHARADE)
+    HOUSE_CHARADES.forEach((charade) => state.upsertCharade(charade))
     state.recordDecoder('alice', 'Alice', true)
     state.recordDecoder('alice', 'Alice', false)
     state.recordDecoder('bob', 'Bob', true)
@@ -335,6 +335,7 @@ describe('state mutations', () => {
       { address: 'bob', name: 'Bob', correct: 1, total: 1 }
     ])
     expect(state.boards.hardest.map((row) => row.charadeId)).toEqual(['hard-four', 'hard-two', 'medium'])
+    expect(state.getPool().some((charade) => charade.isHouse)).toBe(false)
   })
 
   it('resets decoder standings when the UTC day changes', () => {
@@ -404,7 +405,7 @@ describe('state mutations', () => {
         })
       )
     }
-    state.upsertCharade(HOUSE_CHARADE)
+    HOUSE_CHARADES.forEach((charade) => state.upsertCharade(charade))
     const latestStats = await state.getOrCreateStats('performer-6', 'Performer 6')
     latestStats.authored.push('show-6')
     latestStats.authoredCount = 1

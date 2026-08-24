@@ -1,9 +1,25 @@
 import { describe, expect, it, vi } from 'vitest'
 import { decodeEvent, encodeEvent } from '@dcl/sdk/network/events/protocol'
 import { THEMES, themeForTimestamp } from '../src/shared/config'
-import { CATEGORIES, DECK, EMOTE_VOCABULARY, HOUSE_CHARADE, type Category, type Phrase } from '../src/shared/deck'
+import {
+  CATEGORIES,
+  DECK,
+  EMOTE_VOCABULARY,
+  HOUSE_CHARADE,
+  HOUSE_CHARADES,
+  type Category,
+  type Phrase
+} from '../src/shared/deck'
 import { Messages } from '../src/shared/messages'
-import { chooseCharadeFor, dealPhrase, offerEmotes, pickDecoys, shuffleSeeded } from '../src/shared/pick'
+import {
+  chooseCharadeFor,
+  chooseHouseCharade,
+  dealPhrase,
+  offerEmotes,
+  phraseTheme,
+  pickDecoys,
+  shuffleSeeded
+} from '../src/shared/pick'
 import { STORAGE_SCHEMA_VERSION, type Charade, type Look } from '../src/shared/types'
 
 vi.mock('@dcl/sdk/network', () => ({
@@ -87,11 +103,22 @@ describe('phrase deck', () => {
     }
   })
 
-  it('keeps the single labelled house charade outside the player deck', () => {
-    expect(HOUSE_CHARADE.isHouse).toBe(true)
-    expect(HOUSE_CHARADE.author.name).toBe('House')
-    expect(DECK.some((phrase) => phrase.id === HOUSE_CHARADE.id)).toBe(false)
-    expect(DECK.some((phrase) => phrase.id === HOUSE_CHARADE.phraseId)).toBe(true)
+  it('keeps eleven labelled house charades outside the player deck and every real-content count', () => {
+    expect(HOUSE_CHARADES).toHaveLength(11)
+    expect(HOUSE_CHARADES[0]).toBe(HOUSE_CHARADE)
+    expect(new Set(HOUSE_CHARADES.map((charade) => charade.id)).size).toBe(HOUSE_CHARADES.length)
+    expect(HOUSE_CHARADES.filter((charade) => !charade.isHouse)).toHaveLength(0)
+
+    for (const charade of HOUSE_CHARADES) {
+      const phrase = DECK.find((candidate) => candidate.id === charade.phraseId)
+      expect(charade.isHouse, charade.id).toBe(true)
+      expect(charade.author.name, charade.id).toBe('House')
+      expect(DECK.some((candidate) => candidate.id === charade.id), charade.id).toBe(false)
+      expect(phrase, charade.id).toBeDefined()
+      expect(charade.emotes, charade.id).toEqual(phrase?.suggested)
+    }
+
+    expect(new Set(HOUSE_CHARADES.map((charade) => phraseTheme(charade.phraseId)))).toEqual(new Set(CATEGORIES))
   })
 })
 
@@ -146,8 +173,33 @@ describe('chooseCharadeFor', () => {
     expect(chooseCharadeFor('player', [], [charade('repeat', 'author', 0, 0)], 'AUTHOR')).toBeNull()
   })
 
-  it('never selects the house fallback from the player pool', () => {
-    expect(chooseCharadeFor('player', [], [HOUSE_CHARADE])).toBeNull()
+  it('never selects or counts any house fallback from the player pool', () => {
+    const playerCharade = charade('player-charade', 'other', 0, 0)
+    const pool = [...HOUSE_CHARADES, playerCharade]
+
+    expect(pool.filter((candidate) => !candidate.isHouse)).toHaveLength(1)
+    expect(chooseCharadeFor('player', [], HOUSE_CHARADES)).toBeNull()
+    expect(chooseCharadeFor('player', [], pool)).toBe(playerCharade)
+  })
+})
+
+describe('chooseHouseCharade', () => {
+  it('is deterministic and varies the fallback across seeds', () => {
+    expect(chooseHouseCharade('opening-night')).toBe(chooseHouseCharade('opening-night'))
+
+    const selected = new Set(Array.from({ length: 100 }, (_, seed) => chooseHouseCharade(seed).id))
+    expect(selected).toEqual(new Set(HOUSE_CHARADES.map((charade) => charade.id)))
+  })
+
+  it('keeps a themed fallback inside the requested daily theme', () => {
+    for (const theme of CATEGORIES) {
+      const themed = HOUSE_CHARADES.filter((charade) => phraseTheme(charade.phraseId) === theme)
+      const selected = new Set(
+        Array.from({ length: 100 }, (_, seed) => chooseHouseCharade(`${theme}:${seed}`, theme).id)
+      )
+
+      expect(selected, theme).toEqual(new Set(themed.map((charade) => charade.id)))
+    }
   })
 })
 

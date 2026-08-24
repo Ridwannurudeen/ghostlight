@@ -495,7 +495,7 @@ describe('charade serving and guesses', () => {
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       await protocol.handleNextCharade(nextCharadeRequest(), 'player')
       const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
-      const phrase = DECK.find((candidate) => candidate.id === 'pop-ghost-party')!
+      const phrase = DECK.find((candidate) => candidate.id === state.getCharade(served.id)?.phraseId)!
       await protocol.handleGuess(
         {
           charadeId: served.id,
@@ -921,9 +921,9 @@ describe('live protocol', () => {
     expect(protocol.rounds.current?.winner).toEqual({ address: 'alice', name: 'Alice' })
   })
 
-  it('reveals repeated house guesses when overlapping rounds re-serve the same house charade', async () => {
+  it('reveals house guesses across consecutive varied fallback rounds', async () => {
     const snapshotLook = async (address: string) => makeLook(address, address)
-    const { sent, protocol } = await createHarness({ snapshotLook })
+    const { state, sent, protocol } = await createHarness({ snapshotLook })
     await negotiate(protocol, 'alice')
     await negotiate(protocol, 'bob')
     sent.length = 0
@@ -931,7 +931,7 @@ describe('live protocol', () => {
     await protocol.handleNextCharade(nextCharadeRequest(), 'alice')
     await protocol.handleNextCharade(nextCharadeRequest(), 'bob')
     const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade')[0])
-    const phrase = DECK.find((candidate) => candidate.id === HOUSE_CHARADE.phraseId)!
+    const phrase = DECK.find((candidate) => candidate.id === state.getCharade(served.id)?.phraseId)!
     const correctIndex = served.answers.indexOf(phrase.text)
     const wrongIndex = (correctIndex + 1) % served.answers.length
 
@@ -939,17 +939,25 @@ describe('live protocol', () => {
       { charadeId: served.id, answerIndex: correctIndex, requestId: 'alice-first' },
       'alice'
     )
-    await protocol.handleNextCharade(nextCharadeRequest([served.id]), 'alice')
     await protocol.handleRoundGuess({ charadeId: served.id, answerIndex: wrongIndex, requestId: 'bob-first' }, 'bob')
+    await protocol.handleNextCharade(nextCharadeRequest([served.id]), 'alice')
     await protocol.handleNextCharade(nextCharadeRequest([served.id]), 'bob')
+    const nextServed = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+    const nextPhrase = DECK.find((candidate) => candidate.id === state.getCharade(nextServed.id)?.phraseId)!
+    const nextCorrectIndex = nextServed.answers.indexOf(nextPhrase.text)
+    const nextWrongIndex = (nextCorrectIndex + 1) % nextServed.answers.length
     sent.length = 0
 
-    await protocol.handleRoundGuess({ charadeId: served.id, answerIndex: wrongIndex, requestId: 'bob-second' }, 'bob')
     await protocol.handleRoundGuess(
-      { charadeId: served.id, answerIndex: correctIndex, requestId: 'alice-second' },
+      { charadeId: nextServed.id, answerIndex: nextWrongIndex, requestId: 'bob-second' },
+      'bob'
+    )
+    await protocol.handleRoundGuess(
+      { charadeId: nextServed.id, answerIndex: nextCorrectIndex, requestId: 'alice-second' },
       'alice'
     )
 
+    expect(nextServed.id).not.toBe(served.id)
     expect(messagesOfType(sent, 'reveal')).toHaveLength(2)
     expect(messagesOfType(sent, 'error')).toEqual([])
   })

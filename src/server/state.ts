@@ -1,6 +1,6 @@
 import { AUDIENCE_SEATS, HYDRATION_DAYS, WIRE_INT_MAX } from '../shared/config'
 import type { PlayerTitle } from '../shared/config'
-import { HOUSE_CHARADE } from '../shared/deck'
+import { HOUSE_CHARADES } from '../shared/deck'
 import type {
   Boards,
   Charade,
@@ -46,6 +46,7 @@ const MAX_AUTHORED_IDS = 200
 const MAX_CACHED_PLAYER_STATS = 256
 const MAX_TIMESTAMP = 8_640_000_000_000_000
 const SUPPORTED_STORAGE_VERSIONS = new Set([0, 1, STORAGE_SCHEMA_VERSION])
+const HOUSE_CHARADE_IDS = new Set(HOUSE_CHARADES.map((charade) => charade.id))
 
 function asObject(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -71,11 +72,11 @@ function asStringArray(value: unknown, limit?: number) {
 }
 
 function normalizeAuthored(value: unknown) {
-  return [...new Set(asStringArray(value).filter((id) => id !== HOUSE_CHARADE.id))].slice(-MAX_AUTHORED_IDS)
+  return [...new Set(asStringArray(value).filter((id) => !HOUSE_CHARADE_IDS.has(id)))].slice(-MAX_AUTHORED_IDS)
 }
 
 function authoredCountFrom(value: unknown) {
-  return new Set(asStringArray(value).filter((id) => id !== HOUSE_CHARADE.id)).size
+  return new Set(asStringArray(value).filter((id) => !HOUSE_CHARADE_IDS.has(id))).size
 }
 
 function isDayKey(value: string) {
@@ -418,7 +419,7 @@ export class GhostlightState {
     restoredDecoders.forEach((row) => this.dailyDecoders.set(row.address.toLowerCase(), row))
 
     this.charades.clear()
-    this.charades.set(HOUSE_CHARADE.id, HOUSE_CHARADE)
+    HOUSE_CHARADES.forEach((charade) => this.charades.set(charade.id, charade))
     const charadeIds = [...ids]
     for (let offset = 0; offset < charadeIds.length; offset += MAX_CONCURRENT_READS) {
       const batch = charadeIds.slice(offset, offset + MAX_CONCURRENT_READS)

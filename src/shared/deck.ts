@@ -706,9 +706,59 @@ const PHRASE_SOURCES = [
 
 export const DECK: readonly Phrase[] = PHRASE_SOURCES.map((phrase) => ({ ...phrase, theme: phrase.category }))
 
-export const HOUSE_CHARADE: Charade = {
+const HOUSE_CHARADE_SOURCES = [
+  { id: 'house-charade', phraseId: 'pop-ghost-party', emotes: ['handsair', 'disco', 'clap'] },
+  {
+    id: 'house-everyday-lost-keys',
+    phraseId: 'everyday-find-lost-keys',
+    emotes: ['dontsee', 'raiseHand', 'fistpump']
+  },
+  {
+    id: 'house-everyday-dodge-rain',
+    phraseId: 'everyday-dodge-the-rain',
+    emotes: ['dontsee', 'tektonik', 'handsair']
+  },
+  {
+    id: 'house-feelings-big-win',
+    phraseId: 'feelings-celebrate-a-win',
+    emotes: ['fistpump', 'handsair', 'clap']
+  },
+  {
+    id: 'house-feelings-monday-morning',
+    phraseId: 'feelings-face-monday-morning',
+    emotes: ['dontsee', 'headexplode', 'robot']
+  },
+  { id: 'house-food-flip-pancake', phraseId: 'food-flip-a-pancake', emotes: ['hammer', 'handsair', 'clap'] },
+  {
+    id: 'house-food-spicy-noodles',
+    phraseId: 'food-eat-spicy-noodles',
+    emotes: ['hammer', 'headexplode', 'handsair']
+  },
+  {
+    id: 'house-dcl-enter-portal',
+    phraseId: 'dcl-life-enter-a-portal',
+    emotes: ['wave', 'handsair', 'robot']
+  },
+  {
+    id: 'house-dcl-wave-at-npc',
+    phraseId: 'dcl-life-wave-at-an-npc',
+    emotes: ['wave', 'robot', 'shrug']
+  },
+  {
+    id: 'house-pop-secret-identity',
+    phraseId: 'pop-reveal-secret-identity',
+    emotes: ['dontsee', 'handsair', 'fistpump']
+  },
+  {
+    id: 'house-awkward-wrong-person',
+    phraseId: 'awkward-wave-at-wrong-person',
+    emotes: ['wave', 'dontsee', 'shrug']
+  }
+] as const satisfies ReadonlyArray<Pick<Charade, 'id' | 'phraseId' | 'emotes'>>
+
+export const HOUSE_CHARADES: readonly Charade[] = HOUSE_CHARADE_SOURCES.map((source) => ({
   v: STORAGE_SCHEMA_VERSION,
-  id: 'house-charade',
+  id: source.id,
   author: {
     address: '0x0000000000000000000000000000000000000000',
     name: 'House',
@@ -719,10 +769,12 @@ export const HOUSE_CHARADE: Charade = {
     eyeColor: { r: 0.3, g: 0.48, b: 0.62 },
     wearables: []
   },
-  phraseId: 'pop-ghost-party',
-  emotes: ['handsair', 'disco', 'clap'],
+  phraseId: source.phraseId,
+  emotes: [...source.emotes],
   createdAt: 0,
   guesses: { total: 0, correct: 0 },
   lastGuessAt: 0,
   isHouse: true
-}
+}))
+
+export const HOUSE_CHARADE: Charade = HOUSE_CHARADES[0]

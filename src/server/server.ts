@@ -1,9 +1,9 @@
 import { AvatarBase, AvatarEquippedData, PlayerIdentityData, engine } from '@dcl/sdk/ecs'
 import { onEnterScene, onLeaveScene } from '@dcl/sdk/src/players'
 import { AUTHOR_COOLDOWN_SECONDS, PROTOCOL_VERSION, WIRE_INT_MAX, themeForTimestamp } from '../shared/config'
-import { DECK, EMOTE_VOCABULARY, HOUSE_CHARADE } from '../shared/deck'
+import { DECK, EMOTE_VOCABULARY } from '../shared/deck'
 import { Messages, room } from '../shared/messages'
-import { chooseCharadeFor, pickDecoys, shuffleSeeded } from '../shared/pick'
+import { chooseCharadeFor, chooseHouseCharade, pickDecoys, shuffleSeeded } from '../shared/pick'
 import type { Charade, Look, PlayerProgress } from '../shared/types'
 import { STORAGE_SCHEMA_VERSION } from '../shared/types'
 import { LiveRounds } from './rounds'
@@ -183,6 +183,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
   const rounds = new LiveRounds((type, data) => options.send(type, data))
   let currentDay = dayKey(now())
   let rolloverPromise: Promise<void> | null = null
+  let houseSequence = 0
 
   async function sendTo(address: string, type: string, data: unknown) {
     await options.send(type, data, [address])
@@ -396,13 +397,21 @@ export function createServerProtocol(options: ServerProtocolOptions) {
           left.id.localeCompare(right.id)
         )
       })
-    return eligible[0] ?? HOUSE_CHARADE
+    return (
+      eligible[0] ??
+      chooseHouseCharade(`round:${currentDay}:${previous ?? ''}:${houseSequence++}`, themeForTimestamp(now()).id)
+    )
   }
 
   function ensureRound() {
     if (!rounds.isLive) return null
     const current = rounds.current
-    if (current && !rounds.isSettled) return options.state.getCharade(current.charadeId) ?? HOUSE_CHARADE
+    if (current && !rounds.isSettled) {
+      return (
+        options.state.getCharade(current.charadeId) ??
+        chooseHouseCharade(`missing-round:${current.charadeId}`, themeForTimestamp(now()).id)
+      )
+    }
     const charade = selectRoundCharade()
     rounds.start(charade.id)
     return charade
@@ -625,7 +634,10 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         const stats = await options.state.getOrCreateStats(key, playerName(key), !(look?.isGuest ?? true))
         const currentRound = rounds.current
         const currentCharade =
-          currentRound && !rounds.isSettled ? options.state.getCharade(currentRound.charadeId) ?? HOUSE_CHARADE : null
+          currentRound && !rounds.isSettled
+            ? (options.state.getCharade(currentRound.charadeId) ??
+              chooseHouseCharade(`missing-round:${currentRound.charadeId}`, themeForTimestamp(now()).id))
+            : null
         const roundEligible =
           currentCharade !== null &&
           (currentCharade.isHouse ||
@@ -647,7 +659,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
             lastAuthors.get(key),
             themeForTimestamp(now()).id
           ) ??
-          HOUSE_CHARADE
+          chooseHouseCharade(`${key}:${data.requestId}:${houseSequence++}`, themeForTimestamp(now()).id)
         )
       })()
       nextRequests.set(selectionKey, selection)
