@@ -2,7 +2,6 @@ import { Schemas } from '@dcl/sdk/ecs'
 import { registerMessages } from '@dcl/sdk/network'
 
 export const SPECTATOR_REACTION_KINDS = ['laugh', 'gasp', 'applause'] as const
-export const REACTION_KINDS = [...SPECTATOR_REACTION_KINDS, 'confused', 'genius'] as const
 
 const color = Schemas.Map({
   r: Schemas.Number,

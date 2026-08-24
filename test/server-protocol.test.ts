@@ -1040,34 +1040,62 @@ describe('live protocol', () => {
   it('relays every valid reaction only to other present players', async () => {
     let timestamp = FIXED_NOW
     const snapshotLook = async (address: string) => makeLook(address, address)
-    const { sent, protocol } = await createHarness({ snapshotLook, now: () => timestamp })
+    const { state, sent, protocol } = await createHarness({ snapshotLook, now: () => timestamp })
     await negotiate(protocol, 'alice')
     await negotiate(protocol, 'bob')
     await negotiate(protocol, 'carol')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'alice')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'bob')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'carol')
+    const bobCharade = dataOf<CharadeMessage>(
+      messagesOfType(sent, 'charade').find((message) => message.to?.includes('bob'))!
+    )
+    const bobPhraseId = state.getCharade(bobCharade.id)!.phraseId
+    await protocol.handleRoundGuess(
+      {
+        charadeId: bobCharade.id,
+        answerIndex: (bobCharade.answerIds.indexOf(bobPhraseId) + 1) % 3,
+        requestId: 'bob-spectates'
+      },
+      'bob'
+    )
     sent.length = 0
 
-    for (const kind of ['laugh', 'confused', 'genius', 'gasp', 'applause']) {
-      await protocol.handleReact({ kind }, 'alice')
+    for (const kind of ['laugh', 'gasp', 'applause']) {
+      await protocol.handleReact({ kind }, 'bob')
       timestamp += 1_000
     }
 
     expect(messagesOfType(sent, 'react').map((message) => message.data)).toEqual([
       { kind: 'laugh' },
-      { kind: 'confused' },
-      { kind: 'genius' },
       { kind: 'gasp' },
       { kind: 'applause' }
     ])
-    expect(messagesOfType(sent, 'react').every((message) => message.to?.join(',') === 'bob,carol')).toBe(true)
-    expect(messagesOfType(sent, 'react').every((message) => !message.to?.includes('alice'))).toBe(true)
+    expect(messagesOfType(sent, 'react').every((message) => message.to?.join(',') === 'alice,carol')).toBe(true)
+    expect(messagesOfType(sent, 'react').every((message) => !message.to?.includes('bob'))).toBe(true)
   })
 
   it('rate-limits reactions per address without sleeps', async () => {
     let timestamp = FIXED_NOW
     const snapshotLook = async (address: string) => makeLook(address, address)
-    const { sent, protocol } = await createHarness({ snapshotLook, now: () => timestamp })
+    const { state, sent, protocol } = await createHarness({ snapshotLook, now: () => timestamp })
     await negotiate(protocol, 'alice')
     await negotiate(protocol, 'bob')
+    await negotiate(protocol, 'carol')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'alice')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'carol')
+    const aliceCharade = dataOf<CharadeMessage>(
+      messagesOfType(sent, 'charade').find((message) => message.to?.includes('alice'))!
+    )
+    const alicePhraseId = state.getCharade(aliceCharade.id)!.phraseId
+    await protocol.handleRoundGuess(
+      {
+        charadeId: aliceCharade.id,
+        answerIndex: (aliceCharade.answerIds.indexOf(alicePhraseId) + 1) % 3,
+        requestId: 'alice-spectates'
+      },
+      'alice'
+    )
     sent.length = 0
 
     await protocol.handleReact({ kind: 'applause' }, 'alice')
@@ -1079,9 +1107,9 @@ describe('live protocol', () => {
     await protocol.handleReact({ kind: 'laugh' }, 'alice')
 
     expect(messagesOfType(sent, 'react')).toEqual([
-      { type: 'react', data: { kind: 'applause' }, to: ['bob'] },
-      { type: 'react', data: { kind: 'laugh' }, to: ['alice'] },
-      { type: 'react', data: { kind: 'laugh' }, to: ['bob'] }
+      { type: 'react', data: { kind: 'applause' }, to: ['bob', 'carol'] },
+      { type: 'react', data: { kind: 'laugh' }, to: ['alice', 'carol'] },
+      { type: 'react', data: { kind: 'laugh' }, to: ['bob', 'carol'] }
     ])
     expect(messagesOfType(sent, 'error')).toEqual([
       { type: 'error', data: { code: 'reaction-rate-limited' }, to: ['alice'] },

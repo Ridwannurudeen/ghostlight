@@ -2,7 +2,7 @@ import { AvatarBase, AvatarEquippedData, PlayerIdentityData, engine } from '@dcl
 import { onEnterScene, onLeaveScene } from '@dcl/sdk/src/players'
 import { AUTHOR_COOLDOWN_SECONDS, PROTOCOL_VERSION, WIRE_INT_MAX, themeForTimestamp } from '../shared/config'
 import { DECK, EMOTE_VOCABULARY } from '../shared/deck'
-import { Messages, REACTION_KINDS, room } from '../shared/messages'
+import { Messages, SPECTATOR_REACTION_KINDS, room } from '../shared/messages'
 import { chooseCharadeFor, chooseHouseCharade, pickDecoys, shuffleSeeded } from '../shared/pick'
 import type { Charade, Look, PlayerProgress } from '../shared/types'
 import { STORAGE_SCHEMA_VERSION } from '../shared/types'
@@ -56,7 +56,7 @@ export type ServerProtocolOptions = {
   lookRetryMilliseconds?: number
 }
 
-const VALID_REACTION_KINDS = new Set<string>(REACTION_KINDS)
+const VALID_REACTION_KINDS = new Set<string>(SPECTATOR_REACTION_KINDS)
 const REACTION_COOLDOWN_MILLISECONDS = 1_000
 const EMOTES = new Set<string>(EMOTE_VOCABULARY)
 const MAX_WEARABLE_URNS = 20
@@ -171,6 +171,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
   const welcomePromises = new Map<string, Promise<boolean>>()
   const cancelledWelcomePromises = new WeakSet<Promise<boolean>>()
   const answerIndexes = new Map<string, number>()
+  const activeDecoders = new Set<string>()
   const lastAuthors = new Map<string, string>()
   const lastPosts = new Map<string, number>()
   const lastReactions = new Map<string, number>()
@@ -525,6 +526,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     looks.delete(key)
     welcomed.delete(key)
     negotiated.delete(key)
+    activeDecoders.delete(key)
     lastAuthors.delete(key)
     lastPosts.delete(key)
     for (const answerKey of answerIndexes.keys()) {
@@ -594,8 +596,12 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       await sendError(address, 'invalid-charade')
       return false
     }
-    const key = `${canonicalAddress(address)}:${charade.id}`
-    answerIndexes.set(key, answers.correctIndex)
+    const addressKey = canonicalAddress(address)
+    for (const answerKey of answerIndexes.keys()) {
+      if (answerKey.startsWith(`${addressKey}:`)) answerIndexes.delete(answerKey)
+    }
+    answerIndexes.set(`${addressKey}:${charade.id}`, answers.correctIndex)
+    activeDecoders.add(addressKey)
     lastAuthors.set(canonicalAddress(address), charade.author.address)
     const authorTitle = charade.isHouse
       ? ''
@@ -719,6 +725,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       await sendError(address, 'charade-not-served')
       return
     }
+    activeDecoders.delete(key)
     const roundIsActive = rounds.current?.charadeId === charade.id && rounds.isLive
 
     const look = looks.get(key)
@@ -1037,6 +1044,11 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       return
     }
     const sender = canonicalAddress(address)
+    const activeRound = rounds.current
+    if (!activeRound || rounds.isSettled || activeDecoders.has(sender)) {
+      await sendError(address, 'invalid-reaction')
+      return
+    }
     const currentTime = now()
     const previousReaction = lastReactions.get(sender)
     if (previousReaction !== undefined && currentTime - previousReaction < REACTION_COOLDOWN_MILLISECONDS) {
