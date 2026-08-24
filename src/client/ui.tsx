@@ -7,6 +7,7 @@ import { canAnswerBack, canSendMail, clientFlow, mailRecipients, type ClientFlow
 import { getOpeningViewState, skipOpening, type OpeningViewState } from './opening-scene'
 import { REACTION_OPTIONS, sendReaction } from './reactions'
 import { getRevealViewState, type RevealViewState } from './reveal-scene'
+import { getClientSettings, updateClientSettings } from './settings'
 import { isPlayerInDecodeArea } from './setup'
 
 export const COLORS = {
@@ -79,6 +80,10 @@ export function performerPortraitBackground(performer: { address: string; isGues
       }
 }
 
+export function uiFontSize(fontSize: number, largeText = getClientSettings().largeText) {
+  return largeText ? Math.round(fontSize * 1.2) : fontSize
+}
+
 function actionButton(
   value: string,
   onMouseDown: () => void,
@@ -88,13 +93,33 @@ function actionButton(
   return (
     <Button
       value={value}
-      fontSize={26}
+      fontSize={uiFontSize(26)}
       font="monospace"
       color={{ ...COLORS.ink }}
       variant={variant}
       disabled={disabled}
       uiTransform={{ ...BUTTON }}
       onMouseDown={onMouseDown}
+    />
+  )
+}
+
+function settingsControl() {
+  return (
+    <Button
+      value="SETTINGS"
+      fontSize={uiFontSize(22)}
+      font="monospace"
+      color={{ ...COLORS.ink }}
+      variant="secondary"
+      uiTransform={{
+        width: 180,
+        minHeight: 96,
+        height: 96,
+        positionType: 'absolute',
+        position: { top: 24, right: 28 }
+      }}
+      onMouseDown={() => clientFlow.showSettings()}
     />
   )
 }
@@ -114,7 +139,7 @@ function screenShell(sentence: string, body: ReactEcs.JSX.Element, state: Client
         uiTransform={{ width: '100%', minHeight: 92, padding: '14px 18px', borderRadius: 5 }}
         uiBackground={{ texture: { src: UI_TEXTURES.ribbon }, textureMode: 'stretch', color: accent }}
       >
-        <Label value={sentence} fontSize={32} font="serif" color={COLORS.ink} textAlign="middle-left" />
+        <Label value={sentence} fontSize={uiFontSize(32)} font="serif" color={COLORS.ink} textAlign="middle-left" />
       </UiEntity>
       <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', padding: '12px 0 0 0' }}>
         {body}
@@ -122,7 +147,7 @@ function screenShell(sentence: string, body: ReactEcs.JSX.Element, state: Client
       {state.errorCode ? (
         <Label
           value={`STATUS · ${state.errorCode.replace(/_/gu, ' ').toUpperCase()}`}
-          fontSize={18}
+          fontSize={uiFontSize(18)}
           font="monospace"
           color={COLORS.alert}
           textAlign="middle-left"
@@ -137,7 +162,12 @@ function wakingScreen(state: ClientFlowState) {
   return screenShell(
     'The theater is waking up…',
     <UiEntity uiTransform={{ width: '100%', flex: 1, justifyContent: 'center', flexDirection: 'column' }}>
-      <Label value="CONNECTING TO THE STAGE" fontSize={22} font="monospace" color={COLORS.muted} />
+      <Label
+        value="CONNECTING TO THE STAGE"
+        fontSize={uiFontSize(22)}
+        font="monospace"
+        color={COLORS.muted}
+      />
     </UiEntity>,
     state
   )
@@ -150,7 +180,7 @@ function foyerScreen(state: ClientFlowState) {
     <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', justifyContent: 'center' }}>
       <Label
         value={`TONIGHT'S SHOW · ${state.themeLabel?.toUpperCase() ?? ''}`}
-        fontSize={20}
+        fontSize={uiFontSize(20)}
         font="monospace"
         color={accentFor(state)}
         uiTransform={{ width: '100%', height: 34 }}
@@ -191,7 +221,7 @@ function sinceScreen(state: ClientFlowState) {
       {since && since.rank > 0 ? (
         <Label
           value={`TODAY'S DECODER RANK · ${since.rank}`}
-          fontSize={28}
+          fontSize={uiFontSize(28)}
           font="monospace"
           color={COLORS.gold}
           uiTransform={{ width: '100%', height: 68 }}
@@ -206,7 +236,7 @@ function sinceScreen(state: ClientFlowState) {
 function reactionMenu() {
   return (
     <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', justifyContent: 'center' }}>
-      <Label value="SEND A LIVE REACTION" fontSize={22} font="monospace" color={COLORS.muted} />
+      <Label value="SEND A LIVE REACTION" fontSize={uiFontSize(22)} font="monospace" color={COLORS.muted} />
       {REACTION_OPTIONS.map((reaction) =>
         actionButton(
           reaction.label,
@@ -245,7 +275,7 @@ function decodeScreen(state: ClientFlowState) {
       <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column' }}>
         <Label
           value={label}
-          fontSize={18}
+          fontSize={uiFontSize(18)}
           font="monospace"
           color={charade.isHouse ? COLORS.gold : COLORS.muted}
           textAlign="middle-left"
@@ -297,21 +327,21 @@ function revealScreen(state: ClientFlowState) {
         >
           <Label
             value={`${presentation.stats.correct}/${presentation.stats.total} GUESSED IT`}
-            fontSize={28}
+            fontSize={uiFontSize(28)}
             font="monospace"
             color={COLORS.bone}
             textAlign="middle-center"
           />
           <Label
             value={`${(reveal.title || 'NO TITLE YET').toUpperCase()} - ${Math.round(reveal.nextUnlock.progress * 100)}%`}
-            fontSize={22}
+            fontSize={uiFontSize(22)}
             font="monospace"
             color={COLORS.gold}
             textAlign="middle-center"
           />
           <Label
             value={reveal.nextUnlock.requirement.toUpperCase()}
-            fontSize={16}
+            fontSize={uiFontSize(16)}
             font="monospace"
             color={COLORS.muted}
             textAlign="middle-center"
@@ -337,7 +367,7 @@ function revealScreen(state: ClientFlowState) {
       >
         <Label
           value={presentation.verdictText || 'THE VERDICT IS COMING'}
-          fontSize={25}
+          fontSize={uiFontSize(25)}
           font="monospace"
           color={COLORS.ink}
           textAlign="middle-center"
@@ -379,7 +409,13 @@ function revealAnswerCard(answer: string, index: number, presentation: RevealVie
         color: isCorrect ? COLORS.success : selected ? COLORS.gold : COLORS.bone
       }}
     >
-      <Label value={answer.toUpperCase()} fontSize={22} font="monospace" color={COLORS.ink} textAlign="middle-left" />
+      <Label
+        value={answer.toUpperCase()}
+        fontSize={uiFontSize(22)}
+        font="monospace"
+        color={COLORS.ink}
+        textAlign="middle-left"
+      />
     </UiEntity>
   )
 }
@@ -391,7 +427,7 @@ function emoteButton(emote: Emote, index: number, state: ClientFlowState) {
     <Button
       key={emote}
       value={`${selected ? `${selectedIndex + 1} · ` : ''}${emote.toUpperCase()}`}
-      fontSize={22}
+      fontSize={uiFontSize(22)}
       font="monospace"
       color={{ ...COLORS.ink }}
       variant={selected ? 'primary' : 'secondary'}
@@ -500,6 +536,39 @@ function mailScreen(state: ClientFlowState) {
   )
 }
 
+function settingsScreen(state: ClientFlowState) {
+  const settings = getClientSettings()
+  return screenShell(
+    'Settings and accessibility apply for this visit.',
+    <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', justifyContent: 'center' }}>
+      {actionButton(
+        `SOUND: ${settings.soundEnabled ? 'ON' : 'OFF'}`,
+        () => updateClientSettings({ soundEnabled: !settings.soundEnabled })
+      )}
+      {actionButton(
+        `VOLUME: ${settings.soundVolume === 1 ? 'FULL' : 'QUIET'}`,
+        () => updateClientSettings({ soundVolume: settings.soundVolume === 1 ? 0.5 : 1 }),
+        false,
+        'secondary'
+      )}
+      {actionButton(
+        `REDUCED MOTION: ${settings.reducedMotion ? 'ON' : 'OFF'}`,
+        () => updateClientSettings({ reducedMotion: !settings.reducedMotion }),
+        false,
+        'secondary'
+      )}
+      {actionButton(
+        `LARGE TEXT: ${settings.largeText ? 'ON' : 'OFF'}`,
+        () => updateClientSettings({ largeText: !settings.largeText }),
+        false,
+        'secondary'
+      )}
+      {actionButton('BACK', () => clientFlow.showFoyer(), false, 'secondary')}
+    </UiEntity>,
+    state
+  )
+}
+
 function boardRow(rank: number, name: string, value: string) {
   return (
     <UiEntity
@@ -512,8 +581,14 @@ function boardRow(rank: number, name: string, value: string) {
       }}
       uiBackground={{ color: rank % 2 === 0 ? COLORS.raised : COLORS.surface }}
     >
-      <Label value={`${rank}. ${name}`} fontSize={20} color={COLORS.bone} textAlign="middle-left" />
-      <Label value={value} fontSize={20} font="monospace" color={COLORS.gold} textAlign="middle-right" />
+      <Label value={`${rank}. ${name}`} fontSize={uiFontSize(20)} color={COLORS.bone} textAlign="middle-left" />
+      <Label
+        value={value}
+        fontSize={uiFontSize(20)}
+        font="monospace"
+        color={COLORS.gold}
+        textAlign="middle-right"
+      />
     </UiEntity>
   )
 }
@@ -532,14 +607,14 @@ function playbillCard(performer: ClientFlowState['boards']['playbill'][number], 
       <UiEntity uiTransform={{ flex: 1, height: 52, flexDirection: 'column' }}>
         <Label
           value={performer.name.toUpperCase()}
-          fontSize={17}
+          fontSize={uiFontSize(17)}
           color={COLORS.bone}
           textAlign="top-left"
           uiTransform={{ width: '100%', height: 24 }}
         />
         <Label
           value={`${performer.title || 'NEW GHOST'} · ${formatPerformedAgo(performer.performedAt, now)}`}
-          fontSize={13}
+          fontSize={uiFontSize(13)}
           font="monospace"
           color={COLORS.muted}
           textAlign="bottom-left"
@@ -558,7 +633,12 @@ function boardsScreen(state: ClientFlowState) {
   return screenShell(
     "Today's boards count real players and exclude the house ghost.",
     <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column' }}>
-      <Label value="PLAYBILL · RECENT PERFORMERS" fontSize={18} font="monospace" color={COLORS.muted} />
+      <Label
+        value="PLAYBILL · RECENT PERFORMERS"
+        fontSize={uiFontSize(18)}
+        font="monospace"
+        color={COLORS.muted}
+      />
       <UiEntity
         uiTransform={{
           width: '100%',
@@ -574,7 +654,7 @@ function boardsScreen(state: ClientFlowState) {
         <UiEntity uiTransform={{ width: '49%', flexDirection: 'column' }}>
           <Label
             value="TOP DECODERS"
-            fontSize={18}
+            fontSize={uiFontSize(18)}
             font="monospace"
             color={COLORS.muted}
             uiTransform={{ height: 40 }}
@@ -582,13 +662,18 @@ function boardsScreen(state: ClientFlowState) {
           {decoders.length > 0 ? (
             decoders.map((entry, index) => boardRow(index + 1, entry.name, `${entry.correct}/${entry.total}`))
           ) : (
-            <Label value="NO DECODES YET" fontSize={20} color={COLORS.muted} uiTransform={{ height: 48 }} />
+            <Label
+              value="NO DECODES YET"
+              fontSize={uiFontSize(20)}
+              color={COLORS.muted}
+              uiTransform={{ height: 48 }}
+            />
           )}
         </UiEntity>
         <UiEntity uiTransform={{ width: '49%', flexDirection: 'column' }}>
           <Label
             value="HARDEST GHOSTS"
-            fontSize={18}
+            fontSize={uiFontSize(18)}
             font="monospace"
             color={COLORS.muted}
             uiTransform={{ height: 40 }}
@@ -596,7 +681,12 @@ function boardsScreen(state: ClientFlowState) {
           {hardest.length > 0 ? (
             hardest.map((entry, index) => boardRow(index + 1, entry.authorName, `${entry.correct}/${entry.total}`))
           ) : (
-            <Label value="NO GUESSES YET" fontSize={20} color={COLORS.muted} uiTransform={{ height: 48 }} />
+            <Label
+              value="NO GUESSES YET"
+              fontSize={uiFontSize(20)}
+              color={COLORS.muted}
+              uiTransform={{ height: 48 }}
+            />
           )}
         </UiEntity>
       </UiEntity>
@@ -657,7 +747,7 @@ function openingOverlay(opening: OpeningViewState) {
       >
         <Label
           value={opening.instruction || 'OPENING NIGHT'}
-          fontSize={36}
+          fontSize={uiFontSize(36)}
           font="serif"
           color={COLORS.bone}
           textAlign="middle-center"
@@ -699,8 +789,14 @@ function noticeOverlay(state: ClientFlowState) {
           uiBackground={{ texture: { src: UI_TEXTURES.stamp }, textureMode: 'stretch' }}
         />
       ) : null}
-      <Label value={title} fontSize={24} font="monospace" color={COLORS.gold} textAlign="middle-center" />
-      <Label value={copy} fontSize={18} color={COLORS.bone} textAlign="middle-center" />
+      <Label
+        value={title}
+        fontSize={uiFontSize(24)}
+        font="monospace"
+        color={COLORS.gold}
+        textAlign="middle-center"
+      />
+      <Label value={copy} fontSize={uiFontSize(18)} color={COLORS.bone} textAlign="middle-center" />
       {actionButton('TAKE A BOW', () => clientFlow.dismissNotice(notice.id), false, 'secondary')}
     </UiEntity>
   )
@@ -728,6 +824,8 @@ function currentScreen(state: ClientFlowState) {
       return inviteScreen(state)
     case 'mail':
       return mailScreen(state)
+    case 'settings':
+      return settingsScreen(state)
   }
 }
 
@@ -740,6 +838,7 @@ export const uiComponent = () => {
       uiBackground={{ color: Color4.create(0.02, 0.014, 0.037, 0.08) }}
     >
       {opening.active ? openingOverlay(opening) : currentScreen(state)}
+      {!opening.active && state.screen === 'foyer' ? settingsControl() : null}
       {!opening.active ? noticeOverlay(state) : null}
       {!opening.active && state.toast ? (
         <UiEntity
@@ -755,7 +854,12 @@ export const uiComponent = () => {
           }}
           uiBackground={{ color: COLORS.surface }}
         >
-          <Label value={state.toast.text} fontSize={24} color={COLORS.bone} textAlign="middle-center" />
+          <Label
+            value={state.toast.text}
+            fontSize={uiFontSize(24)}
+            color={COLORS.bone}
+            textAlign="middle-center"
+          />
         </UiEntity>
       ) : null}
     </UiEntity>

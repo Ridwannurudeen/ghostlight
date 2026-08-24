@@ -10,6 +10,7 @@ import {
   type RevealStats
 } from './reveal'
 import { releaseTheaterCamera, switchTheaterCamera } from './setup'
+import { getClientSettings } from './settings'
 import { curtains, lights } from './theater'
 
 export type RevealAudioPort = {
@@ -68,6 +69,7 @@ export function createSceneRevealController(audio: RevealAudioPort, clock?: Reve
   let floatingSecondsRemaining = 0
   let titleProgressTarget = 0
   let titleProgressElapsed = TITLE_PROGRESS_SECONDS
+  let reducedMotion = false
 
   function ensureFloatingEntity() {
     if (floatingEntity !== null) return floatingEntity
@@ -111,9 +113,15 @@ export function createSceneRevealController(audio: RevealAudioPort, clock?: Reve
     },
     setLights: (mood) => lights.set(mood),
     duckAudio: audio.duck,
-    twitchCurtains: () => curtains.twitch(),
-    freezePerformer,
-    setCamera: (camera) => switchTheaterCamera(camera === 'push-in' ? 'reveal' : 'stage'),
+    twitchCurtains: () => {
+      if (!reducedMotion) curtains.twitch()
+    },
+    freezePerformer: () => {
+      if (!reducedMotion) freezePerformer()
+    },
+    setCamera: (camera) => {
+      if (!reducedMotion) switchTheaterCamera(camera === 'push-in' ? 'reveal' : 'stage')
+    },
     releaseCamera: releaseTheaterCamera,
     fadeWrongAnswers: () => {
       revealView = { ...revealView, wrongAnswersFaded: true }
@@ -129,22 +137,30 @@ export function createSceneRevealController(audio: RevealAudioPort, clock?: Reve
         outlineWidth: 0.12,
         outlineColor: Color3.create(0.02, 0.08, 0.06)
       })
-      Tween.setMove(entity, FLOATING_START, FLOATING_END, FLOATING_SECONDS * 1_000)
-      floatingSecondsRemaining = FLOATING_SECONDS
+      if (reducedMotion) {
+        floatingSecondsRemaining = 0
+      } else {
+        Tween.setMove(entity, FLOATING_START, FLOATING_END, FLOATING_SECONDS * 1_000)
+        floatingSecondsRemaining = FLOATING_SECONDS
+      }
       revealView = { ...revealView, verdict: 'hit', verdictText: text }
     },
     showMissVerdictCard: (text) => {
       revealView = { ...revealView, verdict: 'miss', verdictText: text }
     },
-    reactAudience: (reaction) => react(reaction),
-    playPerformerEmote: (emote) => playPerformerEmote(emote),
+    reactAudience: (reaction) => {
+      if (!reducedMotion) react(reaction)
+    },
+    playPerformerEmote: (emote) => {
+      if (!reducedMotion) playPerformerEmote(emote)
+    },
     showStats: (stats) => {
       revealView = { ...revealView, stats }
     },
     animateTitleProgress: (progress, unlockedTitle) => {
       titleProgressTarget = progress
-      titleProgressElapsed = 0
-      revealView = { ...revealView, titleProgress: 0, unlockedTitle }
+      titleProgressElapsed = reducedMotion ? TITLE_PROGRESS_SECONDS : 0
+      revealView = { ...revealView, titleProgress: reducedMotion ? progress : 0, unlockedTitle }
       if (unlockedTitle) audio.play('unlock')
       if (revealView.stampAwarded) audio.play('stamp')
     },
@@ -160,10 +176,11 @@ export function createSceneRevealController(audio: RevealAudioPort, clock?: Reve
     }
   }
 
-  const controller = createRevealController(effects, clock)
+  const controller = createRevealController(effects, clock, { reducedMotion: () => reducedMotion })
 
   return {
     begin(charade: DecodeCharade, answerIndex: number) {
+      reducedMotion = getClientSettings().reducedMotion
       titleProgressTarget = 0
       titleProgressElapsed = TITLE_PROGRESS_SECONDS
       revealView = {

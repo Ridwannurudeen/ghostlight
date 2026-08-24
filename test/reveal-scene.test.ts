@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createSceneRevealController, getRevealViewState } from '../src/client/reveal-scene'
 import type { DecodeCharade } from '../src/client/flow'
+import { DEFAULT_CLIENT_SETTINGS, updateClientSettings } from '../src/client/settings'
 import { makeLook } from './test-helpers'
 
 vi.mock('@dcl/sdk/ecs', () => ({
@@ -36,7 +37,9 @@ vi.mock('../src/client/theater', () => ({
   lights: { set: vi.fn(), setSpotlightColor: vi.fn() }
 }))
 
-import { engine } from '@dcl/sdk/ecs'
+import { Tween, engine } from '@dcl/sdk/ecs'
+import { releaseTheaterCamera, switchTheaterCamera } from '../src/client/setup'
+import { curtains } from '../src/client/theater'
 
 const charade: DecodeCharade = {
   id: 'charade-1',
@@ -54,9 +57,11 @@ describe('scene reveal adapter', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     vi.clearAllMocks()
+    updateClientSettings(DEFAULT_CLIENT_SETTINGS)
   })
 
   afterEach(() => {
+    updateClientSettings(DEFAULT_CLIENT_SETTINGS)
     vi.useRealTimers()
   })
 
@@ -98,5 +103,56 @@ describe('scene reveal adapter', () => {
     })
     expect(audio.play).toHaveBeenCalledWith('gasp')
     expect(audio.play).toHaveBeenCalledWith('unlock')
+  })
+
+  it('removes camera and tween motion but preserves the full reduced-motion result and reset', () => {
+    updateClientSettings({ reducedMotion: true })
+    const audio = { play: vi.fn(), duck: vi.fn(), restore: vi.fn() }
+    const controller = createSceneRevealController(audio)
+
+    controller.begin(charade, 0)
+    controller.resolve(
+      {
+        charadeId: charade.id,
+        correct: true,
+        phrase: 'Flying a kite',
+        stats: { correct: 7, total: 11 },
+        yourScore: 2,
+        daily: { day: '2026-08-23', decoded: 10, authored: 1, stamped: true },
+        stampAwarded: true,
+        title: 'Scene Stealer',
+        nextUnlock: {
+          nextTitle: 'Ghostlight Legend',
+          requirement: '3 daily stamps and 25 correct decodes',
+          progress: 0.4
+        },
+        titleUnlocked: true
+      },
+      charade
+    )
+    vi.advanceTimersByTime(3_000)
+
+    expect(switchTheaterCamera).not.toHaveBeenCalled()
+    expect(curtains.twitch).not.toHaveBeenCalled()
+    expect(Tween.setMove).not.toHaveBeenCalled()
+    expect(releaseTheaterCamera).toHaveBeenCalledTimes(1)
+    expect(getRevealViewState()).toMatchObject({
+      verdict: 'hit',
+      verdictText: 'YOU GOT IT',
+      stats: { correct: 7, total: 11 },
+      titleProgress: 0.4,
+      unlockedTitle: 'Scene Stealer',
+      complete: true
+    })
+    expect(audio.play.mock.calls.map(([name]) => name)).toEqual([
+      'tick',
+      'drumroll',
+      'sting',
+      'hit',
+      'applause',
+      'unlock',
+      'stamp'
+    ])
+    expect(audio.restore).toHaveBeenCalledTimes(1)
   })
 })

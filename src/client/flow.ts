@@ -26,6 +26,7 @@ export type FlowScreen =
   | 'boards'
   | 'invite'
   | 'mail'
+  | 'settings'
 
 export type ReactionKind = 'laugh' | 'confused' | 'genius'
 export type GhostEmotes = [string, string, string]
@@ -222,7 +223,7 @@ export type FlowAction =
   | { type: 'roundWinner'; address: string; name: string; now: number }
   | { type: 'reaction'; kind: ReactionKind; from: string }
   | { type: 'toggleReactionMenu' }
-  | { type: 'show'; screen: 'foyer' | 'boards' | 'invite' | 'mail' }
+  | { type: 'show'; screen: 'foyer' | 'boards' | 'invite' | 'mail' | 'settings' }
   | { type: 'requestSent'; request: PendingRequest }
   | { type: 'requestRetried'; requestId: string; now: number }
   | { type: 'requestResolved'; kind: PendingRequestKind }
@@ -1310,6 +1311,10 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
       if (!canSendMail(state)) return false
       dispatch({ type: 'show', screen: 'mail' })
       return true
+    },
+    showSettings() {
+      if (state.screen === 'reveal') cancelReveal()
+      dispatch({ type: 'show', screen: 'settings' })
     },
     toggleReactionMenu() {
       dispatch({ type: 'toggleReactionMenu' })

@@ -54,4 +54,32 @@ describe('sound controller', () => {
     controller.restoreAfterReveal()
     expect(roomTone.volume).toBe(0.28)
   })
+
+  it('mutes active sources and applies the selected coarse volume when sound is enabled', () => {
+    const { controller, sources, playSource } = createSoundHarness()
+
+    controller.initialize()
+    controller.startRoomTone()
+    controller.setSettings({ soundEnabled: true, soundVolume: 0.5 })
+
+    const roomTone = [...sources.values()].find((source) => source.audioClipUrl === SOUND_CLIPS.roomTone)!
+    const tick = [...sources.values()].find((source) => source.audioClipUrl === SOUND_CLIPS.tick)!
+    expect(roomTone.volume).toBeCloseTo(0.14)
+    expect(tick.volume).toBeCloseTo(0.5)
+
+    controller.play('tick')
+    expect(playSource).toHaveBeenCalledTimes(1)
+
+    controller.setSettings({ soundEnabled: false, soundVolume: 0.5 })
+    expect([...sources.values()].every((source) => source.playing === false && source.currentTime === 0)).toBe(true)
+    controller.play('hit')
+    expect(playSource).toHaveBeenCalledTimes(1)
+
+    controller.setSettings({ soundEnabled: true, soundVolume: 0.5 })
+    expect(roomTone.playing).toBe(true)
+    controller.duckForReveal()
+    expect(roomTone.volume).toBeCloseTo(0.035)
+    controller.restoreAfterReveal()
+    expect(roomTone.volume).toBeCloseTo(0.14)
+  })
 })

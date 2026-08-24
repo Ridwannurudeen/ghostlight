@@ -1,4 +1,10 @@
 import { AudioSource, engine, type Entity } from '@dcl/sdk/ecs'
+import {
+  DEFAULT_CLIENT_SETTINGS,
+  getClientSettings,
+  subscribeClientSettings,
+  type ClientSettings
+} from './settings'
 
 export const SOUND_CLIPS = {
   roomTone: 'assets/sounds/room_tone.mp3',
@@ -32,15 +38,32 @@ export type SoundPort<TEntity> = {
   getMutableSource(entity: TEntity): SoundSource
 }
 
+export type SoundSettings = Pick<ClientSettings, 'soundEnabled' | 'soundVolume'>
+
 const ROOM_TONE_VOLUME = 0.28
 const DUCKED_ROOM_TONE_VOLUME = 0.07
 
 const SOUND_NAMES = Object.keys(SOUND_CLIPS) as SoundName[]
 
-export function createSoundController<TEntity>(port: SoundPort<TEntity>) {
+export function createSoundController<TEntity>(
+  port: SoundPort<TEntity>,
+  initialSettings: SoundSettings = DEFAULT_CLIENT_SETTINGS
+) {
   const entities = new Map<SoundName, TEntity>()
-  let roomToneStarted = false
+  let settings = initialSettings
+  let roomToneRequested = false
   let revealDucked = false
+
+  function volumeFor(name: SoundName) {
+    const baseVolume = name === 'roomTone' ? (revealDucked ? DUCKED_ROOM_TONE_VOLUME : ROOM_TONE_VOLUME) : 1
+    return baseVolume * settings.soundVolume
+  }
+
+  function applyVolumes() {
+    for (const [name, entity] of entities) {
+      port.getMutableSource(entity).volume = volumeFor(name)
+    }
+  }
 
   function initialize() {
     if (entities.size > 0) return
@@ -51,7 +74,7 @@ export function createSoundController<TEntity>(port: SoundPort<TEntity>) {
         audioClipUrl: SOUND_CLIPS[name],
         playing: false,
         loop: name === 'roomTone',
-        volume: name === 'roomTone' ? ROOM_TONE_VOLUME : 1,
+        volume: volumeFor(name),
         global: true
       })
       entities.set(name, entity)
@@ -66,24 +89,49 @@ export function createSoundController<TEntity>(port: SoundPort<TEntity>) {
   return {
     initialize,
     play(name: SoundName) {
+      if (!settings.soundEnabled) return
+      port.getMutableSource(getEntity(name)).volume = volumeFor(name)
       port.playSource(getEntity(name), SOUND_CLIPS[name])
     },
     startRoomTone() {
-      if (roomToneStarted) return
+      roomToneRequested = true
+      if (!settings.soundEnabled) return
       const roomTone = port.getMutableSource(getEntity('roomTone'))
+      if (roomTone.playing) return
       roomTone.currentTime = 0
       roomTone.playing = true
-      roomToneStarted = true
     },
     duckForReveal() {
       if (revealDucked) return
-      port.getMutableSource(getEntity('roomTone')).volume = DUCKED_ROOM_TONE_VOLUME
       revealDucked = true
+      port.getMutableSource(getEntity('roomTone')).volume = volumeFor('roomTone')
     },
     restoreAfterReveal() {
       if (!revealDucked) return
-      port.getMutableSource(getEntity('roomTone')).volume = ROOM_TONE_VOLUME
       revealDucked = false
+      port.getMutableSource(getEntity('roomTone')).volume = volumeFor('roomTone')
+    },
+    setSettings(nextSettings: SoundSettings) {
+      settings = nextSettings
+      if (entities.size === 0) return
+      applyVolumes()
+
+      if (!settings.soundEnabled) {
+        for (const entity of entities.values()) {
+          const source = port.getMutableSource(entity)
+          source.playing = false
+          source.currentTime = 0
+        }
+        return
+      }
+
+      if (roomToneRequested) {
+        const roomTone = port.getMutableSource(getEntity('roomTone'))
+        if (!roomTone.playing) {
+          roomTone.currentTime = 0
+          roomTone.playing = true
+        }
+      }
     }
   }
 }
@@ -100,7 +148,10 @@ const ecsSoundPort: SoundPort<Entity> = {
 let soundController: ReturnType<typeof createSoundController<Entity>> | null = null
 
 function getSoundController() {
-  soundController ??= createSoundController(ecsSoundPort)
+  if (soundController !== null) return soundController
+  const settings = getClientSettings()
+  soundController = createSoundController(ecsSoundPort, settings)
+  subscribeClientSettings((nextSettings) => soundController?.setSettings(nextSettings))
   return soundController
 }
 

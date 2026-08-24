@@ -8,7 +8,9 @@ const uiTest = vi.hoisted(() => ({
 }))
 
 const uiActions = vi.hoisted(() => ({
+  showFoyer: vi.fn(),
   showInvite: vi.fn(),
+  showSettings: vi.fn(),
   setInviteStatus: vi.fn()
 }))
 
@@ -38,6 +40,8 @@ vi.mock('../src/client/opening-scene', () => ({
 
 vi.mock('../src/client/flow', () => ({
   canAnswerBack: () => uiTest.canReply,
+  canSendMail: () => false,
+  mailRecipients: () => [],
   clientFlow: {
     getState: () => uiTest.state,
     guess: vi.fn(),
@@ -54,7 +58,9 @@ vi.mock('../src/client/flow', () => ({
     toggleReactionMenu: vi.fn(),
     requestNextCharade: vi.fn(),
     showBoards: vi.fn(),
+    showFoyer: uiActions.showFoyer,
     showInvite: uiActions.showInvite,
+    showSettings: uiActions.showSettings,
     setInviteStatus: uiActions.setInviteStatus,
     reportError: vi.fn()
   }
@@ -65,8 +71,10 @@ import {
   REVEAL_VERTICAL_BUDGET,
   formatPerformedAgo,
   performerPortraitBackground,
+  uiFontSize,
   uiComponent
 } from '../src/client/ui'
+import { DEFAULT_CLIENT_SETTINGS, getClientSettings, updateClientSettings } from '../src/client/settings'
 
 type ElementNode = {
   type: string | ((props: Record<string, unknown>) => unknown)
@@ -162,6 +170,7 @@ describe('UI colors', () => {
     uiTest.canReply = false
     uiTest.opening = { active: false, instruction: '' }
     uiTest.state = stateFor('decode')
+    updateClientSettings(DEFAULT_CLIENT_SETTINGS)
   })
 
   it('does not let disabled buttons mutate the shared ink color across renders', () => {
@@ -232,6 +241,48 @@ describe('mobile control budget', () => {
     expect(usedHeight).toBeLessThanOrEqual(REVEAL_VERTICAL_BUDGET.panelHeight)
     uiTest.state = stateFor('reveal')
     expect(collectButtons(uiComponent()).map(({ value }) => value).sort()).toEqual(['MAKE YOUR OWN', 'NEXT GHOST'])
+  })
+
+  it('keeps the foyer at five controls with settings in the top area', () => {
+    uiTest.state = {
+      ...stateFor('decode'),
+      screen: 'foyer',
+      theme: 'food',
+      themeLabel: 'Kitchen Capers',
+      progress: { daily: { stamped: false } },
+      playerIsGuest: true,
+      boards: { playbill: [] }
+    }
+
+    expect(collectButtons(uiComponent())).toHaveLength(5)
+    const settings = findButton(uiComponent(), 'SETTINGS')
+    expect(settings?.uiTransform).toMatchObject({ position: { top: 24, right: 28 } })
+    expect(settings?.uiTransform).not.toHaveProperty('position.bottom')
+    ;(settings?.onMouseDown as (() => void) | undefined)?.()
+    expect(uiActions.showSettings).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('settings and accessibility', () => {
+  it('changes sound, coarse volume, reduced motion, and large text from a five-control panel', () => {
+    uiTest.state = { ...stateFor('decode'), screen: 'settings', theme: 'food' }
+
+    expect(collectButtons(uiComponent())).toHaveLength(5)
+    ;(findButton(uiComponent(), 'SOUND: ON')?.onMouseDown as (() => void) | undefined)?.()
+    ;(findButton(uiComponent(), 'VOLUME: FULL')?.onMouseDown as (() => void) | undefined)?.()
+    ;(findButton(uiComponent(), 'REDUCED MOTION: OFF')?.onMouseDown as (() => void) | undefined)?.()
+    ;(findButton(uiComponent(), 'LARGE TEXT: OFF')?.onMouseDown as (() => void) | undefined)?.()
+
+    expect(getClientSettings()).toEqual({
+      soundEnabled: false,
+      soundVolume: 0.5,
+      reducedMotion: true,
+      largeText: true
+    })
+    expect(uiFontSize(20)).toBe(24)
+
+    ;(findButton(uiComponent(), 'BACK')?.onMouseDown as (() => void) | undefined)?.()
+    expect(uiActions.showFoyer).toHaveBeenCalledTimes(1)
   })
 })
 

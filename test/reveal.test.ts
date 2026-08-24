@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  REDUCED_MOTION_REVEAL_DURATION_SECONDS,
+  REDUCED_MOTION_REVEAL_TIMELINE,
   REVEAL_DURATION_SECONDS,
   REVEAL_TIMELINE,
   createRevealController,
@@ -52,7 +54,7 @@ const CORRECT_OUTCOME: RevealOutcome = {
   stampAwarded: false
 }
 
-function createHarness() {
+function createHarness(reducedMotion = () => false) {
   const clock = new FakeClock()
   const events: string[] = []
   const record = (effect: string) => events.push(`${clock.currentTime}:${effect}`)
@@ -77,7 +79,7 @@ function createHarness() {
     restoreAudio: () => record('audio:restore'),
     complete: () => record('complete')
   }
-  return { clock, events, controller: createRevealController(effects, clock) }
+  return { clock, events, controller: createRevealController(effects, clock, { reducedMotion }) }
 }
 
 describe('reveal timeline', () => {
@@ -148,6 +150,40 @@ describe('reveal timeline', () => {
     expect(events).toContain('4000:performer:wave')
     expect(events).toContain('4000:sound:gasp')
     expect(events.some((event) => event.includes('YOU GOT IT'))).toBe(false)
+  })
+
+  it('shortens reduced-motion reveals while retaining verdict, sound, stats, reset, and completion', () => {
+    const { clock, events, controller } = createHarness(() => true)
+
+    expect(REDUCED_MOTION_REVEAL_TIMELINE.map(({ at }) => at)).toEqual([0, 0.4, 0.8, 1.3, 1.8, 2.5, 3])
+    expect(REDUCED_MOTION_REVEAL_DURATION_SECONDS).toBe(3)
+
+    controller.start(CORRECT_OUTCOME)
+    clock.advanceTo(3_000)
+
+    expect(events).toEqual([
+      '0:sound:tick',
+      '0:answers:lock',
+      '0:lights:tension',
+      '0:audio:duck',
+      '0:sound:drumroll',
+      '400:sound:sting',
+      '400:answers:fade-wrong',
+      '400:spotlight:white',
+      '800:lights:hit',
+      '800:sound:hit',
+      '800:floating:YOU GOT IT',
+      '1300:sound:applause',
+      '1800:stats:7/11',
+      '1800:title:animate',
+      '2500:camera:release',
+      '2500:lights:house',
+      '2500:visuals:reset',
+      '2500:audio:restore',
+      '3000:complete'
+    ])
+    expect(controller.getStatus()).toBe('complete')
+    expect(clock.pendingCount()).toBe(0)
   })
 })
 

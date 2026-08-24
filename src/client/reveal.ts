@@ -1,6 +1,10 @@
 export const REVEAL_DURATION_SECONDS = 8
+export const REDUCED_MOTION_REVEAL_DURATION_SECONDS = 3
 
+const REVEAL_OUTCOME_SECONDS = 2.6
 const REVEAL_RESET_SECONDS = 7.5
+const REDUCED_MOTION_REVEAL_OUTCOME_SECONDS = 0.8
+const REDUCED_MOTION_REVEAL_RESET_SECONDS = 2.5
 
 export type RevealLightMood = 'house' | 'tension' | 'hit' | 'miss'
 export type RevealSoundName = 'tick' | 'drumroll' | 'sting' | 'hit' | 'miss' | 'applause' | 'gasp' | 'unlock' | 'stamp'
@@ -53,6 +57,10 @@ export type RevealTimelineEntry = {
 export type RevealClock = {
   setTimeout: (run: () => void, delayMilliseconds: number) => number
   clearTimeout: (timer: number) => void
+}
+
+export type RevealControllerOptions = {
+  reducedMotion?: () => boolean
 }
 
 function returnToCleanState(effects: RevealEffects) {
@@ -137,18 +145,108 @@ export const REVEAL_TIMELINE: readonly RevealTimelineEntry[] = [
   }
 ]
 
+export const REDUCED_MOTION_REVEAL_TIMELINE: readonly RevealTimelineEntry[] = [
+  {
+    at: 0,
+    run(effects) {
+      effects.playSound('tick')
+      effects.lockAnswers()
+      effects.setLights('tension')
+      effects.duckAudio()
+      effects.playSound('drumroll')
+    }
+  },
+  {
+    at: 0.4,
+    run(effects) {
+      effects.playSound('sting')
+      effects.fadeWrongAnswers()
+      effects.setSpotlightColor('white')
+    }
+  },
+  {
+    at: REDUCED_MOTION_REVEAL_OUTCOME_SECONDS,
+    run(effects, outcome) {
+      if (!outcome) return
+      if (outcome.correct) {
+        effects.setLights('hit')
+        effects.playSound('hit')
+        effects.showFloatingVerdict('YOU GOT IT')
+        return
+      }
+
+      effects.setLights('miss')
+      effects.playSound('miss')
+      effects.showMissVerdictCard(`${outcome.authorName.toUpperCase()} MEANT: ${outcome.phrase.toUpperCase()}`)
+    }
+  },
+  {
+    at: 1.3,
+    run(effects, outcome) {
+      if (!outcome) return
+      effects.playSound(outcome.correct ? 'applause' : 'gasp')
+    }
+  },
+  {
+    at: 1.8,
+    run(effects, outcome) {
+      if (!outcome) return
+      effects.showStats(outcome.stats)
+      effects.animateTitleProgress(outcome.titleProgress, outcome.unlockedTitle)
+    }
+  },
+  {
+    at: REDUCED_MOTION_REVEAL_RESET_SECONDS,
+    run(effects) {
+      returnToCleanState(effects)
+    }
+  },
+  {
+    at: REDUCED_MOTION_REVEAL_DURATION_SECONDS,
+    run(effects) {
+      effects.complete()
+    }
+  }
+]
+
+type RevealSequence = {
+  timeline: readonly RevealTimelineEntry[]
+  outcomeAt: number
+  resetAt: number
+  duration: number
+}
+
+const STANDARD_REVEAL_SEQUENCE: RevealSequence = {
+  timeline: REVEAL_TIMELINE,
+  outcomeAt: REVEAL_OUTCOME_SECONDS,
+  resetAt: REVEAL_RESET_SECONDS,
+  duration: REVEAL_DURATION_SECONDS
+}
+
+const REDUCED_MOTION_REVEAL_SEQUENCE: RevealSequence = {
+  timeline: REDUCED_MOTION_REVEAL_TIMELINE,
+  outcomeAt: REDUCED_MOTION_REVEAL_OUTCOME_SECONDS,
+  resetAt: REDUCED_MOTION_REVEAL_RESET_SECONDS,
+  duration: REDUCED_MOTION_REVEAL_DURATION_SECONDS
+}
+
 const SYSTEM_CLOCK: RevealClock = {
   setTimeout: (run, delayMilliseconds) => setTimeout(run, delayMilliseconds),
   clearTimeout: (timer) => clearTimeout(timer)
 }
 
-export function createRevealController(effects: RevealEffects, clock: RevealClock = SYSTEM_CLOCK) {
+export function createRevealController(
+  effects: RevealEffects,
+  clock: RevealClock = SYSTEM_CLOCK,
+  options: RevealControllerOptions = {}
+) {
   let status: RevealStatus = 'idle'
   let timers: number[] = []
   let deferredEntries: RevealTimelineEntry[] = []
   let outcome: RevealOutcome | null = null
   let generation = 0
   let clean = true
+  let sequence = STANDARD_REVEAL_SEQUENCE
 
   function cancelTimers() {
     for (const timer of timers) clock.clearTimeout(timer)
@@ -173,12 +271,12 @@ export function createRevealController(effects: RevealEffects, clock: RevealCloc
   }
 
   function runEntry(entry: RevealTimelineEntry) {
-    if (entry.at >= 2.6 && outcome === null) {
+    if (entry.at >= sequence.outcomeAt && outcome === null) {
       deferredEntries.push(entry)
       return
     }
-    if (entry.at === REVEAL_RESET_SECONDS) clean = true
-    if (entry.at === REVEAL_DURATION_SECONDS) {
+    if (entry.at === sequence.resetAt) clean = true
+    if (entry.at === sequence.duration) {
       status = 'complete'
       timers = []
     }
@@ -189,6 +287,8 @@ export function createRevealController(effects: RevealEffects, clock: RevealCloc
     if (status === 'running') reset()
     else cancelTimers()
 
+    sequence = options.reducedMotion?.() ? REDUCED_MOTION_REVEAL_SEQUENCE : STANDARD_REVEAL_SEQUENCE
+
     generation += 1
     const runGeneration = generation
     status = 'running'
@@ -196,7 +296,7 @@ export function createRevealController(effects: RevealEffects, clock: RevealCloc
     outcome = null
     deferredEntries = []
 
-    for (const entry of REVEAL_TIMELINE) {
+    for (const entry of sequence.timeline) {
       if (entry.at === 0) continue
       const timer = clock.setTimeout(() => {
         if (status !== 'running' || generation !== runGeneration) return
@@ -205,7 +305,7 @@ export function createRevealController(effects: RevealEffects, clock: RevealCloc
       timers.push(timer)
     }
 
-    for (const entry of REVEAL_TIMELINE) {
+    for (const entry of sequence.timeline) {
       if (entry.at !== 0 || status !== 'running' || generation !== runGeneration) continue
       runEntry(entry)
     }
@@ -219,7 +319,7 @@ export function createRevealController(effects: RevealEffects, clock: RevealCloc
     cancelTimers()
     const runGeneration = generation
     deferredEntries = []
-    const outcomeEntries = REVEAL_TIMELINE.filter((entry) => entry.at >= 2.6)
+    const outcomeEntries = sequence.timeline.filter((entry) => entry.at >= sequence.outcomeAt)
     const firstAt = outcomeEntries[0].at
     runEntry(outcomeEntries[0])
     for (const entry of outcomeEntries.slice(1)) {
