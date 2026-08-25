@@ -82,7 +82,7 @@ recipients are rejected.
 ## Languages and accessibility
 
 English is the default; Settings cycles English, Spanish, and Portuguese without text entry. The client bundle
-contains 157 interface strings and all 120 phrase texts in each language under stable IDs. The server sends
+contains 183 interface strings and all 120 phrase texts in each language under stable IDs. The server sends
 canonical phrase and answer IDs alongside compatibility fallback text, so authors and decoders can use different
 languages while retaining answer options from the same theme.
 
@@ -94,14 +94,15 @@ motion shortens the reveal to three seconds while retaining the verdict, sound, 
 | Action | Mobile-first behavior |
 | --- | --- |
 | Move | Use the Decentraland movement joystick. Native action buttons are hidden after mobile platform detection. |
-| Start decoding | Walk into the house or stage area, then tap `DECODE A GHOST`. The action remains disabled in the foyer. |
+| Start decoding | Follow the static `WALK TO THE STAGE` instruction, then tap `DECODE A GHOST` in the house or stage area. |
 | Guess | Tap one of three 96 px answer buttons. Required UI stays inside Decentraland's interactable screen inset. |
 | Watch again | Tap `REPLAY` to restart the current solo performance or duet. |
 | Make a charade | Tap `MAKE YOUR OWN`, accept or shuffle the dealt phrase, continue to five-emote selection, then choose three in order. The third choice advances to a separate Preview/Post confirmation. |
 | Answer back | After an eligible reveal, tap `ANSWER BACK`, choose three emotes for the same phrase, preview, then send the reply. |
 | Send Ghost Mail | Tap `GHOST MAIL`, choose a recent real performer, then use the normal phrase, emote, preview, and send flow. No address or message entry is required. |
 | React in a live round | While watching an active round in the stage area, open `REACT`. Laugh, Gasp, and Applause replace the other actions, trigger one local emote and stamp, and relay once to the other players present. |
-| Settings | From the foyer, switch language, sound level, reduced motion, or large text for the current visit. |
+| How to play | From the foyer, tap the top-right `HOW TO PLAY` control for five short instructions, then choose `SETTINGS` or `BACK`. |
+| Settings | Open `HOW TO PLAY` from the foyer, then switch language, sound level, reduced motion, or large text for the current visit. Settings links back to `HOW TO PLAY`. |
 | Invite | `COPY INVITE` copies a general World invitation configured in `src/shared/config.ts`; it does not route to a specific charade. |
 
 Desktop preview uses the normal Decentraland movement controls and the same on-screen game UI.

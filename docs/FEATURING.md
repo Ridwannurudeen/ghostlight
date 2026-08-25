@@ -35,8 +35,10 @@ Every required custom game action is in a left-side playbill panel rendered insi
 area, with touch targets at least 96 px tall and no required control in the bottom-right joystick area. Native
 mobile action buttons are hidden while the movement joystick remains available; decoding and authoring
 require no gesture or tap on a 3D object. No screen exposes more than five game buttons; authoring is phased and
-the reaction tray replaces other actions while open. A top-right Settings control cycles English, Spanish, and
-Portuguese and offers full/quiet/off sound, reduced motion, and 20% larger text for the current visit. Players
+the reaction tray replaces other actions while open. A top-right HOW TO PLAY control opens five short localized
+instructions with SETTINGS and BACK actions, and Settings links back to that guide. Persistent localized hints
+identify the next action across the core flow. Settings cycles English, Spanish, and Portuguese and offers
+full/quiet/off sound, reduced motion, and 20% larger text for the current visit. Players
 watching an active live round can press Laugh, Gasp, or Applause; each real press triggers a local avatar emote and
 stamp while the rate-limited server relays the reaction only to the other players present.
 

@@ -152,6 +152,31 @@ function findButton(node: unknown, value: string): Record<string, unknown> | nul
   return findButton(element.props.children, value)
 }
 
+function findStaticText(
+  node: unknown,
+  value: string,
+  matches: (props: Record<string, unknown>) => boolean = () => true
+): Record<string, unknown> | null {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const match = findStaticText(child, value, matches)
+      if (match) return match
+    }
+    return null
+  }
+  if (node === null || typeof node !== 'object' || !('type' in node) || !('props' in node)) return null
+  const element = node as ElementNode
+  if (
+    element.props.value === value &&
+    typeof element.props.onMouseDown !== 'function' &&
+    matches(element.props)
+  ) {
+    return element.props
+  }
+  if (typeof element.type === 'function') return findStaticText(element.type(element.props), value, matches)
+  return findStaticText(element.props.children, value, matches)
+}
+
 function collectStaticText(node: unknown, values: string[] = []): string[] {
   if (Array.isArray(node)) {
     node.forEach((child) => collectStaticText(child, values))
@@ -200,6 +225,47 @@ function stateFor(screen: 'decode' | 'reveal' | 'posted') {
   }
 }
 
+function foyerState() {
+  return {
+    ...stateFor('decode'),
+    screen: 'foyer',
+    theme: 'food',
+    themeLabel: 'Kitchen Capers',
+    progress: { daily: { stamped: false } },
+    playerIsGuest: false,
+    boards: { topDecoders: [], hardestGhosts: [], playbill: [], ghostOfNightId: '' }
+  }
+}
+
+function authorState(selectedEmotes: string[]) {
+  return {
+    ...stateFor('decode'),
+    screen: 'author',
+    theme: 'food',
+    author: {
+      phrase: { id: 'phrase', text: 'Walking a dog' },
+      offeredEmotes: ['wave', 'clap', 'dab', 'disco', 'shrug'],
+      selectedEmotes,
+      shufflesRemaining: 2,
+      phase: selectedEmotes.length === 3 ? 'confirm' : 'emotes'
+    }
+  }
+}
+
+function hintText(node: unknown) {
+  return collectStaticText(node).find((value) =>
+    findStaticText(node, value, (props) => {
+      const transform = props?.uiTransform as Record<string, unknown> | undefined
+      return (
+        transform?.flex === 1 &&
+        props?.fontSize === uiFontSize(18) &&
+        props.font === 'monospace' &&
+        props.textAlign === 'middle-left'
+      )
+    }) !== null
+  ) ?? null
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   uiTest.region = 'house'
@@ -240,6 +306,45 @@ describe('UI colors', () => {
 })
 
 describe('mobile control budget', () => {
+  it('renders the exact localized hint for every core state and no hint on other screens', () => {
+    const cases = [
+      { name: 'foyer far', region: 'outside', state: foyerState(), key: 'hint.foyerFar' },
+      { name: 'foyer stage', region: 'stage', state: foyerState(), key: 'hint.foyerStage' },
+      { name: 'decode', region: 'stage', state: stateFor('decode'), key: 'hint.decode' },
+      { name: 'reveal', region: 'stage', state: stateFor('reveal'), key: 'hint.reveal' },
+      { name: 'author choosing', region: 'stage', state: authorState(['wave', 'clap']), key: 'author.chooseThree' },
+      {
+        name: 'author ready',
+        region: 'stage',
+        state: authorState(['wave', 'clap', 'dab']),
+        key: 'hint.authorReady'
+      },
+      { name: 'posted', region: 'stage', state: stateFor('posted'), key: 'hint.posted' }
+    ] as const
+
+    for (const language of LANGUAGES) {
+      updateClientSettings({ language })
+      for (const hintCase of cases) {
+        uiTest.region = hintCase.region
+        uiTest.state = hintCase.state
+        expect(hintText(uiComponent()), `${language}:${hintCase.name}`).toBe(COPY[language][hintCase.key])
+      }
+    }
+
+    updateClientSettings({ language: 'en' })
+    for (const screen of ['waking', 'since', 'boards', 'invite', 'mail', 'howToPlay', 'settings'] as const) {
+      uiTest.state = {
+        ...foyerState(),
+        screen,
+        since: null,
+        serverClockOffset: 0,
+        inviteStatus: 'idle',
+        mailRecipient: null
+      }
+      expect(hintText(uiComponent()), screen).toBeNull()
+    }
+  })
+
   it('disambiguates identical Ghost Mail names by wallet and requires confirmation', () => {
     const alice = `0x${'1'.repeat(40)}`
     const otherAlice = `0x${'2'.repeat(40)}`
@@ -539,22 +644,40 @@ describe('decode region gates', () => {
   })
 
   it.each([
-    ['reveal', 'house', 'NEXT GHOST', false, 'NEXT GHOST'],
-    ['reveal', 'stage', 'NEXT GHOST', false, 'NEXT GHOST'],
-    ['reveal', 'foyer', 'NEXT GHOST', true, 'WALK TO THE STAGE'],
-    ['reveal', 'outside', 'NEXT GHOST', true, 'WALK TO THE STAGE'],
-    ['posted', 'house', 'DECODE ANOTHER', false, 'DECODE ANOTHER'],
-    ['posted', 'stage', 'DECODE ANOTHER', false, 'DECODE ANOTHER'],
-    ['posted', 'foyer', 'DECODE ANOTHER', true, 'WALK TO THE STAGE'],
-    ['posted', 'outside', 'DECODE ANOTHER', true, 'WALK TO THE STAGE']
-  ] as const)('gates %s action in the %s region', (screen, region, originalLabel, disabled, expectedLabel) => {
+    ['reveal', 'house', 'NEXT GHOST'],
+    ['reveal', 'stage', 'NEXT GHOST'],
+    ['posted', 'house', 'DECODE ANOTHER'],
+    ['posted', 'stage', 'DECODE ANOTHER']
+  ] as const)('keeps the %s action enabled in the %s region', (screen, region, expectedLabel) => {
     uiTest.region = region
     uiTest.state = stateFor(screen)
 
-    const buttons = collectButtons(uiComponent())
+    expect(collectButtons(uiComponent())).toContainEqual({ value: expectedLabel, disabled: false })
+  })
 
-    expect(buttons).toContainEqual({ value: expectedLabel, disabled })
-    if (disabled) expect(buttons.some((button) => button.value === originalLabel)).toBe(false)
+  it('keeps DECODE A GHOST actionable in the stage area', () => {
+    uiTest.region = 'stage'
+    uiTest.state = foyerState()
+
+    expect(collectButtons(uiComponent())).toContainEqual({ value: 'DECODE A GHOST', disabled: false })
+    expect(findStaticText(uiComponent(), 'WALK TO THE STAGE')).toBeNull()
+  })
+
+  it.each([
+    ['foyer', foyerState()],
+    ['reveal', stateFor('reveal')],
+    ['posted', stateFor('posted')]
+  ] as const)('uses a static 96px stage instruction instead of a disabled button on %s', (_screen, state) => {
+    uiTest.region = 'outside'
+    uiTest.state = state
+
+    const component = uiComponent()
+    const instruction = findStaticText(component, 'WALK TO THE STAGE')
+
+    expect(findButton(component, 'WALK TO THE STAGE')).toBeNull()
+    expect(instruction?.uiTransform).toMatchObject({ minHeight: 96, height: 96 })
+    expect(instruction?.uiTransform).not.toHaveProperty('position.bottom')
+    expect(collectButtons(component).length).toBeLessThanOrEqual(5)
   })
 
   it('shows answer-back only for an eligible revealed charade', () => {

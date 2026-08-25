@@ -6,8 +6,9 @@ run note names the failure and the owner explicitly accepts it.
 
 ## First device step - capture diagnostics
 
-- [ ] In the foyer, open `SETTINGS`, tap `DIAGNOSTICS: OFF` to enable the owner view, return to the foyer, complete
-      one full decode -> reveal -> author -> post loop, return to `SETTINGS`, tap `COPY DIAGNOSTICS`, and paste the
+- [ ] In the foyer, open `HOW TO PLAY` -> `SETTINGS`, tap `DIAGNOSTICS: OFF` to enable the owner view, return to the
+      foyer, and complete one full decode -> reveal -> author -> post loop. Open `TODAY'S BOARDS`, tap `BACK`, then
+      open `HOW TO PLAY` -> `SETTINGS`, tap `COPY DIAGNOSTICS`, and paste the
       complete block back into the run record before evaluating anything below. Keep the block unchanged so the
       tested platform, language, inset, frame-time proxy, Transform-entity proxy, avatar count, asset totals, server
       timings, and session loop counts remain one attributable evidence record.
@@ -72,6 +73,8 @@ the same commit.
 
 ## Ten-second opening and theater shell
 
+- [ ] On a fresh session, remain in the foyer without entering the house or stage. Once the ready state arrives,
+      the opening begins on its own; it neither starts during the waking state nor waits for stage entry.
 - [ ] On the first entry of the app session, the opening follows this order: foyer camera at 0.0 s, daily marquee
       by 1.0 s, foyer doors and curtain sound at about 2.5 s, stage camera at about 4.5 s, performer entrance at
       about 6.0 s, “Guess what they're saying” at about 8.0 s, and decode at about 10.0 s.
@@ -202,6 +205,15 @@ Evidence: side-by-side video of both races and one reaction from each phone.
 ## Android and iOS control-safe pass
 
 - [ ] The movement joystick remains usable and every native action/gamepad button is hidden on Android and iOS.
+- [ ] From the foyer, tap the top-right HOW TO PLAY control. It shows exactly five readable lines covering the walk,
+      three-emote performance, three-choice guess, own charade, and real previous player. Verify all five in English,
+      Spanish, and Portuguese at normal arm's length; use SETTINGS and its HOW TO PLAY link to change languages, and
+      confirm BACK returns to the foyer.
+- [ ] Without reopening the guide, the persistent one-line hint changes across foyer away from the stage, foyer at
+      the stage, decode, reveal, author with fewer than three emotes, author with three emotes, and posted. Each hint
+      remains readable and follows the selected language.
+- [ ] Outside the house or stage area, WALK TO THE STAGE is a clear, non-clickable 96 px instruction rather than a
+      disabled button. Tapping it does nothing; walking into the decode area replaces it with active DECODE A GHOST.
 - [ ] In foyer, decode, reveal, author, posted, boards, invite, and notice overlays, no required control intersects the
       notch/Dynamic Island, home indicator, interactable inset, or bottom-right joystick area.
 - [ ] No screen exposes more than five game buttons at once. Author selection advances to confirmation after the
@@ -210,8 +222,9 @@ Evidence: side-by-side video of both races and one reaction from each phone.
       not activate an adjacent control.
 - [ ] Camera transitions do not steal touch input or leave either client locked to the foyer, stage, or reveal camera.
 
-Evidence: Android and iOS screenshots of foyer, decode, author, reveal, and invite, plus a short movement-and-tap
-recording. Retain the iOS set for the mobile curation/featuring packet.
+Evidence: Android and iOS screenshots of foyer away from and at the stage, HOW TO PLAY in all three languages,
+decode, author, reveal, and invite, plus a short hint-transition and movement-and-tap recording. Retain the iOS set
+for the mobile curation/featuring packet.
 
 ## Invite copy and open
 

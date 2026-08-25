@@ -52,6 +52,7 @@ const PANEL = {
 } satisfies UiTransformProps
 
 const BUTTON = { width: '100%', minHeight: 96, height: 96, margin: '6px 0' } satisfies UiTransformProps
+const HINT_HEIGHT = 48
 
 export const REVEAL_VERTICAL_BUDGET = {
   panelHeight: 672,
@@ -61,6 +62,7 @@ export const REVEAL_VERTICAL_BUDGET = {
   content: 222,
   verdict: 84,
   actions: 108,
+  hint: HINT_HEIGHT,
   status: 30
 } as const
 
@@ -149,6 +151,24 @@ function actionButton(
   )
 }
 
+function stageInstruction() {
+  return (
+    <UiEntity
+      uiTransform={{ ...BUTTON, borderRadius: 5, borderWidth: 2, borderColor: COLORS.gold }}
+      uiBackground={{ texture: { src: UI_TEXTURES.cardSelected }, textureMode: 'stretch', color: COLORS.gold }}
+    >
+      <Label
+        value={copy('common.walkToStage')}
+        fontSize={uiFontSize(26)}
+        font="monospace"
+        color={COLORS.ink}
+        textAlign="middle-center"
+        uiTransform={{ width: '100%', minHeight: 96, height: 96 }}
+      />
+    </UiEntity>
+  )
+}
+
 function howToPlayControl() {
   return (
     <Button
@@ -173,8 +193,27 @@ function canDecodeInCurrentRegion() {
   return isPlayerInDecodeArea()
 }
 
+function hintFor(state: ClientFlowState) {
+  switch (state.screen) {
+    case 'foyer':
+      return copy(canDecodeInCurrentRegion() ? 'hint.foyerStage' : 'hint.foyerFar')
+    case 'decode':
+      return copy('hint.decode')
+    case 'reveal':
+      return copy('hint.reveal')
+    case 'author':
+      if (!state.author) return null
+      return copy(state.author.selectedEmotes.length < 3 ? 'author.chooseThree' : 'hint.authorReady')
+    case 'posted':
+      return copy('hint.posted')
+    default:
+      return null
+  }
+}
+
 function screenShell(sentence: string, body: ReactEcs.JSX.Element, state: ClientFlowState) {
   const accent = accentFor(state)
+  const hint = hintFor(state)
   return (
     <UiEntity
       uiTransform={{ ...PANEL, borderColor: accent }}
@@ -189,6 +228,21 @@ function screenShell(sentence: string, body: ReactEcs.JSX.Element, state: Client
       <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', padding: '12px 0 0 0' }}>
         {body}
       </UiEntity>
+      {hint ? (
+        <UiEntity
+          uiTransform={{ width: '100%', minHeight: HINT_HEIGHT, height: HINT_HEIGHT, padding: '6px 12px' }}
+          uiBackground={{ texture: { src: UI_TEXTURES.card }, textureMode: 'stretch', color: COLORS.raised }}
+        >
+          <Label
+            value={hint}
+            fontSize={uiFontSize(18)}
+            font="monospace"
+            color={COLORS.bone}
+            textAlign="middle-left"
+            uiTransform={{ width: '100%', flex: 1 }}
+          />
+        </UiEntity>
+      ) : null}
       {state.errorCode ? (
         <Label
           value={copy('status.label', {
@@ -237,11 +291,7 @@ function foyerScreen(state: ClientFlowState) {
             uiBackground={{ texture: { src: UI_TEXTURES.stamp }, textureMode: 'stretch' }}
           />
         ) : null}
-        {actionButton(
-          canDecode ? copy('foyer.decode') : copy('common.walkToStage'),
-          () => clientFlow.requestNextCharade(),
-          !canDecode
-        )}
+        {canDecode ? actionButton(copy('foyer.decode'), () => clientFlow.requestNextCharade()) : stageInstruction()}
         {actionButton(copy('foyer.make'), () => clientFlow.beginAuthoring(), state.playerIsGuest, 'secondary')}
         <UiEntity uiTransform={{ width: '100%', flexDirection: 'row' }}>
           <UiEntity uiTransform={{ width: '49%', margin: '0 2% 0 0' }}>
@@ -439,11 +489,7 @@ function revealScreen(state: ClientFlowState) {
       </UiEntity>
       <UiEntity uiTransform={{ width: '100%', flexDirection: 'row', justifyContent: 'space-between' }}>
         <UiEntity uiTransform={{ width: actionWidth }}>
-          {actionButton(
-            canDecode ? copy('reveal.next') : copy('common.walkToStage'),
-            () => clientFlow.requestNextCharade(),
-            !canDecode
-          )}
+          {canDecode ? actionButton(copy('reveal.next'), () => clientFlow.requestNextCharade()) : stageInstruction()}
         </UiEntity>
         {canReply ? (
           <UiEntity uiTransform={{ width: actionWidth }}>
@@ -584,12 +630,9 @@ function postedScreen(state: ClientFlowState) {
     <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', justifyContent: 'center' }}>
       {actionButton(copy('posted.copyInvite'), () => copyInvite(true))}
       {actionButton(copy('posted.boards'), () => clientFlow.showBoards(), false, 'secondary')}
-      {actionButton(
-        canDecode ? copy('posted.decodeAnother') : copy('common.walkToStage'),
-        () => clientFlow.requestNextCharade(),
-        !canDecode,
-        'secondary'
-      )}
+      {canDecode
+        ? actionButton(copy('posted.decodeAnother'), () => clientFlow.requestNextCharade(), false, 'secondary')
+        : stageInstruction()}
     </UiEntity>,
     state
   )

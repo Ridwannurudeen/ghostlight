@@ -28,13 +28,20 @@ const REQUIREMENTS = [
   'All titles unlocked'
 ] as const
 
-const HOW_TO_PLAY_KEYS = [
+const GUIDANCE_KEYS = [
   'howToPlay.title',
   'howToPlay.walk',
   'howToPlay.watch',
   'howToPlay.guess',
   'howToPlay.leave',
-  'howToPlay.realPlayers'
+  'howToPlay.realPlayers',
+  'hint.foyerFar',
+  'hint.foyerStage',
+  'hint.decode',
+  'hint.reveal',
+  'author.chooseThree',
+  'hint.authorReady',
+  'hint.posted'
 ] as const
 
 const ERROR_CODES = [
@@ -71,7 +78,7 @@ const ERROR_CODES = [
 describe('localization copy', () => {
   it('has the same complete, non-empty player-copy key set in every language', () => {
     const expectedKeys = Object.keys(COPY.en).sort()
-    expect(expectedKeys).toHaveLength(177)
+    expect(expectedKeys).toHaveLength(183)
 
     for (const language of LANGUAGES) {
       expect(Object.keys(COPY[language]).sort(), language).toEqual(expectedKeys)
@@ -81,8 +88,8 @@ describe('localization copy', () => {
     }
   })
 
-  it('localizes every how-to-play line outside English', () => {
-    for (const key of HOW_TO_PLAY_KEYS) {
+  it('localizes every how-to-play and contextual guidance line outside English', () => {
+    for (const key of GUIDANCE_KEYS) {
       expect(COPY.es[key], `es:${key}`).not.toBe(COPY.en[key])
       expect(COPY.pt[key], `pt:${key}`).not.toBe(COPY.en[key])
     }
