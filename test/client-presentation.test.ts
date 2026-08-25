@@ -172,4 +172,23 @@ describe('client presentation integration', () => {
     harness.listener!(harness.state)
     expect(ghosts.clearPerformer).toHaveBeenCalledTimes(1)
   })
+
+  it('starts the opening from the ready foyer before the player reaches the decode area', () => {
+    vi.mocked(engine.addSystem).mockClear()
+    opening.start.mockClear()
+    flow.requestNextCharade.mockClear()
+    harness.openingPlayed = false
+    harness.openingRunning = true
+    setup.isPlayerInDecodeArea.mockReturnValue(false)
+    Object.assign(harness.state, { ready: true, screen: 'foyer', charade: null, pending: [] })
+
+    main()
+
+    const openingSystem = vi.mocked(engine.addSystem).mock.calls[0][0]
+    expect(setup.isPlayerInDecodeArea()).toBe(false)
+    openingSystem(0)
+
+    expect(opening.start).toHaveBeenCalledWith('Kitchen Capers', 'en')
+    expect(flow.requestNextCharade).toHaveBeenCalledTimes(1)
+  })
 })

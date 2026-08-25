@@ -18,7 +18,7 @@ import {
 } from './client/ghosts'
 import { createSceneOpeningController } from './client/opening-scene'
 import { createSceneRevealController } from './client/reveal-scene'
-import { isPlayerInDecodeArea, startClientSetup } from './client/setup'
+import { startClientSetup } from './client/setup'
 import { getClientSettings, subscribeClientSettings } from './client/settings'
 import { duckForReveal, play, restoreAfterReveal } from './client/sound'
 import {
@@ -177,7 +177,6 @@ export function main() {
         state.ready &&
         state.screen === 'foyer' &&
         !opening.hasPlayed() &&
-        isPlayerInDecodeArea() &&
         opening.start(themeLabel(state.theme, language), language)
       ) {
         clientFlow.requestNextCharade()
