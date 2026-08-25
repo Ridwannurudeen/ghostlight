@@ -288,6 +288,12 @@ describe('flow reducer', () => {
     expect(revealState.screen).toBe('reveal')
     expect(revealState.author).toBe(draft)
   })
+
+  it('shows the how-to-play screen through the shared navigation action', () => {
+    const state = flowReducer(createInitialFlowState(), { type: 'show', screen: 'howToPlay' })
+
+    expect(state.screen).toBe('howToPlay')
+  })
 })
 
 describe('flow lifecycle', () => {
@@ -805,6 +811,23 @@ describe('flow lifecycle', () => {
     expect(effects.cancelReveal).toHaveBeenCalledTimes(1)
   })
 
+  it('opens how to play from both the foyer and Settings navigation paths', () => {
+    const { runtime } = createFlowHarness()
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+
+    runtime.showHowToPlay()
+    expect(runtime.getState().screen).toBe('howToPlay')
+
+    runtime.showSettings()
+    expect(runtime.getState().screen).toBe('settings')
+
+    runtime.showHowToPlay()
+    expect(runtime.getState().screen).toBe('howToPlay')
+
+    runtime.showFoyer()
+    expect(runtime.getState().screen).toBe('foyer')
+  })
+
   it('rejects an invalid server emote array and resolves the pending fetch', () => {
     const { runtime, sent, effects } = createFlowHarness()
     runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
@@ -1181,7 +1204,7 @@ describe('audience and rounds', () => {
     expect(canSpectatorReact(runtime.getState())).toBe(false)
   })
 
-  it.each(['foyer', 'since', 'reveal', 'author', 'posted', 'boards', 'invite'] as const)(
+  it.each(['foyer', 'since', 'reveal', 'author', 'posted', 'boards', 'invite', 'howToPlay'] as const)(
     'keeps the %s screen when a round starts',
     (screen) => {
       const { runtime, sent } = createFlowHarness()
@@ -1216,6 +1239,8 @@ describe('audience and rounds', () => {
         runtime.showBoards()
       } else if (screen === 'invite') {
         runtime.showInvite()
+      } else if (screen === 'howToPlay') {
+        runtime.showHowToPlay()
       }
       sent.length = 0
 

@@ -149,22 +149,22 @@ function actionButton(
   )
 }
 
-function settingsControl() {
+function howToPlayControl() {
   return (
     <Button
-      value={copy('common.settings')}
+      value={copy('howToPlay.title')}
       fontSize={uiFontSize(22)}
       font="monospace"
       color={{ ...COLORS.ink }}
       variant="secondary"
       uiTransform={{
-        width: 180,
+        width: 240,
         minHeight: 96,
         height: 96,
         positionType: 'absolute',
         position: { top: 24, right: 28 }
       }}
-      onMouseDown={() => clientFlow.showSettings()}
+      onMouseDown={() => clientFlow.showHowToPlay()}
     />
   )
 }
@@ -652,6 +652,48 @@ function mailScreen(state: ClientFlowState) {
   )
 }
 
+const HOW_TO_PLAY_STEPS = [
+  'howToPlay.walk',
+  'howToPlay.watch',
+  'howToPlay.guess',
+  'howToPlay.leave',
+  'howToPlay.realPlayers'
+] as const satisfies readonly CopyKey[]
+
+function howToPlayScreen(state: ClientFlowState) {
+  return screenShell(
+    copy('howToPlay.title'),
+    <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column' }}>
+      <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', justifyContent: 'center' }}>
+        {HOW_TO_PLAY_STEPS.map((key) => (
+          <UiEntity
+            key={key}
+            uiTransform={{ width: '100%', flex: 1, minHeight: 64, padding: '8px 14px', margin: '3px 0' }}
+            uiBackground={{ texture: { src: UI_TEXTURES.card }, textureMode: 'stretch', color: COLORS.surface }}
+          >
+            <Label
+              value={copy(key)}
+              fontSize={uiFontSize(22)}
+              font="monospace"
+              color={COLORS.bone}
+              textAlign="middle-left"
+            />
+          </UiEntity>
+        ))}
+      </UiEntity>
+      <UiEntity uiTransform={{ width: '100%', flexDirection: 'row', justifyContent: 'space-between' }}>
+        <UiEntity uiTransform={{ width: '49%' }}>
+          {actionButton(copy('common.settings'), () => clientFlow.showSettings(), false, 'secondary')}
+        </UiEntity>
+        <UiEntity uiTransform={{ width: '49%' }}>
+          {actionButton(copy('common.back'), () => clientFlow.showFoyer(), false, 'secondary')}
+        </UiEntity>
+      </UiEntity>
+    </UiEntity>,
+    state
+  )
+}
+
 function settingsScreen(state: ClientFlowState) {
   const settings = getClientSettings()
   if (settings.diagnosticsEnabled) {
@@ -747,7 +789,7 @@ function settingsScreen(state: ClientFlowState) {
         false,
         'secondary'
       )}
-      {actionButton(copy('common.back'), () => clientFlow.showFoyer(), false, 'secondary')}
+      {actionButton(copy('howToPlay.title'), () => clientFlow.showHowToPlay(), false, 'secondary')}
     </UiEntity>,
     state
   )
@@ -1036,6 +1078,8 @@ function currentScreen(state: ClientFlowState) {
       return inviteScreen(state)
     case 'mail':
       return mailScreen(state)
+    case 'howToPlay':
+      return howToPlayScreen(state)
     case 'settings':
       return settingsScreen(state)
   }
@@ -1051,7 +1095,7 @@ export const uiComponent = () => {
       uiBackground={{ color: Color4.create(0.02, 0.014, 0.037, 0.08) }}
     >
       {opening.active ? openingOverlay(opening) : (notice ?? currentScreen(state))}
-      {!opening.active && !notice && state.screen === 'foyer' ? settingsControl() : null}
+      {!opening.active && !notice && state.screen === 'foyer' ? howToPlayControl() : null}
       {!opening.active ? reactionStamp(state) : null}
       {!opening.active && state.toast ? (
         <UiEntity

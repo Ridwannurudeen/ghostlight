@@ -12,6 +12,7 @@ const uiActions = vi.hoisted(() => ({
   showFoyer: vi.fn(),
   showInvite: vi.fn(),
   showSettings: vi.fn(),
+  showHowToPlay: vi.fn(),
   selectGhostMailRecipient: vi.fn(),
   clearGhostMailRecipient: vi.fn(),
   beginGhostMail: vi.fn(),
@@ -70,6 +71,7 @@ vi.mock('../src/client/flow', () => ({
     showFoyer: uiActions.showFoyer,
     showInvite: uiActions.showInvite,
     showSettings: uiActions.showSettings,
+    showHowToPlay: uiActions.showHowToPlay,
     selectGhostMailRecipient: uiActions.selectGhostMailRecipient,
     clearGhostMailRecipient: uiActions.clearGhostMailRecipient,
     beginGhostMail: uiActions.beginGhostMail,
@@ -89,6 +91,7 @@ import {
   uiComponent
 } from '../src/client/ui'
 import { DEFAULT_CLIENT_SETTINGS, getClientSettings, updateClientSettings } from '../src/client/settings'
+import { COPY, LANGUAGES } from '../src/shared/i18n'
 
 type ElementNode = {
   type: string | ((props: Record<string, unknown>) => unknown)
@@ -147,6 +150,25 @@ function findButton(node: unknown, value: string): Record<string, unknown> | nul
   if (element.props.value === value && typeof element.props.onMouseDown === 'function') return element.props
   if (typeof element.type === 'function') return findButton(element.type(element.props), value)
   return findButton(element.props.children, value)
+}
+
+function collectStaticText(node: unknown, values: string[] = []): string[] {
+  if (Array.isArray(node)) {
+    node.forEach((child) => collectStaticText(child, values))
+    return values
+  }
+  if (node === null || typeof node !== 'object' || !('type' in node) || !('props' in node)) return values
+
+  const element = node as ElementNode
+  if (typeof element.props.value === 'string' && typeof element.props.onMouseDown !== 'function') {
+    values.push(element.props.value)
+  }
+  if (typeof element.type === 'function') {
+    collectStaticText(element.type(element.props), values)
+    return values
+  }
+  collectStaticText(element.props.children, values)
+  return values
 }
 
 function stateFor(screen: 'decode' | 'reveal' | 'posted') {
@@ -286,7 +308,7 @@ describe('mobile control budget', () => {
       'GASP',
       'APPLAUSE',
       'BACK TO THE SHOW',
-      'SETTINGS'
+      'HOW TO PLAY'
     ])
   })
 
@@ -350,7 +372,7 @@ describe('mobile control budget', () => {
     ).toEqual(['MAKE YOUR OWN', 'NEXT GHOST'])
   })
 
-  it('keeps the foyer at five controls with settings in the top area', () => {
+  it('keeps the foyer at five controls with how to play in the top area', () => {
     uiTest.state = {
       ...stateFor('decode'),
       screen: 'foyer',
@@ -362,11 +384,42 @@ describe('mobile control budget', () => {
     }
 
     expect(collectButtons(uiComponent())).toHaveLength(5)
-    const settings = findButton(uiComponent(), 'SETTINGS')
-    expect(settings?.uiTransform).toMatchObject({ position: { top: 24, right: 28 } })
-    expect(settings?.uiTransform).not.toHaveProperty('position.bottom')
-    ;(settings?.onMouseDown as (() => void) | undefined)?.()
+    const howToPlay = findButton(uiComponent(), 'HOW TO PLAY')
+    expect(howToPlay?.uiTransform).toMatchObject({ minHeight: 96, position: { top: 24, right: 28 } })
+    expect(howToPlay?.uiTransform).not.toHaveProperty('position.bottom')
+    ;(howToPlay?.onMouseDown as (() => void) | undefined)?.()
+    expect(uiActions.showHowToPlay).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders every localized how-to line with two 96px navigation controls', () => {
+    uiTest.state = { ...stateFor('decode'), screen: 'howToPlay', theme: 'food' }
+    const keys = [
+      'howToPlay.walk',
+      'howToPlay.watch',
+      'howToPlay.guess',
+      'howToPlay.leave',
+      'howToPlay.realPlayers'
+    ] as const
+
+    for (const language of LANGUAGES) {
+      updateClientSettings({ language })
+      const text = collectStaticText(uiComponent())
+      for (const key of keys) expect(text, `${language}:${key}`).toContain(COPY[language][key])
+    }
+
+    updateClientSettings({ language: 'en' })
+    const buttons = collectButtons(uiComponent())
+    expect(buttons).toEqual([
+      { value: 'SETTINGS', disabled: false },
+      { value: 'BACK', disabled: false }
+    ])
+    for (const value of ['SETTINGS', 'BACK']) {
+      expect(findButton(uiComponent(), value)?.uiTransform).toMatchObject({ minHeight: 96, height: 96 })
+    }
+    ;(findButton(uiComponent(), 'SETTINGS')?.onMouseDown as (() => void) | undefined)?.()
+    ;(findButton(uiComponent(), 'BACK')?.onMouseDown as (() => void) | undefined)?.()
     expect(uiActions.showSettings).toHaveBeenCalledTimes(1)
+    expect(uiActions.showFoyer).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -390,8 +443,8 @@ describe('settings and accessibility', () => {
       diagnosticsEnabled: false
     })
     expect(uiFontSize(20)).toBe(24)
-    ;(findButton(uiComponent(), 'VOLVER')?.onMouseDown as (() => void) | undefined)?.()
-    expect(uiActions.showFoyer).toHaveBeenCalledTimes(1)
+    ;(findButton(uiComponent(), 'CÓMO JUGAR')?.onMouseDown as (() => void) | undefined)?.()
+    expect(uiActions.showHowToPlay).toHaveBeenCalledTimes(1)
   })
 
   it('renders null-safe diagnostics in Settings without adding a sixth control', async () => {

@@ -37,6 +37,7 @@ export type FlowScreen =
   | 'boards'
   | 'invite'
   | 'mail'
+  | 'howToPlay'
   | 'settings'
 
 export type ReactionKind = (typeof SPECTATOR_REACTION_KINDS)[number]
@@ -244,7 +245,7 @@ export type FlowAction =
   | { type: 'roundWinner'; roundId: string; charadeId: string; address: string; name: string; now: number }
   | { type: 'reaction'; kind: ReactionKind; from: string; now: number }
   | { type: 'toggleReactionMenu' }
-  | { type: 'show'; screen: 'foyer' | 'boards' | 'invite' | 'mail' | 'settings' }
+  | { type: 'show'; screen: 'foyer' | 'boards' | 'invite' | 'mail' | 'howToPlay' | 'settings' }
   | { type: 'requestSent'; request: PendingRequest }
   | { type: 'requestRetried'; requestId: string; now: number }
   | { type: 'requestResolved'; kind: PendingRequestKind }
@@ -1509,6 +1510,10 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     showSettings() {
       if (state.screen === 'reveal') cancelReveal()
       dispatch({ type: 'show', screen: 'settings' })
+    },
+    showHowToPlay() {
+      if (state.screen === 'reveal') cancelReveal()
+      dispatch({ type: 'show', screen: 'howToPlay' })
     },
     toggleReactionMenu() {
       dispatch({ type: 'toggleReactionMenu' })

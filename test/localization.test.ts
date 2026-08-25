@@ -28,6 +28,15 @@ const REQUIREMENTS = [
   'All titles unlocked'
 ] as const
 
+const HOW_TO_PLAY_KEYS = [
+  'howToPlay.title',
+  'howToPlay.walk',
+  'howToPlay.watch',
+  'howToPlay.guess',
+  'howToPlay.leave',
+  'howToPlay.realPlayers'
+] as const
+
 const ERROR_CODES = [
   'already-guessed',
   'charade-not-served',
@@ -62,13 +71,20 @@ const ERROR_CODES = [
 describe('localization copy', () => {
   it('has the same complete, non-empty player-copy key set in every language', () => {
     const expectedKeys = Object.keys(COPY.en).sort()
-    expect(expectedKeys).toHaveLength(171)
+    expect(expectedKeys).toHaveLength(177)
 
     for (const language of LANGUAGES) {
       expect(Object.keys(COPY[language]).sort(), language).toEqual(expectedKeys)
       for (const [key, value] of Object.entries(COPY[language])) {
         expect(value.trim().length, `${language}:${key}`).toBeGreaterThan(0)
       }
+    }
+  })
+
+  it('localizes every how-to-play line outside English', () => {
+    for (const key of HOW_TO_PLAY_KEYS) {
+      expect(COPY.es[key], `es:${key}`).not.toBe(COPY.en[key])
+      expect(COPY.pt[key], `pt:${key}`).not.toBe(COPY.en[key])
     }
   })
 
