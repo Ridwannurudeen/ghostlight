@@ -149,9 +149,7 @@ class SoakRoom {
   readonly sendFromServer: ProtocolSend = async (type, data, to) => {
     this.serverMessages.push({ type, data, to })
     this.measurements.push({ direction: 'server', type, bytes: payloadBytes(data) })
-    const recipients = to
-      ? to.map((address) => this.players.get(address.toLowerCase()))
-      : [...this.players.values()]
+    const recipients = to ? to.map((address) => this.players.get(address.toLowerCase())) : [...this.players.values()]
     for (const recipient of recipients) {
       if (recipient?.connected) this.deliver(recipient.runtime, type, data)
     }
@@ -293,9 +291,7 @@ function assertClientBoards(state: ClientFlowState, serverState: GhostlightState
   }
   for (const performer of state.boards.playbill) {
     expect(
-      serverState
-        .getPool()
-        .some((charade) => charade.author.address.toLowerCase() === performer.address.toLowerCase())
+      serverState.getPool().some((charade) => charade.author.address.toLowerCase() === performer.address.toLowerCase())
     ).toBe(true)
   }
 }
@@ -527,7 +523,10 @@ describe('deterministic headless soak simulation', () => {
     state.saveStats(duetViewer.address)
     expect(duetViewer.runtime.requestNextCharade()).toBe(true)
     await room.pump(duetViewer.address)
-    expect(duetViewer.runtime.getState().charade).toMatchObject({ id: firstServed.id, reply: { address: decoder.address } })
+    expect(duetViewer.runtime.getState().charade).toMatchObject({
+      id: firstServed.id,
+      reply: { address: decoder.address }
+    })
     assertClientBoards(duetViewer.runtime.getState(), state)
     await disconnect(duetViewer)
 
@@ -578,7 +577,7 @@ describe('deterministic headless soak simulation', () => {
       posted: payloadMaxima.get('server:posted'),
       charade: payloadMaxima.get('server:charade'),
       since: payloadMaxima.get('server:since')
-    }).toEqual({ post: 163, posted: 369, charade: 762, since: 263 })
+    }).toEqual({ post: 163, posted: 369, charade: 831, since: 263 })
     expect(avatarBudget.peak).toBeLessThanOrEqual(MAX_GHOSTS)
   })
 })

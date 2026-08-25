@@ -4,6 +4,15 @@ const uiTest = vi.hoisted(() => ({
   region: 'house',
   canReply: false,
   opening: { active: false, instruction: '' },
+  revealPresentation: {
+    verdict: null,
+    verdictText: '',
+    stats: null,
+    complete: false,
+    selectedAnswerIndex: -1,
+    wrongAnswersFaded: false,
+    phrase: ''
+  },
   state: {} as Record<string, unknown>,
   mailRecipients: [] as Array<{ address: string; name: string; isGuest: boolean; title: ''; performedAt: number }>
 }))
@@ -16,6 +25,9 @@ const uiActions = vi.hoisted(() => ({
   selectGhostMailRecipient: vi.fn(),
   clearGhostMailRecipient: vi.fn(),
   beginGhostMail: vi.fn(),
+  beginAuthoring: vi.fn(),
+  requestNextCharade: vi.fn(),
+  toggleSpotlight: vi.fn(),
   setInviteStatus: vi.fn()
 }))
 
@@ -43,6 +55,10 @@ vi.mock('../src/client/opening-scene', () => ({
   skipOpening: vi.fn()
 }))
 
+vi.mock('../src/client/reveal-scene', () => ({
+  getRevealViewState: () => uiTest.revealPresentation
+}))
+
 vi.mock('../src/client/flow', () => ({
   canAnswerBack: () => uiTest.canReply,
   canSendMail: () => uiTest.mailRecipients.length > 0,
@@ -55,8 +71,9 @@ vi.mock('../src/client/flow', () => ({
   clientFlow: {
     getState: () => uiTest.state,
     guess: vi.fn(),
+    toggleSpotlight: uiActions.toggleSpotlight,
     replay: vi.fn(),
-    beginAuthoring: vi.fn(),
+    beginAuthoring: uiActions.beginAuthoring,
     beginAnswerBack: vi.fn(),
     backFromAuthor: vi.fn(),
     continueAuthoring: vi.fn(),
@@ -66,7 +83,7 @@ vi.mock('../src/client/flow', () => ({
     previewAuthor: vi.fn(),
     postAuthor: vi.fn(),
     toggleReactionMenu: vi.fn(),
-    requestNextCharade: vi.fn(),
+    requestNextCharade: uiActions.requestNextCharade,
     showBoards: vi.fn(),
     showFoyer: uiActions.showFoyer,
     showInvite: uiActions.showInvite,
@@ -166,11 +183,7 @@ function findStaticText(
   }
   if (node === null || typeof node !== 'object' || !('type' in node) || !('props' in node)) return null
   const element = node as ElementNode
-  if (
-    element.props.value === value &&
-    typeof element.props.onMouseDown !== 'function' &&
-    matches(element.props)
-  ) {
+  if (element.props.value === value && typeof element.props.onMouseDown !== 'function' && matches(element.props)) {
     return element.props
   }
   if (typeof element.type === 'function') return findStaticText(element.type(element.props), value, matches)
@@ -201,7 +214,11 @@ function stateFor(screen: 'decode' | 'reveal' | 'posted') {
     id: 'charade-1',
     authorName: 'Author',
     answers: ['One', 'Two', 'Three'],
-    isHouse: false
+    isHouse: false,
+    setRound: 2,
+    setSize: 5,
+    setScore: 200,
+    setStreak: 1
   }
   return {
     ready: true,
@@ -220,6 +237,7 @@ function stateFor(screen: 'decode' | 'reveal' | 'posted') {
     pending: screen === 'decode' ? [{ requestId: 'request-1', kind: 'guess', sentAt: 0, retries: 0 }] : [],
     roundCharadeId: '',
     reactionMenuOpen: false,
+    spotlightEnabled: false,
     errorCode: '',
     toast: null
   }
@@ -253,17 +271,20 @@ function authorState(selectedEmotes: string[]) {
 }
 
 function hintText(node: unknown) {
-  return collectStaticText(node).find((value) =>
-    findStaticText(node, value, (props) => {
-      const transform = props?.uiTransform as Record<string, unknown> | undefined
-      return (
-        transform?.flex === 1 &&
-        props?.fontSize === uiFontSize(18) &&
-        props.font === 'monospace' &&
-        props.textAlign === 'middle-left'
-      )
-    }) !== null
-  ) ?? null
+  return (
+    collectStaticText(node).find(
+      (value) =>
+        findStaticText(node, value, (props) => {
+          const transform = props?.uiTransform as Record<string, unknown> | undefined
+          return (
+            transform?.flex === 1 &&
+            props?.fontSize === uiFontSize(18) &&
+            props.font === 'monospace' &&
+            props.textAlign === 'middle-left'
+          )
+        }) !== null
+    ) ?? null
+  )
 }
 
 beforeEach(() => {
@@ -271,6 +292,15 @@ beforeEach(() => {
   uiTest.region = 'house'
   uiTest.canReply = false
   uiTest.opening = { active: false, instruction: '' }
+  uiTest.revealPresentation = {
+    verdict: null,
+    verdictText: '',
+    stats: null,
+    complete: false,
+    selectedAnswerIndex: -1,
+    wrongAnswersFaded: false,
+    phrase: ''
+  }
   uiTest.mailRecipients = []
   uiTest.state = stateFor('decode')
   updateClientSettings(DEFAULT_CLIENT_SETTINGS)
@@ -459,12 +489,36 @@ describe('mobile control budget', () => {
   it('keeps reaction controls out of an active decode', () => {
     uiTest.state = { ...stateFor('decode'), roundCharadeId: 'charade-1', pending: [] }
     expect(collectButtons(uiComponent()).map(({ value }) => value)).toEqual([
+      'SPOTLIGHT ×2',
+      'REPLAY',
       'ONE',
       'TWO',
-      'THREE',
-      'REPLAY',
-      'MAKE YOUR OWN'
+      'THREE'
     ])
+    expect(collectStaticText(uiComponent())).toContain('GHOST 2/5 · STREAK 1 · SCORE 200')
+    expect(findButton(uiComponent(), 'MAKE YOUR OWN')).toBeNull()
+    expect(findButton(uiComponent(), 'SPOTLIGHT ×2')?.variant).toBe('secondary')
+    ;(findButton(uiComponent(), 'SPOTLIGHT ×2')?.onMouseDown as (() => void) | undefined)?.()
+    expect(uiActions.toggleSpotlight).toHaveBeenCalledTimes(1)
+
+    uiTest.state = { ...uiTest.state, spotlightEnabled: true }
+    expect(findButton(uiComponent(), 'SPOTLIGHT ×2')?.variant).toBe('primary')
+  })
+
+  it('does not invent Show Set status for a legacy charade without authoritative fields', () => {
+    const legacy = stateFor('decode')
+    uiTest.state = {
+      ...legacy,
+      pending: [],
+      charade: {
+        id: 'legacy-charade',
+        authorName: 'Author',
+        answers: ['One', 'Two', 'Three'],
+        isHouse: false
+      }
+    }
+
+    expect(collectStaticText(uiComponent()).some((value) => value.startsWith('GHOST 1/5 · STREAK'))).toBe(false)
   })
 
   it('disables every Make Your Own control for guests', () => {
@@ -475,13 +529,13 @@ describe('mobile control budget', () => {
     }
   })
 
-  it('lets an incorrect round decoder react without stacking reveal actions', () => {
+  it('keeps authoring reachable when an incorrect round decoder can react', () => {
     uiTest.state = { ...stateFor('reveal'), roundCharadeId: 'charade-1' }
     expect(
       collectButtons(uiComponent())
         .map(({ value }) => value)
         .sort()
-    ).toEqual(['NEXT GHOST', 'REACT'])
+    ).toEqual(['MAKE YOUR OWN', 'NEXT GHOST', 'REACT'])
 
     uiTest.state = { ...uiTest.state, reactionMenuOpen: true }
     expect(collectButtons(uiComponent()).map(({ value }) => value)).toEqual([
@@ -514,6 +568,51 @@ describe('mobile control budget', () => {
         .map(({ value }) => value)
         .sort()
     ).toEqual(['MAKE YOUR OWN', 'NEXT GHOST'])
+  })
+
+  it('replaces the completed finale with an authoritative two-action set scorecard', () => {
+    uiTest.state = {
+      ...stateFor('reveal'),
+      playerIsGuest: false,
+      reveal: {
+        charadeId: 'charade-1',
+        correct: true,
+        phrase: 'One',
+        stats: { total: 1, correct: 1 },
+        yourScore: 1,
+        setRound: 5,
+        setSize: 5,
+        setScore: 600,
+        setStreak: 2,
+        setBestStreak: 3,
+        setUnderstood: 4,
+        setComplete: true,
+        isFinale: true
+      }
+    }
+    uiTest.revealPresentation = { ...uiTest.revealPresentation, complete: true }
+
+    const component = uiComponent()
+    expect(collectStaticText(component)).toEqual(
+      expect.arrayContaining(['SET COMPLETE', 'FINAL SCORE · 600', 'BEST STREAK · 3', 'UNDERSTOOD · 4/5'])
+    )
+    expect(collectButtons(component)).toEqual([
+      { value: 'PLAY ANOTHER SET', disabled: false },
+      { value: 'LEAVE A GHOST', disabled: false }
+    ])
+    for (const value of ['PLAY ANOTHER SET', 'LEAVE A GHOST']) {
+      expect(findButton(component, value)?.uiTransform).toMatchObject({ minHeight: 96, height: 96 })
+    }
+    ;(findButton(component, 'PLAY ANOTHER SET')?.onMouseDown as (() => void) | undefined)?.()
+    ;(findButton(component, 'LEAVE A GHOST')?.onMouseDown as (() => void) | undefined)?.()
+    expect(uiActions.requestNextCharade).toHaveBeenCalledTimes(1)
+    expect(uiActions.beginAuthoring).toHaveBeenCalledTimes(1)
+
+    uiTest.state = {
+      ...uiTest.state,
+      reveal: { ...(uiTest.state.reveal as Record<string, unknown>), setScore: undefined }
+    }
+    expect(collectStaticText(uiComponent())).not.toContain('SET COMPLETE')
   })
 
   it('keeps the foyer at five controls with how to play in the top area', () => {

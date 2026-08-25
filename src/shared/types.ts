@@ -1,6 +1,7 @@
 import type { PlayerTitle } from './config'
 
 export const STORAGE_SCHEMA_VERSION = 2
+export const SHOW_SET_SIZE = 5
 
 export type Color = {
   r: number
@@ -51,6 +52,15 @@ export type DailyProgress = {
   stamped: boolean
 }
 
+export type ShowSet = {
+  /** Number of ghosts already resolved in the current set. */
+  round: number
+  score: number
+  streak: number
+  bestStreak: number
+  understood: number
+}
+
 export type PlayerStats = {
   v: number
   revision: number
@@ -70,6 +80,7 @@ export type PlayerStats = {
   daily: DailyProgress
   stampedDays: string[]
   title: PlayerTitle
+  showSet?: ShowSet
 }
 
 export type NextUnlock = {

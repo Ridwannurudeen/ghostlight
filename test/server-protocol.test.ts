@@ -74,6 +74,11 @@ type CharadeMessage = {
   look: ReturnType<typeof makeLook>
   isHouse: boolean
   recipient?: string
+  setRound?: number
+  setSize?: number
+  setScore?: number
+  setStreak?: number
+  isFinale?: boolean
 }
 
 type ErrorMessage = { code: string }
@@ -767,9 +772,7 @@ describe('charade serving and guesses', () => {
     expect(answerPhrases.map((answerPhrase) => answerPhrase!.text)).toEqual(secondServed.answers)
     expect(new Set(answerPhrases.map((answerPhrase) => answerPhrase!.category))).toEqual(new Set([phrase.category]))
     expect(new Set(answerPhrases.map((answerPhrase) => answerPhrase!.theme))).toEqual(new Set([phrase.theme]))
-    expect(
-      new Set(answerPhrases.map((answerPhrase) => [...answerPhrase!.suggested].sort().join(':'))).size
-    ).toBe(3)
+    expect(new Set(answerPhrases.map((answerPhrase) => [...answerPhrase!.suggested].sort().join(':'))).size).toBe(3)
     const publiclyRecovered = secondServed.answerIds.filter((candidateId) => {
       const candidate = DECK.find((entry) => entry.id === candidateId)!
       const decoys = pickDecoys(candidate.id, charade.emotes, DECK, charade.id)
@@ -945,6 +948,133 @@ describe('charade serving and guesses', () => {
     expect(messagesOfType(sent, 'reveal')).toHaveLength(2)
     expect(messagesOfType(sent, 'error')).toEqual([])
     expect(state.playerStats.get('player')).toMatchObject({ decoded: 0, correct: 0, seen: [] })
+  })
+
+  it('scores a five-ghost Show Set, prices Spotlight, and replays a guess without double-scoring', async () => {
+    const { state, sent, protocol } = await createHarness()
+    await negotiate(protocol, 'player')
+    sent.length = 0
+
+    const playHouseRound = async (correct: boolean, spotlight: boolean, requestId: string) => {
+      await protocol.handleNextCharade(nextCharadeRequest(), 'player')
+      const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+      const house = HOUSE_CHARADES.find((candidate) => candidate.emotes.join(':') === served.emotes.join(':'))!
+      const correctIndex = served.answerIds.indexOf(house.phraseId)
+      const guess = {
+        charadeId: served.id,
+        answerIndex: correct ? correctIndex : (correctIndex + 1) % served.answers.length,
+        requestId,
+        spotlight
+      }
+      await protocol.handleGuess(guess, 'player')
+      return {
+        guess,
+        served,
+        reveal: dataOf<Record<string, unknown>>(messagesOfType(sent, 'reveal').at(-1)!)
+      }
+    }
+
+    const first = await playHouseRound(true, false, 'show-set-1')
+    expect(first.served).toMatchObject({ setRound: 1, setSize: 5, setScore: 0, setStreak: 0, isFinale: false })
+    expect(first.reveal).toMatchObject({
+      spotlight: false,
+      scoreDelta: 100,
+      setRound: 1,
+      setSize: 5,
+      setScore: 100,
+      setStreak: 1,
+      setBestStreak: 1,
+      setUnderstood: 1,
+      setComplete: false,
+      isFinale: false
+    })
+    await protocol.handleGuess({ ...first.guess, spotlight: true }, 'player')
+    expect(dataOf<Record<string, unknown>>(messagesOfType(sent, 'reveal').at(-1)!)).toEqual(first.reveal)
+    expect(state.playerStats.get('player')?.showSet).toEqual({
+      round: 1,
+      score: 100,
+      streak: 1,
+      bestStreak: 1,
+      understood: 1
+    })
+
+    const second = await playHouseRound(true, true, 'show-set-2')
+    expect(second.reveal).toMatchObject({ scoreDelta: 200, setRound: 2, setScore: 300, setStreak: 2 })
+    const third = await playHouseRound(false, false, 'show-set-3')
+    expect(third.reveal).toMatchObject({ scoreDelta: 0, setRound: 3, setScore: 300, setStreak: 0 })
+    const fourth = await playHouseRound(false, true, 'show-set-4')
+    expect(fourth.reveal).toMatchObject({ scoreDelta: -100, setRound: 4, setScore: 200, setStreak: 0 })
+    const finale = await playHouseRound(true, false, 'show-set-5')
+    expect(finale.served).toMatchObject({ setRound: 5, setSize: 5, setScore: 200, setStreak: 0, isFinale: true })
+    expect(finale.reveal).toMatchObject({
+      spotlight: false,
+      scoreDelta: 100,
+      setRound: 5,
+      setSize: 5,
+      setScore: 300,
+      setStreak: 1,
+      setBestStreak: 2,
+      setUnderstood: 3,
+      setComplete: true,
+      isFinale: true
+    })
+    expect(state.playerStats.get('player')).toMatchObject({
+      decoded: 0,
+      correct: 0,
+      seen: [],
+      showSet: { round: 5, score: 300, streak: 1, bestStreak: 2, understood: 3 }
+    })
+    expect(state.boards).toEqual({ decoders: [], hardest: [] })
+
+    await protocol.handleNextCharade(nextCharadeRequest(), 'player')
+    expect(dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)).toMatchObject({
+      setRound: 1,
+      setSize: 5,
+      setScore: 0,
+      setStreak: 0,
+      isFinale: false
+    })
+  })
+
+  it('floors a Spotlight miss at zero and resumes an interrupted set after server sleep', async () => {
+    const storage = new FakeStorage()
+    const first = await createHarness({}, storage)
+    await negotiate(first.protocol, 'player')
+    first.sent.length = 0
+    await first.protocol.handleNextCharade(nextCharadeRequest(), 'player')
+    const served = dataOf<CharadeMessage>(messagesOfType(first.sent, 'charade').at(-1)!)
+    const house = HOUSE_CHARADES.find((candidate) => candidate.emotes.join(':') === served.emotes.join(':'))!
+    const correctIndex = served.answerIds.indexOf(house.phraseId)
+    await first.protocol.handleGuess(
+      {
+        charadeId: served.id,
+        answerIndex: (correctIndex + 1) % served.answers.length,
+        requestId: 'spotlight-floor',
+        spotlight: true
+      },
+      'player'
+    )
+
+    expect(dataOf<Record<string, unknown>>(messagesOfType(first.sent, 'reveal').at(-1)!)).toMatchObject({
+      scoreDelta: -100,
+      setScore: 0,
+      setRound: 1,
+      setComplete: false
+    })
+    await first.repository.flushNow()
+
+    const second = await createHarness({}, storage)
+    await negotiate(second.protocol, 'player')
+    second.sent.length = 0
+    await second.protocol.handleNextCharade(nextCharadeRequest(), 'player')
+
+    expect(dataOf<CharadeMessage>(messagesOfType(second.sent, 'charade').at(-1)!)).toMatchObject({
+      setRound: 2,
+      setSize: 5,
+      setScore: 0,
+      setStreak: 0,
+      isFinale: false
+    })
   })
 
   it('skips stored charades with unknown phrases and immediately serves an opaque house fallback', async () => {
@@ -1245,9 +1375,10 @@ describe('Ghost Mail protocol', () => {
   const senderAddress = `0x${'1'.repeat(40)}`
   const recipientAddress = `0x${'2'.repeat(40)}`
 
-  it('never promotes a solo recipient\'s private mail into a shared live round', async () => {
+  it("never promotes a solo recipient's private mail into a shared live round", async () => {
     const observerAddress = `0x${'3'.repeat(40)}`
-    const snapshotLook = async (address: string) => makeLook(address, address === recipientAddress ? 'Recipient' : 'Observer')
+    const snapshotLook = async (address: string) =>
+      makeLook(address, address === recipientAddress ? 'Recipient' : 'Observer')
     const { state, sent, protocol } = await createHarness({ snapshotLook })
     await negotiate(protocol, recipientAddress)
     await protocol.handleNextCharade(nextCharadeRequest(), recipientAddress)
@@ -2152,13 +2283,13 @@ describe('live protocol', () => {
     expect(Object.values(wireMeasurements).every((size) => size < 4_000)).toBe(true)
     expect(inlineCharade).toBeGreaterThan(4_000)
     expect({ ...wireMeasurements, inlineCharade }).toEqual({
-      charade: 2_500,
-      mailCharade: 2_557,
+      charade: 2_569,
+      mailCharade: 2_626,
       charadeReply: 2_278,
       since: 244,
       boards: 3_049,
       ready: 110,
-      inlineCharade: 4_750
+      inlineCharade: 4_819
     })
   })
 

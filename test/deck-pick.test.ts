@@ -299,7 +299,10 @@ describe('pickDecoys', () => {
           phrase.id,
           ...pickDecoys(phrase.id, phrase.suggested, DECK, `collision:${phrase.id}`).map((decoy) => decoy.id)
         ])
-        expect(ids.filter((id) => servedIds.has(id)), phrase.id).toEqual([phrase.id])
+        expect(
+          ids.filter((id) => servedIds.has(id)),
+          phrase.id
+        ).toEqual([phrase.id])
       }
     }
   })
@@ -307,9 +310,7 @@ describe('pickDecoys', () => {
   it('excludes every same-category canonical-collision pair in the full deck', () => {
     const collisionPairs = DECK.flatMap((left, index) =>
       DECK.slice(index + 1)
-        .filter(
-          (right) => right.category === left.category && canonicalTriplet(right) === canonicalTriplet(left)
-        )
+        .filter((right) => right.category === left.category && canonicalTriplet(right) === canonicalTriplet(left))
         .map((right) => [left, right] as const)
     )
     expect(new Set(collisionPairs.flatMap((pair) => pair.map((phrase) => phrase.id))).size).toBe(21)
@@ -440,9 +441,14 @@ describe('installed protocol codec', () => {
         createdAt: 1_777_000_000_000,
         isHouse: false,
         authorTitle: 'Understudy',
-        recipient: `0x${'b'.repeat(40)}`
+        recipient: `0x${'b'.repeat(40)}`,
+        setRound: 5,
+        setSize: 5,
+        setScore: 700,
+        setStreak: 3,
+        isFinale: true
       },
-      guess: { charadeId: 'ghost-1', answerIndex: 1, requestId: 'guess-1' },
+      guess: { charadeId: 'ghost-1', answerIndex: 1, requestId: 'guess-1', spotlight: true },
       reveal: {
         requestId: 'guess-1',
         charadeId: 'ghost-1',
@@ -456,7 +462,17 @@ describe('installed protocol codec', () => {
         stampAwarded: true,
         title: 'Understudy',
         nextUnlock,
-        titleUnlocked: true
+        titleUnlocked: true,
+        spotlight: true,
+        scoreDelta: 200,
+        setRound: 5,
+        setSize: 5,
+        setScore: 900,
+        setStreak: 4,
+        setBestStreak: 4,
+        setUnderstood: 4,
+        setComplete: true,
+        isFinale: true
       },
       post: {
         phraseId: DECK[0].id,
@@ -519,14 +535,16 @@ describe('installed protocol codec', () => {
         createdAt: 1_777_000_000_000
       },
       roundStart: { roundId: '1', charadeId: 'ghost-1' },
-      roundGuess: { charadeId: 'ghost-1', answerIndex: 1, requestId: 'round-1' },
+      roundGuess: { charadeId: 'ghost-1', answerIndex: 1, requestId: 'round-1', spotlight: true },
       roundWinner: { roundId: '1', charadeId: 'ghost-1', address: maximalLook.address, name: maximalLook.name },
       react: { kind: 'genius' },
       error: { code: 'storage-unavailable' }
     }
+    const encodedSizes = new Map<keyof typeof Messages, number>()
 
     for (const type of Object.keys(Messages) as Array<keyof typeof Messages>) {
       const encoded = encodeEvent(type, fixtures[type] as never, Messages)
+      encodedSizes.set(type, encoded.byteLength)
       const decoded = decodeEvent(encoded, Messages)
       expect(decoded.eventType).toBe(type)
       expect(decoded.payload).toBeDefined()
@@ -545,6 +563,14 @@ describe('installed protocol codec', () => {
         ])
       }
     }
+    expect(
+      Object.fromEntries(['charade', 'guess', 'reveal', 'roundGuess'].map((type) => [type, encodedSizes.get(type)]))
+    ).toEqual({
+      charade: 2_350,
+      guess: 45,
+      reveal: 232,
+      roundGuess: 50
+    })
 
     const saturatedReveal = {
       ...(fixtures.reveal as Record<string, unknown>),

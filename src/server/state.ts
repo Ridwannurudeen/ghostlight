@@ -10,9 +10,10 @@ import type {
   Look,
   PlaybillPerformer,
   PlayerProgress,
-  PlayerStats
+  PlayerStats,
+  ShowSet
 } from '../shared/types'
-import { STORAGE_SCHEMA_VERSION } from '../shared/types'
+import { SHOW_SET_SIZE, STORAGE_SCHEMA_VERSION } from '../shared/types'
 import {
   PLAYER_STATS_KEY,
   RECENT_VISITORS_KEY,
@@ -127,11 +128,7 @@ function authoredCountFrom(value: unknown) {
   if (!Array.isArray(value)) return 0
   const ids = new Set<string>()
   for (const item of value) {
-    if (
-      typeof item === 'string' &&
-      utf8Bytes(item) <= MAX_STORED_ID_BYTES &&
-      !HOUSE_CHARADE_IDS.has(item)
-    ) {
+    if (typeof item === 'string' && utf8Bytes(item) <= MAX_STORED_ID_BYTES && !HOUSE_CHARADE_IDS.has(item)) {
       ids.add(item)
     }
   }
@@ -159,6 +156,28 @@ function migrateDaily(value: unknown, now: number): DailyProgress {
     decoded: asNonNegativeInt(stored.decoded),
     authored: asNonNegativeInt(stored.authored),
     stamped: stored.stamped === true
+  }
+}
+
+function migrateShowSet(value: unknown): ShowSet | undefined {
+  const stored = asObject(value)
+  if (!stored) return undefined
+  const values = [stored.round, stored.score, stored.streak, stored.bestStreak, stored.understood]
+  if (
+    values.some(
+      (entry) => typeof entry !== 'number' || !Number.isSafeInteger(entry) || entry < 0 || entry > WIRE_INT_MAX
+    )
+  ) {
+    return undefined
+  }
+  const round = Math.min(stored.round as number, SHOW_SET_SIZE)
+  const streak = Math.min(stored.streak as number, round)
+  return {
+    round,
+    score: Math.min(stored.score as number, SHOW_SET_SIZE * 200),
+    streak,
+    bestStreak: Math.max(streak, Math.min(stored.bestStreak as number, round)),
+    understood: Math.min(stored.understood as number, round)
   }
 }
 
@@ -286,10 +305,7 @@ export function migrateReply(value: unknown): CharadeReply | null {
   }
 }
 
-export function migrateCharade(
-  value: unknown,
-  context: { expectedDay?: string; now?: number } = {}
-): Charade | null {
+export function migrateCharade(value: unknown, context: { expectedDay?: string; now?: number } = {}): Charade | null {
   const stored = asObject(value)
   if (!stored || typeof stored.v !== 'number' || !SUPPORTED_STORAGE_VERSIONS.has(stored.v)) return null
   const author = migrateLook(stored.author)
@@ -382,7 +398,7 @@ export function migratePlayerStats(value: unknown, name: string, now: number): P
   const authored = normalizeAuthored(stored.authored)
   const authoredCount = Math.max(asNonNegativeInt(stored.authoredCount), authoredCountFrom(stored.authored))
   const correct = Math.min(asNonNegativeInt(stored.correct), decoded)
-  return {
+  const migrated: PlayerStats = {
     v: STORAGE_SCHEMA_VERSION,
     revision: asNonNegativeInt(stored.revision),
     name: typeof stored.name === 'string' && stored.name ? stored.name : name,
@@ -402,6 +418,9 @@ export function migratePlayerStats(value: unknown, name: string, now: number): P
     stampedDays: stampedDays.slice(-MAX_STAMPED_DAYS),
     title: computeTitle({ correct, authored: authoredCount, stamps: stampedDays.length })
   }
+  const showSet = migrateShowSet(stored.showSet)
+  if (showSet) migrated.showSet = showSet
+  return migrated
 }
 
 function migrateBoards(value: unknown): Boards {

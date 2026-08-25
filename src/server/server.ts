@@ -5,8 +5,8 @@ import { DECK, EMOTE_VOCABULARY } from '../shared/deck'
 import { normalizePlayerName } from '../shared/i18n'
 import { Messages, SPECTATOR_REACTION_KINDS, room } from '../shared/messages'
 import { chooseCharadeFor, chooseHouseCharade, pickDecoys, shuffleSeeded } from '../shared/pick'
-import type { Charade, Look, PlayerProgress } from '../shared/types'
-import { STORAGE_SCHEMA_VERSION } from '../shared/types'
+import type { Charade, Look, PlayerProgress, PlayerStats, ShowSet } from '../shared/types'
+import { SHOW_SET_SIZE, STORAGE_SCHEMA_VERSION } from '../shared/types'
 import { LiveRounds } from './rounds'
 import { GhostlightState, dayKey, gameState } from './state'
 import { StorageCapacityError, StorageUnavailableError, flushNow, startFlushLoop } from './storage'
@@ -14,7 +14,7 @@ import { StorageCapacityError, StorageUnavailableError, flushNow, startFlushLoop
 type HelloPayload = { displayName: string; isGuest: boolean; protocolVersion: number }
 type PingPayload = { seq: number }
 type NextCharadePayload = { requestId: string; exclude: string[] }
-type GuessPayload = { charadeId: string; answerIndex: number; requestId: string }
+type GuessPayload = { charadeId: string; answerIndex: number; requestId: string; spotlight?: boolean }
 type PostPayload = { phraseId: string; emotes: string[]; requestId: string; replyTo?: string; recipient?: string }
 type ReactPayload = { kind: string }
 
@@ -32,6 +32,16 @@ type RevealPayload = {
   title: PlayerProgress['title']
   nextUnlock: PlayerProgress['nextUnlock']
   titleUnlocked: boolean
+  spotlight: boolean
+  scoreDelta: number
+  setRound: number
+  setSize: number
+  setScore: number
+  setStreak: number
+  setBestStreak: number
+  setUnderstood: number
+  setComplete: boolean
+  isFinale: boolean
 }
 
 type PostedPayload = {
@@ -100,6 +110,15 @@ const REQUEST_TOKEN_CAPACITY = 16
 const REQUEST_TOKENS_PER_SECOND = 8
 const DEFAULT_BODY_SHAPE = 'urn:decentraland:off-chain:base-avatars:BaseMale'
 const STABLE_ADDRESS = /^0x[a-f0-9]{40}$/iu
+
+function emptyShowSet(): ShowSet {
+  return { round: 0, score: 0, streak: 0, bestStreak: 0, understood: 0 }
+}
+
+function showSetFor(stats: PlayerStats) {
+  if (!stats.showSet) stats.showSet = emptyShowSet()
+  return stats.showSet
+}
 
 function canonicalAddress(address: string) {
   return address.toLowerCase()
@@ -816,6 +835,8 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     const addressKey = canonicalAddress(address)
     const cachedAuthorStats = options.state.playerStats.get(canonicalAddress(charade.author.address))
     const authorTitle = charade.isHouse || !cachedAuthorStats ? '' : progressFor(cachedAuthorStats).title
+    const showSet = options.state.playerStats.get(addressKey)?.showSet ?? emptyShowSet()
+    const setRound = Math.min(showSet.round + 1, SHOW_SET_SIZE)
     if (!isCurrentSession(address, generation)) return false
     for (const answerKey of servedAnswers.keys()) {
       if (answerKey.startsWith(`${addressKey}:`)) servedAnswers.delete(answerKey)
@@ -836,6 +857,11 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       createdAt: charade.createdAt,
       isHouse: charade.isHouse,
       authorTitle,
+      setRound,
+      setSize: SHOW_SET_SIZE,
+      setScore: showSet.score,
+      setStreak: showSet.streak,
+      isFinale: setRound === SHOW_SET_SIZE,
       ...(charade.recipient ? { recipient: charade.recipient } : {})
     })
     if (!isCurrentSession(address, generation)) return false
@@ -878,6 +904,10 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       selection = (async () => {
         const look = looks.get(key)
         const stats = await options.state.getOrCreateStats(key, playerName(key), !(look?.isGuest ?? true))
+        if (!stats.showSet || stats.showSet.round >= SHOW_SET_SIZE) {
+          stats.showSet = emptyShowSet()
+          options.state.saveStats(key, !(look?.isGuest ?? true))
+        }
         if (!isCurrentSession(address, generation)) {
           return prepareCharade(chooseHouseCharade(`${key}:stale:${houseSequence++}`, themeForTimestamp(now()).id))!
         }
@@ -950,7 +980,8 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       !validWireString(data.charadeId) ||
       !Number.isInteger(data.answerIndex) ||
       data.answerIndex < 0 ||
-      data.answerIndex > 2
+      data.answerIndex > 2 ||
+      (data.spotlight !== undefined && typeof data.spotlight !== 'boolean')
     ) {
       await sendError(address, 'invalid-guess')
       return
@@ -1001,6 +1032,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       return
     }
     const previousTitle = progressFor(stats).title
+    const spotlight = data.spotlight === true
 
     servedAnswers.delete(servedKey)
     activeDecoders.delete(key)
@@ -1009,6 +1041,17 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     if (roundIsActive) rounds.guess(key, data.charadeId, !charade.isHouse && correct)
 
     let stampAwarded = false
+    const showSet = showSetFor(stats)
+    const scoreDelta = correct ? (spotlight ? 200 : 100) : spotlight ? -100 : 0
+    showSet.round = Math.min(showSet.round + 1, SHOW_SET_SIZE)
+    showSet.score = Math.max(0, Math.min(showSet.score + scoreDelta, SHOW_SET_SIZE * 200))
+    if (correct) {
+      showSet.streak = Math.min(showSet.streak + 1, SHOW_SET_SIZE)
+      showSet.bestStreak = Math.max(showSet.bestStreak, showSet.streak)
+      showSet.understood = Math.min(showSet.understood + 1, SHOW_SET_SIZE)
+    } else {
+      showSet.streak = 0
+    }
     if (!charade.isHouse) {
       stats.seen.push(charade.id)
     }
@@ -1042,7 +1085,17 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       revision: stats.revision,
       stampAwarded,
       ...progress,
-      titleUnlocked
+      titleUnlocked,
+      spotlight,
+      scoreDelta,
+      setRound: showSet.round,
+      setSize: SHOW_SET_SIZE,
+      setScore: showSet.score,
+      setStreak: showSet.streak,
+      setBestStreak: showSet.bestStreak,
+      setUnderstood: showSet.understood,
+      setComplete: showSet.round === SHOW_SET_SIZE,
+      isFinale: showSet.round === SHOW_SET_SIZE
     }
     const request = { type: 'reveal' as const, data: reveal, durable: false }
     cacheSet(completedRequests, idempotencyKey, key, request)

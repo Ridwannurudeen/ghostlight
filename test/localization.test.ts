@@ -44,6 +44,20 @@ const GUIDANCE_KEYS = [
   'hint.posted'
 ] as const
 
+const SHOW_SET_KEYS = [
+  'set.status',
+  'set.finale',
+  'set.complete',
+  'set.finalScore',
+  'set.bestStreak',
+  'set.understood',
+  'set.playAnother',
+  'set.leaveGhost',
+  'spotlight.toggle',
+  'spotlight.won',
+  'spotlight.lost'
+] as const
+
 const ERROR_CODES = [
   'already-guessed',
   'charade-not-served',
@@ -78,7 +92,7 @@ const ERROR_CODES = [
 describe('localization copy', () => {
   it('has the same complete, non-empty player-copy key set in every language', () => {
     const expectedKeys = Object.keys(COPY.en).sort()
-    expect(expectedKeys).toHaveLength(183)
+    expect(expectedKeys).toHaveLength(194)
 
     for (const language of LANGUAGES) {
       expect(Object.keys(COPY[language]).sort(), language).toEqual(expectedKeys)
@@ -90,6 +104,26 @@ describe('localization copy', () => {
 
   it('localizes every how-to-play and contextual guidance line outside English', () => {
     for (const key of GUIDANCE_KEYS) {
+      expect(COPY.es[key], `es:${key}`).not.toBe(COPY.en[key])
+      expect(COPY.pt[key], `pt:${key}`).not.toBe(COPY.en[key])
+    }
+  })
+
+  it('localizes the complete show-set and Spotlight copy with matching interpolation', () => {
+    const values = { round: 2, total: 5, streak: 1, score: 200, understood: 4, delta: '+200' }
+    expect(translate('set.status', 'en', values)).toBe('GHOST 2/5 · STREAK 1 · SCORE 200')
+    expect(translate('spotlight.toggle', 'en')).toBe('SPOTLIGHT ×2')
+    expect(translate('spotlight.won', 'en', { delta: '+175' })).toBe('SPOTLIGHT PAID OFF · +175')
+
+    for (const key of SHOW_SET_KEYS) {
+      const englishPlaceholders = [...COPY.en[key].matchAll(/\{([a-zA-Z0-9]+)\}/gu)].map((match) => match[1]).sort()
+
+      for (const language of LANGUAGES) {
+        const placeholders = [...COPY[language][key].matchAll(/\{([a-zA-Z0-9]+)\}/gu)].map((match) => match[1]).sort()
+        expect(placeholders, `${language}:${key}:placeholders`).toEqual(englishPlaceholders)
+        expect(translate(key, language, values), `${language}:${key}:interpolation`).not.toMatch(/\{[a-zA-Z0-9]+\}/u)
+      }
+
       expect(COPY.es[key], `es:${key}`).not.toBe(COPY.en[key])
       expect(COPY.pt[key], `pt:${key}`).not.toBe(COPY.en[key])
     }

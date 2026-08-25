@@ -156,17 +156,74 @@ describe('scene reveal adapter', () => {
     expect(audio.restore).toHaveBeenCalledTimes(1)
   })
 
+  it.each([
+    { correct: true, scoreDelta: 175, verdict: 'hit', text: 'SPOTLIGHT PAID OFF · +175' },
+    { correct: false, scoreDelta: -75, verdict: 'miss', text: 'SPOTLIGHT MISSED · −75' }
+  ] as const)('visibly resolves the server-confirmed Spotlight stake for a $verdict', (outcome) => {
+    updateClientSettings({ reducedMotion: true })
+    const audio = { play: vi.fn(), duck: vi.fn(), restore: vi.fn() }
+    const controller = createSceneRevealController(audio)
+
+    controller.begin(charade, 0)
+    controller.resolve(
+      {
+        charadeId: charade.id,
+        correct: outcome.correct,
+        phrase: 'Flying a kite',
+        stats: { correct: outcome.correct ? 1 : 0, total: 1 },
+        yourScore: outcome.correct ? 1 : 0,
+        daily: { day: '2026-08-25', decoded: 1, authored: 0, stamped: false },
+        stampAwarded: false,
+        title: '',
+        nextUnlock: {
+          nextTitle: 'Understudy',
+          requirement: 'Post your first charade',
+          progress: 0
+        },
+        titleUnlocked: false,
+        spotlight: true,
+        scoreDelta: outcome.scoreDelta
+      },
+      charade
+    )
+    vi.advanceTimersByTime(800)
+
+    expect(getRevealViewState()).toMatchObject({ verdict: outcome.verdict, verdictText: outcome.text })
+  })
+
+  it('does not invent a Spotlight amount when the authoritative delta is absent', () => {
+    updateClientSettings({ reducedMotion: true })
+    const controller = createSceneRevealController({ play: vi.fn(), duck: vi.fn(), restore: vi.fn() })
+
+    controller.begin(charade, 0)
+    controller.resolve(
+      {
+        charadeId: charade.id,
+        correct: true,
+        phrase: 'Flying a kite',
+        stats: { correct: 1, total: 1 },
+        yourScore: 1,
+        daily: { day: '2026-08-25', decoded: 1, authored: 0, stamped: false },
+        stampAwarded: false,
+        title: '',
+        nextUnlock: { nextTitle: 'Understudy', requirement: 'Post your first charade', progress: 0 },
+        titleUnlocked: false,
+        spotlight: true
+      },
+      charade
+    )
+    vi.advanceTimersByTime(800)
+
+    expect(getRevealViewState()).toMatchObject({ verdict: 'hit', verdictText: 'YOU GOT IT' })
+  })
+
   it('resolves answer ids, verdict copy, and titles in the selected language', () => {
     updateClientSettings({ language: 'pt', reducedMotion: true })
     const audio = { play: vi.fn(), duck: vi.fn(), restore: vi.fn() }
     const controller = createSceneRevealController(audio)
     const localizedCharade: DecodeCharade = {
       ...charade,
-      answerIds: [
-        'everyday-wake-up-late',
-        'everyday-brush-your-teeth',
-        'everyday-miss-the-bus'
-      ]
+      answerIds: ['everyday-wake-up-late', 'everyday-brush-your-teeth', 'everyday-miss-the-bus']
     }
 
     controller.begin(localizedCharade, 0)

@@ -95,12 +95,18 @@ export const Messages = {
     createdAt: Schemas.Int64,
     isHouse: Schemas.Boolean,
     authorTitle: Schemas.String,
-    recipient: Schemas.Optional(Schemas.String)
+    recipient: Schemas.Optional(Schemas.String),
+    setRound: Schemas.Optional(Schemas.Int),
+    setSize: Schemas.Optional(Schemas.Int),
+    setScore: Schemas.Optional(Schemas.Int),
+    setStreak: Schemas.Optional(Schemas.Int),
+    isFinale: Schemas.Optional(Schemas.Boolean)
   }),
   guess: Schemas.Map({
     charadeId: Schemas.String,
     answerIndex: Schemas.Int,
-    requestId: Schemas.String
+    requestId: Schemas.String,
+    spotlight: Schemas.Optional(Schemas.Boolean)
   }),
   reveal: Schemas.Map({
     requestId: Schemas.String,
@@ -118,7 +124,17 @@ export const Messages = {
     stampAwarded: Schemas.Boolean,
     title: Schemas.String,
     nextUnlock,
-    titleUnlocked: Schemas.Boolean
+    titleUnlocked: Schemas.Boolean,
+    spotlight: Schemas.Optional(Schemas.Boolean),
+    scoreDelta: Schemas.Optional(Schemas.Int),
+    setRound: Schemas.Optional(Schemas.Int),
+    setSize: Schemas.Optional(Schemas.Int),
+    setScore: Schemas.Optional(Schemas.Int),
+    setStreak: Schemas.Optional(Schemas.Int),
+    setBestStreak: Schemas.Optional(Schemas.Int),
+    setUnderstood: Schemas.Optional(Schemas.Int),
+    setComplete: Schemas.Optional(Schemas.Boolean),
+    isFinale: Schemas.Optional(Schemas.Boolean)
   }),
   post: Schemas.Map({
     phraseId: Schemas.String,
@@ -178,7 +194,8 @@ export const Messages = {
   roundGuess: Schemas.Map({
     charadeId: Schemas.String,
     answerIndex: Schemas.Int,
-    requestId: Schemas.String
+    requestId: Schemas.String,
+    spotlight: Schemas.Optional(Schemas.Boolean)
   }),
   roundWinner: Schemas.Map({
     roundId: Schemas.String,

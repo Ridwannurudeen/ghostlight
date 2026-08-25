@@ -771,6 +771,81 @@ describe('flow lifecycle', () => {
     expect(runtime.getState()).toMatchObject({ screen: 'posted', postedCharadeId: 'posted-1', pending: [] })
   })
 
+  it('locks Spotlight into an idempotent finale guess and accepts only the authoritative set result', () => {
+    const { runtime, sent, effects, advance } = createFlowHarness()
+    runtime.receive({ type: 'ready', data: { instanceId: 'server-1', serverTime: FIXED_NOW } })
+    const finale = {
+      ...makeDecodeCharade('finale'),
+      setRound: 5,
+      setSize: 5,
+      setScore: 300,
+      setStreak: 2,
+      isFinale: true
+    }
+    serveCharade(runtime, finale)
+
+    expect(runtime.getState()).toMatchObject({ spotlightEnabled: false, charade: finale })
+    expect(runtime.toggleSpotlight()).toBe(true)
+    expect(runtime.getState().spotlightEnabled).toBe(true)
+    expect(runtime.guess(2)).toBe(true)
+    expect(runtime.toggleSpotlight()).toBe(false)
+    expect(effects.beginReveal).toHaveBeenCalledWith(expect.objectContaining({ id: finale.id }), 2, {
+      isFinale: true
+    })
+    expect(messagesOfType(sent, 'guess').at(-1)?.data).toEqual({
+      charadeId: finale.id,
+      answerIndex: 2,
+      requestId: 'request-2',
+      spotlight: true
+    })
+
+    advance(5_000)
+    const guesses = messagesOfType(sent, 'guess')
+    expect(guesses.slice(-2)).toEqual([guesses.at(-1), guesses.at(-1)])
+
+    receiveReveal(runtime, {
+      charadeId: finale.id,
+      correct: false,
+      phrase: finale.answers[0],
+      stats: { total: 1, correct: 0 },
+      yourScore: 0,
+      spotlight: true,
+      scoreDelta: -100,
+      setRound: 5,
+      setSize: 5,
+      setScore: 200,
+      setStreak: 0,
+      setBestStreak: 2,
+      setUnderstood: 3,
+      setComplete: true,
+      isFinale: true
+    })
+
+    expect(runtime.getState().reveal).toMatchObject({
+      spotlight: true,
+      scoreDelta: -100,
+      setScore: 200,
+      setStreak: 0,
+      setBestStreak: 2,
+      setUnderstood: 3,
+      setComplete: true
+    })
+
+    effects.cancelReveal.mockClear()
+    expect(runtime.beginAuthoring('reveal', false, true)).toBe(true)
+    expect(effects.cancelReveal).not.toHaveBeenCalled()
+    runtime.backFromAuthor()
+    expect(runtime.getState()).toMatchObject({ screen: 'reveal', reveal: { setComplete: true } })
+
+    expect(runtime.requestNextCharade()).toBe(true)
+    serveCharade(runtime, { ...makeDecodeCharade('new-set'), setRound: 1, setSize: 5, setScore: 0, setStreak: 0 })
+    expect(runtime.getState()).toMatchObject({
+      screen: 'decode',
+      spotlightEnabled: false,
+      charade: { id: 'new-set', setRound: 1, setScore: 0 }
+    })
+  })
+
   it('skips an active reveal cleanly before requesting the next charade', () => {
     const { runtime, sent, effects } = createFlowHarness()
     runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })

@@ -126,6 +126,30 @@ describe('state migrations', () => {
     })
   })
 
+  it('restores a valid optional Show Set while leaving old and malformed records safe', () => {
+    expect(migratePlayerStats(makeStats(), 'Player', FIXED_NOW).showSet).toBeUndefined()
+    expect(
+      migratePlayerStats(
+        {
+          ...makeStats(),
+          showSet: { round: 4, score: 600, streak: 2, bestStreak: 3, understood: 3 }
+        },
+        'Player',
+        FIXED_NOW
+      ).showSet
+    ).toEqual({ round: 4, score: 600, streak: 2, bestStreak: 3, understood: 3 })
+    expect(
+      migratePlayerStats(
+        {
+          ...makeStats(),
+          showSet: { round: 'four', score: -100, streak: true, bestStreak: null, understood: [] }
+        },
+        'Player',
+        FIXED_NOW
+      ).showSet
+    ).toBeUndefined()
+  })
+
   it('rejects invalid daily keys and keeps only valid stamped UTC days', () => {
     const migrated = migratePlayerStats(
       makeStats({
@@ -458,9 +482,7 @@ describe('state mutations', () => {
   it('has no Crowd Pleaser or Ghost of the Night before a performance receives three guesses', async () => {
     const { state } = setup()
     state.upsertCharade(makeCharade('not-ready', { guesses: { total: 2, correct: 1 } }))
-    state.upsertCharade(
-      makeCharade('guest-ready', { author: { isGuest: true }, guesses: { total: 3, correct: 2 } })
-    )
+    state.upsertCharade(makeCharade('guest-ready', { author: { isGuest: true }, guesses: { total: 3, correct: 2 } }))
     state.upsertCharade(
       makeCharade('private-ready', { recipient: `0x${'a'.repeat(40)}`, guesses: { total: 5, correct: 3 } })
     )

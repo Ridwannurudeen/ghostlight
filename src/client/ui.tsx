@@ -52,6 +52,7 @@ const PANEL = {
 } satisfies UiTransformProps
 
 const BUTTON = { width: '100%', minHeight: 96, height: 96, margin: '6px 0' } satisfies UiTransformProps
+const DECODE_BUTTON = { width: '100%', minHeight: 96, height: 96, margin: '2px 0' } satisfies UiTransformProps
 const HINT_HEIGHT = 48
 
 export const REVEAL_VERTICAL_BUDGET = {
@@ -135,7 +136,8 @@ function actionButton(
   value: string,
   onMouseDown: () => void,
   disabled = false,
-  variant: 'primary' | 'secondary' = 'primary'
+  variant: 'primary' | 'secondary' = 'primary',
+  transform: UiTransformProps = BUTTON
 ) {
   return (
     <Button
@@ -145,7 +147,7 @@ function actionButton(
       color={{ ...COLORS.ink }}
       variant={variant}
       disabled={disabled}
-      uiTransform={{ ...BUTTON }}
+      uiTransform={{ ...transform }}
       onMouseDown={onMouseDown}
     />
   )
@@ -373,38 +375,131 @@ function decodeScreen(state: ClientFlowState) {
       : copy('decode.ghost', { performers })
   const answers = localizedAnswers(charade)
   const waiting = state.pending.some((request) => request.kind === 'guess' || request.kind === 'roundGuess')
+  const question = copy(charade.reply ? 'decode.questionMany' : 'decode.questionOne', { performers })
+  const sentence = charade.isFinale ? `${copy('set.finale')} · ${question}` : question
+  const status =
+    charade.setRound !== undefined &&
+    charade.setSize !== undefined &&
+    charade.setStreak !== undefined &&
+    charade.setScore !== undefined
+      ? copy('set.status', {
+          round: charade.setRound,
+          total: charade.setSize,
+          streak: charade.setStreak,
+          score: charade.setScore
+        })
+      : ''
   return screenShell(
-    copy(charade.reply ? 'decode.questionMany' : 'decode.questionOne', { performers }),
+    sentence,
     <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column' }}>
+      {status ? (
+        <Label
+          value={status}
+          fontSize={uiFontSize(17)}
+          font="monospace"
+          color={COLORS.gold}
+          textAlign="middle-left"
+          uiTransform={{ width: '100%', height: 30 }}
+        />
+      ) : null}
       <Label
         value={label}
         fontSize={uiFontSize(18)}
         font="monospace"
         color={charade.isHouse ? COLORS.gold : COLORS.muted}
         textAlign="middle-left"
-        uiTransform={{ width: '100%', height: 38 }}
+        uiTransform={{ width: '100%', height: 30 }}
       />
+      <UiEntity uiTransform={{ width: '100%', flexDirection: 'row', justifyContent: 'space-between' }}>
+        <UiEntity uiTransform={{ width: '49%' }}>
+          {actionButton(
+            copy('spotlight.toggle'),
+            () => clientFlow.toggleSpotlight(),
+            waiting,
+            state.spotlightEnabled ? 'primary' : 'secondary',
+            DECODE_BUTTON
+          )}
+        </UiEntity>
+        <UiEntity uiTransform={{ width: '49%' }}>
+          {actionButton(copy('decode.replay'), () => clientFlow.replay(), waiting, 'secondary', DECODE_BUTTON)}
+        </UiEntity>
+      </UiEntity>
       {answers.map((answer, index) =>
         actionButton(
           answer.toUpperCase(),
           () => clientFlow.guess(index),
           waiting,
-          index === 0 ? 'primary' : 'secondary'
+          index === 0 ? 'primary' : 'secondary',
+          DECODE_BUTTON
         )
       )}
-      <UiEntity uiTransform={{ width: '100%', flexDirection: 'row', justifyContent: 'space-between' }}>
-        <UiEntity uiTransform={{ width: '49%' }}>
-          {actionButton(copy('decode.replay'), () => clientFlow.replay(), waiting, 'secondary')}
-        </UiEntity>
-        <UiEntity uiTransform={{ width: '49%' }}>
-          {actionButton(
-            copy('foyer.make'),
-            () => clientFlow.beginAuthoring(),
-            waiting || state.playerIsGuest,
-            'secondary'
-          )}
-        </UiEntity>
+    </UiEntity>,
+    state
+  )
+}
+
+type CompleteSetReveal = NonNullable<ClientFlowState['reveal']> & {
+  setComplete: true
+  setScore: number
+  setBestStreak: number
+  setUnderstood: number
+  setSize: number
+}
+
+function isCompleteSetReveal(reveal: ClientFlowState['reveal']): reveal is CompleteSetReveal {
+  return (
+    reveal?.setComplete === true &&
+    reveal.setScore !== undefined &&
+    reveal.setBestStreak !== undefined &&
+    reveal.setUnderstood !== undefined &&
+    reveal.setSize !== undefined
+  )
+}
+
+function setScorecard(state: ClientFlowState, reveal: CompleteSetReveal) {
+  const waiting = state.pending.some((request) => request.kind === 'nextCharade')
+  return screenShell(
+    copy('set.complete'),
+    <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', justifyContent: 'center' }}>
+      <UiEntity
+        uiTransform={{ width: '100%', height: 238, flexDirection: 'column', justifyContent: 'center' }}
+        uiBackground={{ texture: { src: UI_TEXTURES.card }, textureMode: 'stretch', color: COLORS.surface }}
+      >
+        <Label
+          value={copy('set.finalScore', { score: reveal.setScore })}
+          fontSize={uiFontSize(34)}
+          font="monospace"
+          color={COLORS.gold}
+          textAlign="middle-center"
+          uiTransform={{ width: '100%', height: 76 }}
+        />
+        <Label
+          value={copy('set.bestStreak', { streak: reveal.setBestStreak })}
+          fontSize={uiFontSize(24)}
+          font="monospace"
+          color={COLORS.bone}
+          textAlign="middle-center"
+          uiTransform={{ width: '100%', height: 58 }}
+        />
+        <Label
+          value={copy('set.understood', {
+            understood: reveal.setUnderstood,
+            total: reveal.setSize
+          })}
+          fontSize={uiFontSize(24)}
+          font="monospace"
+          color={COLORS.bone}
+          textAlign="middle-center"
+          uiTransform={{ width: '100%', height: 58 }}
+        />
       </UiEntity>
+      {actionButton(copy('set.playAnother'), () => clientFlow.requestNextCharade(), waiting)}
+      {actionButton(
+        copy('set.leaveGhost'),
+        () => clientFlow.beginAuthoring('reveal', false, true),
+        waiting || state.playerIsGuest,
+        'secondary'
+      )}
     </UiEntity>,
     state
   )
@@ -412,16 +507,18 @@ function decodeScreen(state: ClientFlowState) {
 
 function revealScreen(state: ClientFlowState) {
   const reveal = state.reveal
+  const presentation = getRevealViewState()
+  if (isCompleteSetReveal(reveal) && presentation.complete) return setScorecard(state, reveal)
   const author = state.charade?.isHouse
     ? copy('decode.houseGhost')
     : state.charade
       ? playerText(state.charade.authorName)
       : copy('decode.theGhost')
   const canDecode = canDecodeInCurrentRegion()
-  const presentation = getRevealViewState()
   const canReply = canAnswerBack(state)
   const canReact = canSpectatorReact(state) && canDecode
-  const actionWidth = canReply ? '32%' : '49%'
+  const actionCount = 2 + (canReply ? 1 : 0) + (canReact ? 1 : 0)
+  const actionWidth = actionCount === 4 ? '23.5%' : actionCount === 3 ? '32%' : '49%'
   const phrase = reveal ? (phraseText(reveal.phraseId, getClientSettings().language) ?? reveal.phrase) : ''
   const answers = state.charade ? localizedAnswers(state.charade) : []
   const sentence = presentation.verdict
@@ -501,10 +598,13 @@ function revealScreen(state: ClientFlowState) {
             {actionButton(copy('reveal.answerBack'), () => clientFlow.beginAnswerBack(), false, 'secondary')}
           </UiEntity>
         ) : null}
+        {canReact ? (
+          <UiEntity uiTransform={{ width: actionWidth }}>
+            {actionButton(copy('decode.react'), () => clientFlow.toggleReactionMenu(), false, 'secondary')}
+          </UiEntity>
+        ) : null}
         <UiEntity uiTransform={{ width: actionWidth }}>
-          {canReact
-            ? actionButton(copy('decode.react'), () => clientFlow.toggleReactionMenu(), false, 'secondary')
-            : actionButton(copy('foyer.make'), () => clientFlow.beginAuthoring(), state.playerIsGuest, 'secondary')}
+          {actionButton(copy('foyer.make'), () => clientFlow.beginAuthoring(), state.playerIsGuest, 'secondary')}
         </UiEntity>
       </UiEntity>
     </UiEntity>,

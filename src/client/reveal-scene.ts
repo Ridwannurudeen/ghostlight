@@ -190,7 +190,8 @@ export function createSceneRevealController(audio: RevealAudioPort, clock?: Reve
         ...EMPTY_REVEAL_VIEW,
         active: true,
         selectedAnswerIndex: answerIndex,
-        answers: charade.answerIds?.map((id, index) => phraseText(id, language) ?? charade.answers[index]) ?? charade.answers
+        answers:
+          charade.answerIds?.map((id, index) => phraseText(id, language) ?? charade.answers[index]) ?? charade.answers
       }
       controller.begin(runOptions)
     },
@@ -198,9 +199,27 @@ export function createSceneRevealController(audio: RevealAudioPort, clock?: Reve
       const language = getClientSettings().language
       const phrase = phraseText(reveal.phraseId, language) ?? reveal.phrase
       const authorName = charade.isHouse ? t('decode.houseGhost', language) : charade.authorName
+      const scoreDelta = Number.isSafeInteger(reveal.scoreDelta) ? reveal.scoreDelta : undefined
+      const spotlightDelta =
+        scoreDelta === undefined
+          ? ''
+          : scoreDelta > 0
+            ? `+${scoreDelta}`
+            : scoreDelta < 0
+              ? `−${Math.abs(scoreDelta)}`
+              : '0'
+      const spotlightHitText =
+        reveal.spotlight === true && spotlightDelta
+          ? t('spotlight.won', language, { delta: spotlightDelta })
+          : t('reveal.hit', language)
+      const spotlightMissText =
+        reveal.spotlight === true && spotlightDelta
+          ? t('spotlight.lost', language, { delta: spotlightDelta })
+          : t('reveal.miss', language, { author: authorName.toUpperCase(), phrase: phrase.toUpperCase() })
       revealView = {
         ...revealView,
-        answers: charade.answerIds?.map((id, index) => phraseText(id, language) ?? charade.answers[index]) ?? charade.answers,
+        answers:
+          charade.answerIds?.map((id, index) => phraseText(id, language) ?? charade.answers[index]) ?? charade.answers,
         phrase,
         correct: reveal.correct,
         stampAwarded: reveal.stampAwarded
@@ -213,8 +232,8 @@ export function createSceneRevealController(audio: RevealAudioPort, clock?: Reve
         titleProgress: reveal.nextUnlock.progress,
         unlockedTitle: reveal.titleUnlocked ? titleLabel(reveal.title, language) : '',
         stampAwarded: reveal.stampAwarded,
-        hitText: t('reveal.hit', language),
-        missText: t('reveal.miss', language, { author: authorName.toUpperCase(), phrase: phrase.toUpperCase() })
+        hitText: spotlightHitText,
+        missText: spotlightMissText
       })
     },
     hasShownVerdict: controller.hasShownVerdict,
