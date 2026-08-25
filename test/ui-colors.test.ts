@@ -14,6 +14,7 @@ const uiTest = vi.hoisted(() => ({
     phrase: ''
   },
   state: {} as Record<string, unknown>,
+  performerBeat: null as 0 | 1 | 2 | null,
   mailRecipients: [] as Array<{ address: string; name: string; isGuest: boolean; title: ''; performedAt: number }>
 }))
 
@@ -28,6 +29,7 @@ const uiActions = vi.hoisted(() => ({
   beginAuthoring: vi.fn(),
   requestNextCharade: vi.fn(),
   toggleSpotlight: vi.fn(),
+  moreAuthorEmotes: vi.fn(),
   setInviteStatus: vi.fn()
 }))
 
@@ -59,6 +61,10 @@ vi.mock('../src/client/reveal-scene', () => ({
   getRevealViewState: () => uiTest.revealPresentation
 }))
 
+vi.mock('../src/client/ghosts', () => ({
+  getPerformerBeatIndex: () => uiTest.performerBeat
+}))
+
 vi.mock('../src/client/flow', () => ({
   canAnswerBack: () => uiTest.canReply,
   canSendMail: () => uiTest.mailRecipients.length > 0,
@@ -79,6 +85,7 @@ vi.mock('../src/client/flow', () => ({
     continueAuthoring: vi.fn(),
     reviseAuthorEmotes: vi.fn(),
     selectAuthorEmote: vi.fn(),
+    moreAuthorEmotes: uiActions.moreAuthorEmotes,
     shuffleAuthorPhrase: vi.fn(),
     previewAuthor: vi.fn(),
     postAuthor: vi.fn(),
@@ -99,6 +106,7 @@ vi.mock('../src/client/flow', () => ({
 
 import {
   COLORS,
+  DECODE_VERTICAL_BUDGET,
   REVEAL_VERTICAL_BUDGET,
   formatPerformedAgo,
   localizedAnswers,
@@ -263,6 +271,7 @@ function authorState(selectedEmotes: string[]) {
     author: {
       phrase: { id: 'phrase', text: 'Walking a dog' },
       offeredEmotes: ['wave', 'clap', 'dab', 'disco', 'shrug'],
+      emotePage: 0,
       selectedEmotes,
       shufflesRemaining: 2,
       phase: selectedEmotes.length === 3 ? 'confirm' : 'emotes'
@@ -302,6 +311,7 @@ beforeEach(() => {
     phrase: ''
   }
   uiTest.mailRecipients = []
+  uiTest.performerBeat = null
   uiTest.state = stateFor('decode')
   updateClientSettings(DEFAULT_CLIENT_SETTINGS)
 })
@@ -324,6 +334,7 @@ describe('UI colors', () => {
       author: {
         phrase,
         offeredEmotes: ['wave', 'clap', 'dab', 'disco', 'shrug'],
+        emotePage: 0,
         selectedEmotes: [],
         shufflesRemaining: 2,
         phase: 'emotes'
@@ -336,6 +347,25 @@ describe('UI colors', () => {
 })
 
 describe('mobile control budget', () => {
+  it('renders beat structure as non-interactive chips and highlights the performing beat', () => {
+    uiTest.state = authorState(['wave'])
+    const authorUi = uiComponent()
+    expect(collectButtons(authorUi)).toHaveLength(5)
+    expect(findStaticText(authorUi, 'SETUP · WAVE')).not.toBeNull()
+
+    uiTest.state = stateFor('decode')
+    uiTest.performerBeat = 1
+    expect(findStaticText(uiComponent(), 'ACTION', (props) => props.color === COLORS.ink)).not.toBeNull()
+  })
+
+  it('fits decode labels and five 96px controls inside the fixed panel', () => {
+    const usedHeight = Object.entries(DECODE_VERTICAL_BUDGET)
+      .filter(([key]) => key !== 'panelHeight')
+      .reduce((total, [, value]) => total + value, 0)
+
+    expect(usedHeight).toBeLessThanOrEqual(DECODE_VERTICAL_BUDGET.panelHeight)
+  })
+
   it('shows returning authors how many players understood their ghost in every language', () => {
     uiTest.state = {
       ...foyerState(),
@@ -454,12 +484,25 @@ describe('mobile control budget', () => {
       author: {
         phrase: { id: 'phrase', text: 'Walking a dog' },
         offeredEmotes: ['wave', 'clap', 'dab', 'disco', 'shrug'],
+        emotePage: 0,
         selectedEmotes: phase === 'confirm' ? ['wave', 'clap', 'dab'] : [],
         shufflesRemaining: 2,
         phase
       }
     }
-    expect(collectButtons(uiComponent())).toHaveLength(expected)
+    const component = uiComponent()
+    const buttons = collectButtons(component)
+    expect(buttons).toHaveLength(expected)
+    if (phase === 'emotes') {
+      expect(buttons.map(({ value }) => value)).toEqual(['WAVE', 'CLAP', 'DAB', 'DISCO', 'MORE'])
+      for (const { value } of buttons) {
+        expect(findButton(component, value)?.uiTransform).toMatchObject({ minHeight: 96, height: 96 })
+        expect(findButton(component, value)?.uiTransform).not.toHaveProperty('position.bottom')
+        expect(findButton(component, value)?.uiTransform).not.toHaveProperty('position.right')
+      }
+      ;(findButton(component, 'MORE')?.onMouseDown as (() => void) | undefined)?.()
+      expect(uiActions.moreAuthorEmotes).toHaveBeenCalledTimes(1)
+    }
   })
 
   it('offers the four-control reaction menu only from the foyer during a live round', () => {

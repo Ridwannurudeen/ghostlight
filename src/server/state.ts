@@ -290,7 +290,6 @@ export function migrateReply(value: unknown): CharadeReply | null {
     stored.address.toLowerCase() !== look.address.toLowerCase() ||
     stored.name !== look.name ||
     !emotes ||
-    new Set(emotes).size !== emotes.length ||
     emotes.some((emote) => !VALID_EMOTES.has(emote)) ||
     asTimestamp(stored.createdAt) === null
   ) {
@@ -318,7 +317,6 @@ export function migrateCharade(value: unknown, context: { expectedDay?: string; 
     typeof stored.phraseId !== 'string' ||
     !PHRASE_IDS.has(stored.phraseId) ||
     !emotes ||
-    new Set(emotes).size !== emotes.length ||
     emotes.some((emote) => !VALID_EMOTES.has(emote)) ||
     asTimestamp(stored.createdAt) === null ||
     !guesses ||

@@ -1221,14 +1221,9 @@ describe('authoring protocol', () => {
       { phraseId: DECK[0].id, emotes: ['wave', 'clap', 'invalid'], requestId: 'three' },
       'player'
     )
-    await protocol.handlePost(
-      { phraseId: DECK[0].id, emotes: ['wave', 'wave', 'clap'], requestId: 'duplicate' },
-      'player'
-    )
     await protocol.handlePost({ phraseId: DECK[0].id, emotes: ['wave', 'clap', 'dab'], requestId: '' }, 'player')
 
     expect(messagesOfType(sent, 'error').map((message) => dataOf<ErrorMessage>(message).code)).toEqual([
-      'invalid-post',
       'invalid-post',
       'invalid-post',
       'invalid-post',
@@ -1250,7 +1245,7 @@ describe('authoring protocol', () => {
     await negotiate(protocol, '0xPlayer')
     sent.length = 0
     checkpoint.mockClear()
-    const post = { phraseId: DECK[3].id, emotes: [...DECK[3].suggested], requestId: 'post-1' }
+    const post = { phraseId: DECK[3].id, emotes: ['wave', 'wave', 'clap'], requestId: 'post-1' }
 
     await protocol.handlePost(post, '0xPlayer')
     const firstPosted = dataOf<PostedMessage>(messagesOfType(sent, 'posted')[0])
@@ -1617,7 +1612,6 @@ describe('answer-back protocol', () => {
     await protocol.handlePost({ ...base, phraseId: '', requestId: 'empty-phrase' }, 'player')
     await protocol.handlePost({ ...base, emotes: ['wave', 'clap'], requestId: 'short-emotes' }, 'player')
     await protocol.handlePost({ ...base, emotes: ['wave', 'clap', 'invalid'], requestId: 'bad-emote' }, 'player')
-    await protocol.handlePost({ ...base, emotes: ['wave', 'wave', 'clap'], requestId: 'duplicate-emote' }, 'player')
     await protocol.handlePost({ ...base, replyTo: 'missing', requestId: 'missing-target' }, 'player')
     await protocol.handlePost(
       { ...base, phraseId: HOUSE_CHARADE.phraseId, replyTo: HOUSE_CHARADE.id, requestId: 'house-target' },
@@ -1630,7 +1624,6 @@ describe('answer-back protocol', () => {
     await protocol.handlePost({ ...base, phraseId: wrongPhrase.id, requestId: 'wrong-phrase' }, 'player')
 
     expect(messagesOfType(sent, 'error').map((message) => dataOf<ErrorMessage>(message).code)).toEqual([
-      'invalid-reply',
       'invalid-reply',
       'invalid-reply',
       'invalid-reply',
@@ -1725,7 +1718,7 @@ describe('answer-back protocol', () => {
     snapshotLook.mockClear()
     checkpoint.mockClear()
     sent.length = 0
-    const firstEmotes = [...DECK[0].suggested]
+    const firstEmotes = ['wave', 'wave', 'clap']
 
     await protocol.handlePost(
       { phraseId: target.phraseId, emotes: firstEmotes, requestId: 'first-reply', replyTo: target.id },

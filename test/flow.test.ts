@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import { DECK, EMOTE_VOCABULARY, type Emote } from '../src/shared/deck'
 import {
+  AUTHOR_EMOTE_PAGE_COUNT,
+  authorEmotePage,
   canSpectatorReact,
   createFlowRuntime,
   createInitialFlowState,
@@ -261,6 +263,7 @@ describe('flow reducer', () => {
     const draft = {
       phrase,
       offeredEmotes: [...phrase.suggested],
+      emotePage: 0,
       selectedEmotes: [phrase.suggested[0]],
       shufflesRemaining: 2,
       phase: 'emotes' as const
@@ -330,7 +333,11 @@ describe('flow lifecycle', () => {
     expect(runtime.getState()).toMatchObject({
       screen: 'author',
       authorReturnScreen: 'mail',
-      author: { recipient: { address: recipient, name: 'Recipient' } }
+      author: {
+        recipient: { address: recipient, name: 'Recipient' },
+        offeredEmotes: expect.arrayContaining(EMOTE_VOCABULARY),
+        emotePage: 0
+      }
     })
     const firstPhrase = runtime.getState().author!.phrase.id
     expect(runtime.shuffleAuthorPhrase()).toBe(true)
@@ -454,7 +461,13 @@ describe('flow lifecycle', () => {
     effects.clearPreview.mockClear()
     expect(runtime.beginAnswerBack()).toBe(true)
     const draft = runtime.getState().author!
-    expect(draft).toMatchObject({ phrase: DECK[0], shufflesRemaining: 0, replyTo: charade.id })
+    expect(draft).toMatchObject({
+      phrase: DECK[0],
+      offeredEmotes: expect.arrayContaining(EMOTE_VOCABULARY),
+      emotePage: 0,
+      shufflesRemaining: 0,
+      replyTo: charade.id
+    })
     expect(runtime.shuffleAuthorPhrase()).toBe(false)
     draft.offeredEmotes.slice(0, 3).forEach((emote) => runtime.selectAuthorEmote(emote))
     expect(runtime.previewAuthor()).toBe(true)
@@ -1572,15 +1585,34 @@ describe('author controls and request guards', () => {
     expect(messagesOfType(sent, 'post')).toHaveLength(1)
   })
 
-  it('ignores emotes that were not offered and never selects more than three', () => {
+  it('pages through all 16 emotes for every beat and allows a repeated three-beat performance', () => {
     const { runtime } = createFlowHarness()
     runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
     runtime.beginAuthoring()
-    const offered = runtime.getState().author!.offeredEmotes
-    const notOffered = EMOTE_VOCABULARY.find((emote) => !offered.includes(emote))!
-    runtime.selectAuthorEmote(notOffered as Emote)
-    offered.slice(0, 4).forEach((emote) => runtime.selectAuthorEmote(emote))
+    runtime.continueAuthoring()
+    for (let beat = 0; beat < 3; beat += 1) {
+      const paged = new Set<Emote>()
+      for (let page = 0; page < AUTHOR_EMOTE_PAGE_COUNT; page += 1) {
+        authorEmotePage(beat, page).forEach((emote) => paged.add(emote))
+      }
+      expect([...paged].sort()).toEqual([...EMOTE_VOCABULARY].sort())
+    }
+    for (let page = 0; page < AUTHOR_EMOTE_PAGE_COUNT; page += 1) {
+      expect(runtime.moreAuthorEmotes()).toBe(true)
+      const nextPage = (page + 1) % AUTHOR_EMOTE_PAGE_COUNT
+      expect(runtime.getState().author?.emotePage).toBe(nextPage)
+      expect(runtime.getState().author?.offeredEmotes.slice(nextPage * 4, nextPage * 4 + 4)).toEqual(
+        authorEmotePage(0, nextPage)
+      )
+    }
 
-    expect(runtime.getState().author?.selectedEmotes).toEqual(offered.slice(0, 3))
+    runtime.selectAuthorEmote('wave')
+    runtime.selectAuthorEmote('wave')
+    runtime.selectAuthorEmote('wave')
+
+    expect(runtime.getState().author?.selectedEmotes).toEqual(['wave', 'wave', 'wave'])
+    expect(runtime.getState().author?.phase).toBe('confirm')
+    expect(runtime.reviseAuthorEmotes()).toBe(true)
+    expect(runtime.getState().author).toMatchObject({ selectedEmotes: [], emotePage: 0, phase: 'emotes' })
   })
 })

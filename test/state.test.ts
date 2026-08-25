@@ -70,7 +70,11 @@ describe('state migrations', () => {
     expect(migrateCharade(v1)?.reply).toBeUndefined()
     expect(migrateCharade({ ...legacy, v: 99 })).toBeNull()
     expect(migrateCharade({ ...legacy, emotes: ['wave', 'clap'] })).toBeNull()
-    expect(migrateCharade({ ...legacy, emotes: ['wave', 'wave', 'wave'] })).toBeNull()
+    expect(migrateCharade({ ...legacy, emotes: ['wave', 'wave', 'wave'] })?.emotes).toEqual([
+      'wave',
+      'wave',
+      'wave'
+    ])
     expect(migrateCharade({ ...legacy, emotes: ['wave', 'clap', 'not-an-emote'] })).toBeNull()
     expect(migrateCharade('{bad json')).toBeNull()
   })

@@ -1147,7 +1147,6 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         data.recipient !== undefined ||
         !data.phraseId ||
         data.emotes.length !== 3 ||
-        new Set(data.emotes).size !== 3 ||
         data.emotes.some((emote) => !EMOTES.has(emote))
       ) {
         await sendError(address, 'invalid-reply')
@@ -1258,7 +1257,6 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       !validWireString(data.requestId) ||
       !phrase ||
       data.emotes.length !== 3 ||
-      new Set(data.emotes).size !== 3 ||
       data.emotes.some((emote) => !EMOTES.has(emote))
     ) {
       await sendError(address, 'invalid-post')

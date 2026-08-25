@@ -1,5 +1,5 @@
 import type { ThemeId } from './config'
-import { CATEGORIES, DECK, EMOTE_VOCABULARY, HOUSE_CHARADE, HOUSE_CHARADES, type Emote, type Phrase } from './deck'
+import { CATEGORIES, DECK, HOUSE_CHARADE, HOUSE_CHARADES, type Emote, type Phrase } from './deck'
 import type { Charade } from './types'
 
 export type Seed = string | number
@@ -159,14 +159,4 @@ export function dealPhrase(deck: readonly Phrase[], exclude: readonly string[], 
   const phrases = available.filter((phrase) => phrase.category === category)
 
   return phrases[Math.floor(random() * phrases.length)] ?? null
-}
-
-export function offerEmotes(phrase: Phrase, seed: Seed): Emote[] {
-  const suggested = new Set<Emote>(phrase.suggested)
-  const extras = shuffleSeeded(
-    EMOTE_VOCABULARY.filter((emote) => !suggested.has(emote)),
-    `${typeof seed}:${seed}:extras`
-  ).slice(0, 2)
-
-  return shuffleSeeded([...phrase.suggested, ...extras], `${typeof seed}:${seed}:offer`)
 }

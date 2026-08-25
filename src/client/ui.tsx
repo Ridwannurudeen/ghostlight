@@ -19,6 +19,7 @@ import {
   type Language
 } from '../shared/i18n'
 import { canAnswerBack, canSendMail, canSpectatorReact, clientFlow, mailRecipients, type ClientFlowState } from './flow'
+import { getPerformerBeatIndex } from './ghosts'
 import { getOpeningViewState, skipOpening, type OpeningViewState } from './opening-scene'
 import { REACTION_OPTIONS, sendReaction } from './reactions'
 import { getRevealViewState, type RevealViewState } from './reveal-scene'
@@ -65,6 +66,18 @@ export const REVEAL_VERTICAL_BUDGET = {
   actions: 108,
   hint: HINT_HEIGHT,
   status: 30
+} as const
+
+export const DECODE_VERTICAL_BUDGET = {
+  panelHeight: 672,
+  panelPadding: 48,
+  header: 92,
+  bodyPadding: 12,
+  status: 28,
+  performerAndBeats: 42,
+  controls: 100,
+  answers: 300,
+  hint: HINT_HEIGHT
 } as const
 
 const UI_TEXTURES = {
@@ -389,6 +402,7 @@ function decodeScreen(state: ClientFlowState) {
           score: charade.setScore
         })
       : ''
+  const performerBeat = getPerformerBeatIndex()
   return screenShell(
     sentence,
     <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column' }}>
@@ -399,17 +413,22 @@ function decodeScreen(state: ClientFlowState) {
           font="monospace"
           color={COLORS.gold}
           textAlign="middle-left"
-          uiTransform={{ width: '100%', height: 30 }}
+          uiTransform={{ width: '100%', height: 28 }}
         />
       ) : null}
-      <Label
-        value={label}
-        fontSize={uiFontSize(18)}
-        font="monospace"
-        color={charade.isHouse ? COLORS.gold : COLORS.muted}
-        textAlign="middle-left"
-        uiTransform={{ width: '100%', height: 30 }}
-      />
+      <UiEntity uiTransform={{ width: '100%', height: 42, flexDirection: 'row', justifyContent: 'space-between' }}>
+        <Label
+          value={label}
+          fontSize={uiFontSize(16)}
+          font="monospace"
+          color={charade.isHouse ? COLORS.gold : COLORS.muted}
+          textAlign="middle-left"
+          uiTransform={{ width: '34%', height: 42 }}
+        />
+        <UiEntity uiTransform={{ width: '64%', height: 42, flexDirection: 'row', justifyContent: 'space-between' }}>
+          {BEAT_COPY_KEYS.map((key, index) => beatChip(key, undefined, performerBeat === index))}
+        </UiEntity>
+      </UiEntity>
       <UiEntity uiTransform={{ width: '100%', flexDirection: 'row', justifyContent: 'space-between' }}>
         <UiEntity uiTransform={{ width: '49%' }}>
           {actionButton(
@@ -637,18 +656,40 @@ function revealAnswerCard(answer: string, index: number, presentation: RevealVie
   )
 }
 
-function emoteButton(emote: Emote, index: number, state: ClientFlowState) {
-  const selectedIndex = state.author?.selectedEmotes.indexOf(emote) ?? -1
-  const selected = selectedIndex >= 0
+const BEAT_COPY_KEYS = ['beat.setup', 'beat.action', 'beat.punchline'] as const satisfies readonly CopyKey[]
+
+function beatChip(key: (typeof BEAT_COPY_KEYS)[number], emote?: Emote, active = false) {
+  return (
+    <UiEntity
+      key={key}
+      uiTransform={{ width: '32%', height: 40, padding: '4px 6px', borderRadius: 4 }}
+      uiBackground={{
+        texture: { src: active ? UI_TEXTURES.cardSelected : UI_TEXTURES.card },
+        textureMode: 'stretch',
+        color: active ? COLORS.gold : COLORS.surface
+      }}
+    >
+      <Label
+        value={`${copy(key)}${emote ? ` · ${emoteLabel(emote, getClientSettings().language)}` : ''}`}
+        fontSize={uiFontSize(emote ? 15 : 17)}
+        font="monospace"
+        color={active ? COLORS.ink : COLORS.bone}
+        textAlign="middle-center"
+      />
+    </UiEntity>
+  )
+}
+
+function emoteButton(emote: Emote) {
   return (
     <Button
       key={emote}
-      value={`${selected ? `${selectedIndex + 1} · ` : ''}${emoteLabel(emote, getClientSettings().language)}`}
-      fontSize={uiFontSize(22)}
+      value={emoteLabel(emote, getClientSettings().language)}
+      fontSize={uiFontSize(26)}
       font="monospace"
       color={{ ...COLORS.ink }}
-      variant={selected ? 'primary' : 'secondary'}
-      uiTransform={{ width: index === 4 ? '100%' : '49%', minHeight: 96, height: 96, margin: '5px 0' }}
+      variant="secondary"
+      uiTransform={{ width: '49%', minHeight: 96, height: 96, margin: '5px 0' }}
       onMouseDown={() => clientFlow.selectAuthorEmote(emote)}
     />
   )
@@ -662,6 +703,7 @@ function authorScreen(state: ClientFlowState) {
   const replying = !!author.replyTo
   const mailing = !!author.recipient
   const phrase = phraseText(author.phrase.id, getClientSettings().language) ?? author.phrase.text
+  const visibleEmotes = author.offeredEmotes.slice(author.emotePage * 4, author.emotePage * 4 + 4)
   const sentence =
     author.phase === 'phrase'
       ? replying
@@ -689,16 +731,24 @@ function authorScreen(state: ClientFlowState) {
           {actionButton(copy('common.back'), () => clientFlow.backFromAuthor(), false, 'secondary')}
         </UiEntity>
       ) : author.phase === 'emotes' ? (
-        <UiEntity
-          uiTransform={{
-            width: '100%',
-            height: 330,
-            flexDirection: 'row',
-            flexWrap: 'wrap',
-            justifyContent: 'space-between'
-          }}
-        >
-          {author.offeredEmotes.map((emote, index) => emoteButton(emote, index, state))}
+        <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column' }}>
+          <UiEntity uiTransform={{ width: '100%', height: 48, flexDirection: 'row', justifyContent: 'space-between' }}>
+            {BEAT_COPY_KEYS.map((key, index) =>
+              beatChip(key, author.selectedEmotes[index], index === author.selectedEmotes.length)
+            )}
+          </UiEntity>
+          <UiEntity
+            uiTransform={{
+              width: '100%',
+              height: 212,
+              flexDirection: 'row',
+              flexWrap: 'wrap',
+              justifyContent: 'space-between'
+            }}
+          >
+            {visibleEmotes.map((emote) => emoteButton(emote))}
+          </UiEntity>
+          {actionButton(copy('author.more'), () => clientFlow.moreAuthorEmotes(), false, 'secondary')}
         </UiEntity>
       ) : (
         <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', justifyContent: 'center' }}>

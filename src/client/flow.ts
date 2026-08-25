@@ -1,6 +1,6 @@
 import { engine } from '@dcl/sdk/ecs'
 import { getPlayer } from '@dcl/sdk/src/players'
-import { DECK, type Emote, type Phrase, type PhraseId } from '../shared/deck'
+import { DECK, EMOTE_VOCABULARY, type Emote, type Phrase, type PhraseId } from '../shared/deck'
 import {
   AUDIENCE_SEATS,
   HEARTBEAT_SECONDS,
@@ -12,7 +12,7 @@ import {
 } from '../shared/config'
 import { SPECTATOR_REACTION_KINDS, room } from '../shared/messages'
 import { isPhraseId, normalizePlayerName } from '../shared/i18n'
-import { dealPhrase, offerEmotes } from '../shared/pick'
+import { dealPhrase } from '../shared/pick'
 import type { DailyProgress, Look, NextUnlock, PlaybillPerformer } from '../shared/types'
 import {
   recordDiagnosticsCharade,
@@ -143,9 +143,78 @@ export type ProgressNotice =
   | { id: string; kind: 'stamp' }
   | { id: string; kind: 'title'; title: Exclude<PlayerTitle, ''> }
 
+const AUTHOR_EMOTE_ORDERS = [
+  [
+    'wave',
+    'raiseHand',
+    'shrug',
+    'dontsee',
+    'robot',
+    'hammer',
+    'money',
+    'kiss',
+    'clap',
+    'fistpump',
+    'handsair',
+    'headexplode',
+    'disco',
+    'dab',
+    'tektonik',
+    'tik'
+  ],
+  [
+    'robot',
+    'hammer',
+    'disco',
+    'tektonik',
+    'raiseHand',
+    'clap',
+    'handsair',
+    'tik',
+    'wave',
+    'fistpump',
+    'money',
+    'dontsee',
+    'kiss',
+    'shrug',
+    'dab',
+    'headexplode'
+  ],
+  [
+    'headexplode',
+    'clap',
+    'fistpump',
+    'handsair',
+    'shrug',
+    'kiss',
+    'money',
+    'dab',
+    'wave',
+    'raiseHand',
+    'dontsee',
+    'robot',
+    'hammer',
+    'disco',
+    'tektonik',
+    'tik'
+  ]
+] as const satisfies readonly (readonly Emote[])[]
+
+export const AUTHOR_EMOTE_PAGE_COUNT = 4
+
+export function authorEmoteOrder(beatIndex: number): Emote[] {
+  return [...AUTHOR_EMOTE_ORDERS[Math.min(Math.max(beatIndex, 0), 2)]]
+}
+
+export function authorEmotePage(beatIndex: number, page: number): Emote[] {
+  const normalizedPage = ((page % AUTHOR_EMOTE_PAGE_COUNT) + AUTHOR_EMOTE_PAGE_COUNT) % AUTHOR_EMOTE_PAGE_COUNT
+  return authorEmoteOrder(beatIndex).slice(normalizedPage * 4, normalizedPage * 4 + 4)
+}
+
 export type AuthorDraft = {
   phrase: Phrase
   offeredEmotes: Emote[]
+  emotePage: number
   selectedEmotes: Emote[]
   shufflesRemaining: number
   phase: 'phrase' | 'emotes' | 'confirm'
@@ -243,6 +312,8 @@ export type FlowAction =
   | { type: 'author'; draft: AuthorDraft; returnScreen: ClientFlowState['authorReturnScreen'] }
   | { type: 'authorPhase'; phase: AuthorDraft['phase'] }
   | { type: 'authorSelect'; emote: Emote }
+  | { type: 'authorMore' }
+  | { type: 'authorRevise' }
   | { type: 'authorBack' }
   | { type: 'progress'; progress: ProgressView; revision: number }
   | {
@@ -479,22 +550,48 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
     case 'authorPhase':
       return state.author ? { ...state, author: { ...state.author, phase: action.phase } } : state
     case 'authorSelect': {
-      if (!state.author || !state.author.offeredEmotes.includes(action.emote)) return state
-      const alreadySelected = state.author.selectedEmotes.includes(action.emote)
-      const selectedEmotes = alreadySelected
-        ? state.author.selectedEmotes.filter((emote) => emote !== action.emote)
-        : state.author.selectedEmotes.length < 3
-          ? [...state.author.selectedEmotes, action.emote]
-          : state.author.selectedEmotes
+      if (
+        !state.author ||
+        !EMOTE_VOCABULARY.includes(action.emote) ||
+        state.author.selectedEmotes.length >= 3
+      ) {
+        return state
+      }
+      const selectedEmotes = [...state.author.selectedEmotes, action.emote]
       return {
         ...state,
         author: {
           ...state.author,
           selectedEmotes,
+          offeredEmotes: authorEmoteOrder(selectedEmotes.length),
+          emotePage: 0,
           phase: selectedEmotes.length === 3 ? 'confirm' : state.author.phase
         }
       }
     }
+    case 'authorMore':
+      return state.author?.phase === 'emotes'
+        ? {
+            ...state,
+            author: {
+              ...state.author,
+              emotePage: (state.author.emotePage + 1) % AUTHOR_EMOTE_PAGE_COUNT
+            }
+          }
+        : state
+    case 'authorRevise':
+      return state.author
+        ? {
+            ...state,
+            author: {
+              ...state.author,
+              selectedEmotes: [],
+              offeredEmotes: authorEmoteOrder(0),
+              emotePage: 0,
+              phase: 'emotes'
+            }
+          }
+        : state
     case 'authorBack':
       return { ...state, screen: state.authorReturnScreen }
     case 'progress':
@@ -1405,7 +1502,8 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
       returnScreen,
       draft: {
         phrase,
-        offeredEmotes: offerEmotes(phrase, seed),
+        offeredEmotes: authorEmoteOrder(0),
+        emotePage: 0,
         selectedEmotes: [],
         shufflesRemaining: 2,
         phase: 'phrase'
@@ -1423,13 +1521,13 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
       return false
     }
     cancelReveal()
-    const seed = createRequestId()
     dispatch({
       type: 'author',
       returnScreen: 'reveal',
       draft: {
         phrase,
-        offeredEmotes: offerEmotes(phrase, seed),
+        offeredEmotes: authorEmoteOrder(0),
+        emotePage: 0,
         selectedEmotes: [],
         shufflesRemaining: 0,
         phase: 'phrase',
@@ -1477,7 +1575,8 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
       returnScreen: 'mail',
       draft: {
         phrase,
-        offeredEmotes: offerEmotes(phrase, seed),
+        offeredEmotes: authorEmoteOrder(0),
+        emotePage: 0,
         selectedEmotes: [],
         shufflesRemaining: 2,
         phase: 'phrase',
@@ -1497,7 +1596,8 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
       returnScreen: state.authorReturnScreen,
       draft: {
         phrase,
-        offeredEmotes: offerEmotes(phrase, seed),
+        offeredEmotes: authorEmoteOrder(0),
+        emotePage: 0,
         selectedEmotes: [],
         shufflesRemaining: state.author.shufflesRemaining - 1,
         phase: 'phrase',
@@ -1508,7 +1608,13 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
   }
 
   function selectAuthorEmote(emote: Emote) {
-    if (!state.author) return false
+    if (
+      !state.author ||
+      state.author.selectedEmotes.length >= 3 ||
+      !EMOTE_VOCABULARY.includes(emote)
+    ) {
+      return false
+    }
     dispatch({ type: 'authorSelect', emote })
     return true
   }
@@ -1581,6 +1687,11 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     canAnswerBack: () => canAnswerBack(state),
     shuffleAuthorPhrase,
     selectAuthorEmote,
+    moreAuthorEmotes() {
+      if (!state.author || state.author.phase !== 'emotes') return false
+      dispatch({ type: 'authorMore' })
+      return true
+    },
     continueAuthoring() {
       if (!state.author || state.author.phase !== 'phrase') return false
       dispatch({ type: 'authorPhase', phase: 'emotes' })
@@ -1588,7 +1699,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     },
     reviseAuthorEmotes() {
       if (!state.author || state.author.phase !== 'confirm') return false
-      dispatch({ type: 'authorPhase', phase: 'emotes' })
+      dispatch({ type: 'authorRevise' })
       return true
     },
     previewAuthor,

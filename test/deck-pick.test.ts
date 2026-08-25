@@ -15,7 +15,6 @@ import {
   chooseCharadeFor,
   chooseHouseCharade,
   dealPhrase,
-  offerEmotes,
   phraseTheme,
   pickDecoys,
   shuffleSeeded
@@ -393,19 +392,6 @@ describe('dealPhrase', () => {
 
     expect(everydayDeals).toBeGreaterThan(175)
     expect(everydayDeals).toBeLessThan(325)
-  })
-})
-
-describe('offerEmotes', () => {
-  it('returns the three suggestions plus two unique verified extras in a stable shuffle', () => {
-    const phrase = DECK[0]
-    const offered = offerEmotes(phrase, 'offer-seed')
-
-    expect(offered).toEqual(offerEmotes(phrase, 'offer-seed'))
-    expect(offered).toHaveLength(5)
-    expect(new Set(offered).size).toBe(5)
-    expect(phrase.suggested.every((emote) => offered.includes(emote))).toBe(true)
-    expect(offered.every((emote) => EMOTE_VOCABULARY.includes(emote))).toBe(true)
   })
 })
 
