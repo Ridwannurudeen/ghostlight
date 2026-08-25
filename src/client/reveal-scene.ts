@@ -7,6 +7,7 @@ import {
   createRevealController,
   type RevealClock,
   type RevealEffects,
+  type RevealRunOptions,
   type RevealSoundName,
   type RevealStats
 } from './reveal'
@@ -180,7 +181,7 @@ export function createSceneRevealController(audio: RevealAudioPort, clock?: Reve
   const controller = createRevealController(effects, clock, { reducedMotion: () => reducedMotion })
 
   return {
-    begin(charade: DecodeCharade, answerIndex: number) {
+    begin(charade: DecodeCharade, answerIndex: number, runOptions: RevealRunOptions = {}) {
       reducedMotion = getClientSettings().reducedMotion
       const language = getClientSettings().language
       titleProgressTarget = 0
@@ -191,7 +192,7 @@ export function createSceneRevealController(audio: RevealAudioPort, clock?: Reve
         selectedAnswerIndex: answerIndex,
         answers: charade.answerIds?.map((id, index) => phraseText(id, language) ?? charade.answers[index]) ?? charade.answers
       }
-      controller.begin()
+      controller.begin(runOptions)
     },
     resolve(reveal: RevealResult, charade: DecodeCharade) {
       const language = getClientSettings().language
@@ -216,6 +217,7 @@ export function createSceneRevealController(audio: RevealAudioPort, clock?: Reve
         missText: t('reveal.miss', language, { author: authorName.toUpperCase(), phrase: phrase.toUpperCase() })
       })
     },
+    hasShownVerdict: controller.hasShownVerdict,
     skipToEnd: controller.skipToEnd,
     cancel() {
       const cancelled = controller.cancel()

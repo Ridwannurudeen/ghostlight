@@ -194,7 +194,7 @@ describe('localized phrase deck', () => {
     for (const language of LANGUAGES) {
       const localized = localizeDeck(language)
       for (const phrase of localized) {
-        const decoys = pickDecoys(phrase.id, localized, `localized:${language}:${phrase.id}`)
+        const decoys = pickDecoys(phrase.id, phrase.suggested, localized, `localized:${language}:${phrase.id}`)
         expect(decoys, `${language}:${phrase.id}`).toHaveLength(2)
         expect(
           decoys.every(
@@ -208,7 +208,9 @@ describe('localized phrase deck', () => {
 
   it('round-trips an authored phrase id and same-theme answer ids across every language pair', () => {
     for (const canonical of DECK) {
-      const decoyIds = pickDecoys(canonical.id, DECK, `round-trip:${canonical.id}`).map((phrase) => phrase.id)
+      const decoyIds = pickDecoys(canonical.id, canonical.suggested, DECK, `round-trip:${canonical.id}`).map(
+        (phrase) => phrase.id
+      )
       const answerIds = shuffleSeeded([canonical.id, ...decoyIds], `answers:${canonical.id}`)
 
       for (const authorLanguage of LANGUAGES) {

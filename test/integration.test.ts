@@ -129,6 +129,8 @@ class FakeRevealClock implements RevealClock {
   private nextTimer = 0
   private readonly timers = new Map<number, { at: number; run: () => void }>()
 
+  now = () => this.currentTime
+
   setTimeout(run: () => void, delayMilliseconds: number) {
     const timer = ++this.nextTimer
     this.timers.set(timer, { at: this.currentTime + delayMilliseconds, run })

@@ -799,7 +799,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     const phrase = DECK.find((candidate) => candidate.id === charade.phraseId)
     if (!phrase) return null
     const privateSeed = `${serverSecret}:${++answerSequence}:${random()}`
-    const decoys = pickDecoys(phrase.id, DECK, privateSeed)
+    const decoys = pickDecoys(phrase.id, charade.emotes, DECK, privateSeed)
     if (decoys.length !== 2) return null
     const shuffled = shuffleSeeded([phrase, decoys[0], decoys[1]], `${privateSeed}:answers`)
     return {

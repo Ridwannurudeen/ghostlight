@@ -24,6 +24,7 @@ import {
   recordDiagnosticsServerReady
 } from './diagnostics'
 import { sanitizeAvatarLook } from './look'
+import type { RevealRunOptions } from './reveal'
 import { isInDecodeArea } from './theater'
 
 export type FlowScreen =
@@ -683,9 +684,10 @@ export type FlowEffects = {
   showStageReward?: (address: string, title: PlayerTitle) => void
   clearStageReward?: () => void
   showGhostOfNight?: (ghost: GhostOfNightView | null) => void
-  beginReveal?: (charade: DecodeCharade, answerIndex: number) => void
+  beginReveal?: (charade: DecodeCharade, answerIndex: number, options?: RevealRunOptions) => void
   resolveReveal?: (reveal: RevealResult, charade: DecodeCharade) => void
-  skipReveal?: () => void
+  canAdvanceReveal?: () => boolean
+  skipReveal?: () => boolean
   cancelReveal?: () => void
   cancelOpening?: () => void
 }
@@ -1230,7 +1232,10 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     ) {
       return false
     }
-    if (state.screen === 'reveal') effects.skipReveal?.()
+    if (state.screen === 'reveal') {
+      if (effects.canAdvanceReveal?.() === false) return false
+      effects.skipReveal?.()
+    }
     const requestId = createRequestId()
     sendRequest(
       'nextCharade',
@@ -1253,7 +1258,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     }
   }
 
-  function guess(answerIndex: number) {
+  function guess(answerIndex: number, revealOptions?: RevealRunOptions) {
     if (
       !state.ready ||
       !state.charade ||
@@ -1269,7 +1274,8 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     const round = state.roundCharadeId === state.charade.id
     const type = round ? 'roundGuess' : 'guess'
     sendRequest(type, { type, data: { charadeId: state.charade.id, answerIndex, requestId } }, requestId)
-    effects.beginReveal?.(state.charade, answerIndex)
+    if (revealOptions) effects.beginReveal?.(state.charade, answerIndex, revealOptions)
+    else effects.beginReveal?.(state.charade, answerIndex)
     return true
   }
 

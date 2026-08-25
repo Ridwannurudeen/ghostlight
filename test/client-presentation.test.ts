@@ -65,6 +65,7 @@ vi.mock('../src/client/ghosts', () => ghosts)
 const reveal = vi.hoisted(() => ({
   begin: vi.fn(),
   resolve: vi.fn(),
+  hasShownVerdict: vi.fn(),
   skipToEnd: vi.fn(),
   cancel: vi.fn()
 }))
@@ -119,6 +120,7 @@ describe('client presentation integration', () => {
     expect(harness.effects).toMatchObject({
       beginReveal: reveal.begin,
       resolveReveal: reveal.resolve,
+      canAdvanceReveal: reveal.hasShownVerdict,
       skipReveal: reveal.skipToEnd,
       cancelReveal: reveal.cancel,
       clearPreview: ghosts.clearPreview,

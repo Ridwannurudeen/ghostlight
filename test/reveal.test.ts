@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  ORDINARY_REVEAL_DURATION_SECONDS,
+  ORDINARY_REVEAL_TIMELINE,
   REDUCED_MOTION_REVEAL_DURATION_SECONDS,
   REDUCED_MOTION_REVEAL_TIMELINE,
   REVEAL_DURATION_SECONDS,
@@ -14,6 +16,8 @@ class FakeClock implements RevealClock {
   currentTime = 0
   private nextTimer = 0
   private readonly timers = new Map<number, { at: number; run: () => void }>()
+
+  now = () => this.currentTime
 
   setTimeout(run: () => void, delayMilliseconds: number) {
     const timer = ++this.nextTimer
@@ -185,6 +189,78 @@ describe('reveal timeline', () => {
     expect(controller.getStatus()).toBe('complete')
     expect(clock.pendingCount()).toBe(0)
   })
+
+  it('uses the exact three-second sequence for an ordinary reveal after the first verdict', () => {
+    const { clock, events, controller } = createHarness()
+    controller.start(CORRECT_OUTCOME)
+    clock.advanceTo(8_000)
+    events.length = 0
+
+    expect(ORDINARY_REVEAL_TIMELINE.map(({ at }) => at)).toEqual([0, 0.6, 1, 1.7, 2.3, 3])
+    expect(ORDINARY_REVEAL_DURATION_SECONDS).toBe(3)
+
+    controller.start(CORRECT_OUTCOME)
+    clock.advanceTo(11_000)
+
+    expect(events).toEqual([
+      '8000:sound:tick',
+      '8000:answers:lock',
+      '8000:lights:tension',
+      '8000:audio:duck',
+      '8000:sound:drumroll',
+      '8000:curtains:twitch',
+      '8600:sound:sting',
+      '8600:answers:fade-wrong',
+      '8600:spotlight:white',
+      '9000:lights:hit',
+      '9000:sound:hit',
+      '9000:floating:YOU GOT IT',
+      '9700:audience:clap',
+      '9700:performer:wave',
+      '9700:sound:applause',
+      '10300:stats:7/11',
+      '10300:title:animate',
+      '11000:camera:release',
+      '11000:lights:house',
+      '11000:visuals:reset',
+      '11000:audio:restore',
+      '11000:complete'
+    ])
+    expect(controller.getStatus()).toBe('complete')
+  })
+
+  it.each([
+    ['title', { unlockedTitle: 'Scene Stealer' }],
+    ['stamp', { stampAwarded: true }]
+  ] as const)('keeps the full eight-second sequence for a %s unlock', (_kind, patch) => {
+    const { clock, events, controller } = createHarness()
+    controller.start(CORRECT_OUTCOME)
+    clock.advanceTo(8_000)
+    events.length = 0
+
+    controller.start({ ...CORRECT_OUTCOME, ...patch })
+    clock.advanceTo(11_000)
+    expect(controller.getStatus()).toBe('running')
+    expect(events).toContain('10600:floating:YOU GOT IT')
+    expect(events.some((event) => event.endsWith('complete'))).toBe(false)
+
+    clock.advanceTo(16_000)
+    expect(events.at(-1)).toBe('16000:complete')
+    expect(controller.getStatus()).toBe('complete')
+  })
+
+  it('keeps the full eight-second sequence when the caller marks a finale', () => {
+    const { clock, events, controller } = createHarness()
+    controller.start(CORRECT_OUTCOME)
+    clock.advanceTo(8_000)
+    events.length = 0
+
+    controller.start(CORRECT_OUTCOME, { isFinale: true })
+    clock.advanceTo(16_000)
+
+    expect(events).toContain('10600:floating:YOU GOT IT')
+    expect(events.at(-1)).toBe('16000:complete')
+  })
 })
 
 describe('reveal controller interruption', () => {
@@ -252,6 +328,34 @@ describe('reveal controller interruption', () => {
     expect(controller.getStatus()).toBe('complete')
   })
 
+  it('shifts an ordinary tail behind a delayed server verdict without losing the result', () => {
+    const { clock, events, controller } = createHarness()
+    controller.start(CORRECT_OUTCOME)
+    clock.advanceTo(8_000)
+    events.length = 0
+
+    controller.begin()
+    clock.advanceTo(9_500)
+    expect(controller.hasShownVerdict()).toBe(false)
+
+    expect(controller.resolve(CORRECT_OUTCOME)).toBe(true)
+    expect(events.slice(-6)).toEqual([
+      '9500:sound:sting',
+      '9500:answers:fade-wrong',
+      '9500:spotlight:white',
+      '9500:lights:hit',
+      '9500:sound:hit',
+      '9500:floating:YOU GOT IT'
+    ])
+    expect(controller.hasShownVerdict()).toBe(true)
+
+    clock.advanceTo(11_500)
+    expect(events).toContain('10200:audience:clap')
+    expect(events).toContain('10800:stats:7/11')
+    expect(events.at(-1)).toBe('11500:complete')
+    expect(controller.getStatus()).toBe('complete')
+  })
+
   it('resets an active reveal once and cancels every remaining beat', () => {
     const { clock, events, controller } = createHarness()
     controller.start(CORRECT_OUTCOME)
@@ -305,25 +409,30 @@ describe('reveal controller interruption', () => {
     expect(clock.pendingCount()).toBe(0)
   })
 
-  it('NEXT skips directly to the clean end state without running omitted beats', () => {
+  it('refuses NEXT before the verdict and skips only the tail after the verdict', () => {
     const { clock, events, controller } = createHarness()
     controller.start(CORRECT_OUTCOME)
     clock.advanceTo(1_200)
 
+    expect(controller.hasShownVerdict()).toBe(false)
+    expect(controller.skipToEnd()).toBe(false)
+    clock.advanceTo(2_600)
+    expect(controller.hasShownVerdict()).toBe(true)
+    expect(events).toContain('2600:floating:YOU GOT IT')
+
     expect(controller.skipToEnd()).toBe(true)
     const afterSkip = [...events]
     expect(events.slice(-5)).toEqual([
-      '1200:camera:release',
-      '1200:lights:house',
-      '1200:visuals:reset',
-      '1200:audio:restore',
-      '1200:complete'
+      '2600:camera:release',
+      '2600:lights:house',
+      '2600:visuals:reset',
+      '2600:audio:restore',
+      '2600:complete'
     ])
     expect(controller.skipToEnd()).toBe(false)
     clock.advanceTo(20_000)
 
     expect(events).toEqual(afterSkip)
-    expect(events.some((event) => event.includes('sting'))).toBe(false)
     expect(controller.getStatus()).toBe('complete')
     expect(clock.pendingCount()).toBe(0)
   })

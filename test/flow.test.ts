@@ -80,7 +80,8 @@ function createFlowHarness(
     showGhostOfNight: vi.fn(),
     beginReveal: vi.fn(),
     resolveReveal: vi.fn(),
-    skipReveal: vi.fn(),
+    canAdvanceReveal: vi.fn(() => true),
+    skipReveal: vi.fn(() => true),
     cancelReveal: vi.fn(),
     cancelOpening: vi.fn()
   }
@@ -785,6 +786,34 @@ describe('flow lifecycle', () => {
     })
     sent.length = 0
 
+    expect(runtime.requestNextCharade()).toBe(true)
+    expect(effects.skipReveal).toHaveBeenCalledTimes(1)
+    expect(messagesOfType(sent, 'nextCharade')).toHaveLength(1)
+  })
+
+  it('blocks before the verdict but advances after normal completion even when there is no tail to skip', () => {
+    const { runtime, sent, effects } = createFlowHarness()
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    const charade = makeDecodeCharade()
+    serveCharade(runtime, charade)
+    runtime.guess(0)
+    receiveReveal(runtime, {
+      charadeId: charade.id,
+      correct: true,
+      phrase: 'Answer one',
+      stats: { total: 1, correct: 1 },
+      yourScore: 1
+    })
+    sent.length = 0
+    effects.canAdvanceReveal.mockReturnValueOnce(false)
+
+    expect(runtime.requestNextCharade()).toBe(false)
+    expect(messagesOfType(sent, 'nextCharade')).toHaveLength(0)
+    expect(runtime.getState().pending).toEqual([])
+    expect(effects.skipReveal).not.toHaveBeenCalled()
+
+    effects.canAdvanceReveal.mockReturnValueOnce(true)
+    effects.skipReveal.mockReturnValueOnce(false)
     expect(runtime.requestNextCharade()).toBe(true)
     expect(effects.skipReveal).toHaveBeenCalledTimes(1)
     expect(messagesOfType(sent, 'nextCharade')).toHaveLength(1)

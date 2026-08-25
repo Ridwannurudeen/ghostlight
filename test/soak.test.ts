@@ -578,7 +578,7 @@ describe('deterministic headless soak simulation', () => {
       posted: payloadMaxima.get('server:posted'),
       charade: payloadMaxima.get('server:charade'),
       since: payloadMaxima.get('server:since')
-    }).toEqual({ post: 163, posted: 369, charade: 778, since: 263 })
+    }).toEqual({ post: 163, posted: 369, charade: 762, since: 263 })
     expect(avatarBudget.peak).toBeLessThanOrEqual(MAX_GHOSTS)
   })
 })

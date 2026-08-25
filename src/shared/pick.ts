@@ -90,26 +90,62 @@ function firstWord(text: string) {
   return text.trim().split(/\s+/u)[0].toLowerCase()
 }
 
-export function pickDecoys(phraseId: string, deck: readonly Phrase[], seed: Seed): Phrase[] {
+function tripletKey(emotes: readonly string[]) {
+  return [...emotes].sort().join(':')
+}
+
+function emoteOverlap(suggested: readonly Emote[], performed: ReadonlySet<string>) {
+  return suggested.reduce((overlap, emote) => overlap + (performed.has(emote) ? 1 : 0), 0)
+}
+
+export function pickDecoys(
+  phraseId: string,
+  performedEmotes: readonly string[],
+  deck: readonly Phrase[],
+  seed: Seed
+): Phrase[] {
   const phrase = deck.find((candidate) => candidate.id === phraseId)
   if (!phrase) return []
 
-  const usedFirstWords = new Set([firstWord(phrase.text)])
+  const sourceFirstWord = firstWord(phrase.text)
+  const sourceTriplet = tripletKey(phrase.suggested)
+  const performedTriplet = tripletKey(performedEmotes)
+  const performed = new Set(performedEmotes)
   const candidates = shuffleSeeded(
-    deck.filter((candidate) => candidate.id !== phrase.id && candidate.category === phrase.category),
-    seed
+    deck.filter(
+      (candidate) =>
+        candidate.id !== phrase.id &&
+        candidate.category === phrase.category &&
+        firstWord(candidate.text) !== sourceFirstWord &&
+        tripletKey(candidate.suggested) !== sourceTriplet &&
+        tripletKey(candidate.suggested) !== performedTriplet
+    ),
+    `${typeof seed}:${seed}:decoys`
   )
-  const decoys: Phrase[] = []
+  let best: { close: Phrase; distant: Phrase; closeOverlap: number; distantOverlap: number } | null = null
 
-  for (const candidate of candidates) {
-    const candidateFirstWord = firstWord(candidate.text)
-    if (usedFirstWords.has(candidateFirstWord)) continue
-    decoys.push(candidate)
-    usedFirstWords.add(candidateFirstWord)
-    if (decoys.length === 2) break
+  for (const close of candidates) {
+    const closeOverlap = emoteOverlap(close.suggested, performed)
+    for (const distant of candidates) {
+      if (
+        distant.id === close.id ||
+        firstWord(distant.text) === firstWord(close.text) ||
+        tripletKey(distant.suggested) === tripletKey(close.suggested)
+      ) {
+        continue
+      }
+      const distantOverlap = emoteOverlap(distant.suggested, performed)
+      if (
+        !best ||
+        closeOverlap > best.closeOverlap ||
+        (closeOverlap === best.closeOverlap && distantOverlap < best.distantOverlap)
+      ) {
+        best = { close, distant, closeOverlap, distantOverlap }
+      }
+    }
   }
 
-  return decoys
+  return best ? [best.close, best.distant] : []
 }
 
 export function dealPhrase(deck: readonly Phrase[], exclude: readonly string[], seed: Seed): Phrase | null {

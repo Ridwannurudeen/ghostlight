@@ -51,6 +51,14 @@ const charade = (id: string, authorAddress: string, total: number, createdAt: nu
 
 const firstWord = (text: string) => text.trim().split(/\s+/u)[0].toLocaleLowerCase()
 
+const canonicalTriplet = (phrase: Phrase) => [...phrase.suggested].sort().join(':')
+
+const COLLISION_GROUPS = [
+  ['food-share-the-popcorn', 'food-toast-a-marshmallow', 'food-serve-breakfast'],
+  ['awkward-wave-at-wrong-person', 'awkward-enter-wrong-room'],
+  ['food-steal-some-fries', 'food-hunt-a-midnight-snack']
+] as const
+
 describe('phrase deck', () => {
   it('contains 120 unique, short player phrases split evenly across six categories', () => {
     expect(DECK).toHaveLength(120)
@@ -209,8 +217,8 @@ describe('chooseHouseCharade', () => {
 describe('pickDecoys', () => {
   it('returns two stable same-category decoys with distinct first words', () => {
     const phrase = DECK[0]
-    const first = pickDecoys(phrase.id, DECK, 'charade-7')
-    const second = pickDecoys(phrase.id, DECK, 'charade-7')
+    const first = pickDecoys(phrase.id, phrase.suggested, DECK, 'charade-7')
+    const second = pickDecoys(phrase.id, phrase.suggested, DECK, 'charade-7')
 
     expect(first).toEqual(second)
     expect(first).toHaveLength(2)
@@ -219,8 +227,127 @@ describe('pickDecoys', () => {
     expect(new Set([firstWord(phrase.text), ...first.map((candidate) => firstWord(candidate.text))]).size).toBe(3)
   })
 
+  it('rejects truth and performed triplet collisions, then picks the closest and most distant decoys', () => {
+    const fixture: Phrase[] = [
+      {
+        id: 'everyday-source',
+        text: 'Act the source',
+        category: 'everyday',
+        theme: 'everyday',
+        suggested: ['wave', 'clap', 'kiss']
+      },
+      {
+        id: 'everyday-ordered-collision',
+        text: 'Copy it exactly',
+        category: 'everyday',
+        theme: 'everyday',
+        suggested: ['wave', 'clap', 'kiss']
+      },
+      {
+        id: 'everyday-unordered-collision',
+        text: 'Reorder that copy',
+        category: 'everyday',
+        theme: 'everyday',
+        suggested: ['kiss', 'wave', 'clap']
+      },
+      {
+        id: 'everyday-performed-collision',
+        text: 'Match every move',
+        category: 'everyday',
+        theme: 'everyday',
+        suggested: ['dab', 'wave', 'clap']
+      },
+      {
+        id: 'everyday-close',
+        text: 'Echo two moves',
+        category: 'everyday',
+        theme: 'everyday',
+        suggested: ['wave', 'clap', 'robot']
+      },
+      {
+        id: 'everyday-middle',
+        text: 'Echo one move',
+        category: 'everyday',
+        theme: 'everyday',
+        suggested: ['wave', 'robot', 'money']
+      },
+      {
+        id: 'everyday-distant',
+        text: 'Stand far apart',
+        category: 'everyday',
+        theme: 'everyday',
+        suggested: ['robot', 'money', 'shrug']
+      }
+    ]
+
+    expect(pickDecoys('everyday-source', ['wave', 'clap', 'dab'], fixture, 'performance-aware')).toEqual([
+      fixture[4],
+      fixture[6]
+    ])
+  })
+
+  it('never serves any known canonical-collision pair together', () => {
+    for (const ids of COLLISION_GROUPS) {
+      const collisionKey = canonicalTriplet(DECK.find((phrase) => phrase.id === ids[0])!)
+      expect(ids.map((id) => canonicalTriplet(DECK.find((phrase) => phrase.id === id)!))).toEqual(
+        ids.map(() => collisionKey)
+      )
+
+      for (const phraseId of ids) {
+        const phrase = DECK.find((candidate) => candidate.id === phraseId)!
+        const servedIds = new Set([
+          phrase.id,
+          ...pickDecoys(phrase.id, phrase.suggested, DECK, `collision:${phrase.id}`).map((decoy) => decoy.id)
+        ])
+        expect(ids.filter((id) => servedIds.has(id)), phrase.id).toEqual([phrase.id])
+      }
+    }
+  })
+
+  it('excludes every same-category canonical-collision pair in the full deck', () => {
+    const collisionPairs = DECK.flatMap((left, index) =>
+      DECK.slice(index + 1)
+        .filter(
+          (right) => right.category === left.category && canonicalTriplet(right) === canonicalTriplet(left)
+        )
+        .map((right) => [left, right] as const)
+    )
+    expect(new Set(collisionPairs.flatMap((pair) => pair.map((phrase) => phrase.id))).size).toBe(21)
+
+    for (const [left, right] of collisionPairs) {
+      for (const phrase of [left, right]) {
+        const decoyIds = pickDecoys(phrase.id, phrase.suggested, DECK, `pair:${left.id}:${right.id}:${phrase.id}`).map(
+          (decoy) => decoy.id
+        )
+        expect(decoyIds, `${phrase.id}:${left.id}:${right.id}`).not.toContain(phrase === left ? right.id : left.id)
+      }
+    }
+  })
+
+  it('keeps all three served canonical triplets pairwise distinguishable for every phrase and seeded performance', () => {
+    for (const phrase of DECK) {
+      for (let seed = 0; seed < EMOTE_VOCABULARY.length; seed += 1) {
+        const performed = [
+          EMOTE_VOCABULARY[seed],
+          EMOTE_VOCABULARY[(seed + 5) % EMOTE_VOCABULARY.length],
+          EMOTE_VOCABULARY[(seed + 11) % EMOTE_VOCABULARY.length]
+        ]
+        const decoys = pickDecoys(phrase.id, performed, DECK, `deck:${phrase.id}:${seed}`)
+        const options = [phrase, ...decoys]
+        const performedTriplet = [...performed].sort().join(':')
+
+        expect(decoys, `${phrase.id}:${seed}`).toHaveLength(2)
+        expect(
+          decoys.every((decoy) => canonicalTriplet(decoy) !== performedTriplet),
+          `${phrase.id}:${seed}:performed`
+        ).toBe(true)
+        expect(new Set(options.map(canonicalTriplet)).size, `${phrase.id}:${seed}`).toBe(3)
+      }
+    }
+  })
+
   it('returns no decoys for an unknown phrase', () => {
-    expect(pickDecoys('missing', DECK, 'seed')).toEqual([])
+    expect(pickDecoys('missing', ['wave', 'clap', 'dab'], DECK, 'seed')).toEqual([])
   })
 })
 

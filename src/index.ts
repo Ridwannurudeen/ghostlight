@@ -105,6 +105,7 @@ export function main() {
     },
     beginReveal: reveal.begin,
     resolveReveal: reveal.resolve,
+    canAdvanceReveal: reveal.hasShownVerdict,
     skipReveal: reveal.skipToEnd,
     cancelReveal: reveal.cancel,
     cancelOpening: opening.cancel

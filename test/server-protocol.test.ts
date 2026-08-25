@@ -767,9 +767,12 @@ describe('charade serving and guesses', () => {
     expect(answerPhrases.map((answerPhrase) => answerPhrase!.text)).toEqual(secondServed.answers)
     expect(new Set(answerPhrases.map((answerPhrase) => answerPhrase!.category))).toEqual(new Set([phrase.category]))
     expect(new Set(answerPhrases.map((answerPhrase) => answerPhrase!.theme))).toEqual(new Set([phrase.theme]))
+    expect(
+      new Set(answerPhrases.map((answerPhrase) => [...answerPhrase!.suggested].sort().join(':'))).size
+    ).toBe(3)
     const publiclyRecovered = secondServed.answerIds.filter((candidateId) => {
       const candidate = DECK.find((entry) => entry.id === candidateId)!
-      const decoys = pickDecoys(candidate.id, DECK, charade.id)
+      const decoys = pickDecoys(candidate.id, charade.emotes, DECK, charade.id)
       const ordered = shuffleSeeded([candidate, ...decoys], `${charade.id}:answers`).map((entry) => entry.id)
       return ordered.join('|') === secondServed.answerIds.join('|')
     })
@@ -2149,13 +2152,13 @@ describe('live protocol', () => {
     expect(Object.values(wireMeasurements).every((size) => size < 4_000)).toBe(true)
     expect(inlineCharade).toBeGreaterThan(4_000)
     expect({ ...wireMeasurements, inlineCharade }).toEqual({
-      charade: 2_485,
-      mailCharade: 2_542,
+      charade: 2_500,
+      mailCharade: 2_557,
       charadeReply: 2_278,
       since: 244,
       boards: 3_049,
       ready: 110,
-      inlineCharade: 4_735
+      inlineCharade: 4_750
     })
   })
 
