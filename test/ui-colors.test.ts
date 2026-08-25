@@ -306,6 +306,45 @@ describe('UI colors', () => {
 })
 
 describe('mobile control budget', () => {
+  it('shows returning authors how many players understood their ghost in every language', () => {
+    uiTest.state = {
+      ...foyerState(),
+      screen: 'since',
+      since: { triedYou: 5, gotYou: 3, replies: 1, mail: 2, rank: 0 }
+    }
+
+    const expected = {
+      en: '3 OF 5 UNDERSTOOD YOUR GHOST. 1 answered back, and 2 Ghost Mail waited.',
+      es: '3 DE 5 ENTENDIERON TU FANTASMA. 1 respondieron y esperaban 2 Ghost Mail.',
+      pt: '3 DE 5 ENTENDERAM SEU FANTASMA. 1 responderam e havia 2 Ghost Mail.'
+    } as const
+
+    for (const language of LANGUAGES) {
+      updateClientSettings({ language })
+      expect(collectStaticText(uiComponent()), language).toContain(expected[language])
+    }
+  })
+
+  it('labels the empty Crowd Pleaser board honestly in every language', () => {
+    uiTest.state = {
+      ...foyerState(),
+      screen: 'boards',
+      serverClockOffset: 0
+    }
+
+    const expected = {
+      en: ['CROWD PLEASER', 'NEEDS 3 GUESSES'],
+      es: ['FAVORITO DEL PÚBLICO', 'REQUIERE 3 INTENTOS'],
+      pt: ['FAVORITO DO PÚBLICO', 'PRECISA DE 3 TENTATIVAS']
+    } as const
+
+    for (const language of LANGUAGES) {
+      updateClientSettings({ language })
+      const text = collectStaticText(uiComponent())
+      expect(text, language).toEqual(expect.arrayContaining([...expected[language]]))
+    }
+  })
+
   it('renders the exact localized hint for every core state and no hint on other screens', () => {
     const cases = [
       { name: 'foyer far', region: 'outside', state: foyerState(), key: 'hint.foyerFar' },

@@ -42,8 +42,8 @@ strength with one person in the room. When two or more are present it becomes a 
 | 45–60 s | Tap an answer. Audience reacts (clap / shrug). Reveal: Maya's phrase, "7 of 11 got it", your decoder score. **Next ghost** / **Make your own**. | Maya will see your guess on her return. |
 | 1–2 min | Two or three more charades (each 20–30 s). | Every one is a different real person. |
 | 2–3 min | **Make your own**: dealt a phrase (Shuffle ×2 allowed), pick three emotes from five big buttons in order, **Preview** (your own avatar performs it), **Post**. "Your ghost is on stage for the next stranger." | Your performance persists for others. |
-| 3–4 min | **Invite** copies a general World link. Leaderboard: top decoders today, hardest ghosts. | Reason to share. |
-| next visit | "Since you left: 4 people tried to decode you — 1 got it." | Reason to return. |
+| 3–4 min | **Invite** copies a general World link. Leaderboard: top decoders today, Crowd Pleaser. | Reason to share. |
+| next visit | "1 OF 4 UNDERSTOOD YOUR GHOST." | Reason to return. |
 
 **With 2+ present:** everyone in the house sees the same charade as a *round*; the first correct guess
 wins the round and gets "author next"; reaction buttons (laugh / confused / genius) trigger emotes on the
@@ -58,7 +58,7 @@ pressing player's avatar, visible to all.
 | Mobile UX and Accessibility | `screenInset: 'interactable'` on mobile, bottom-right corner always empty, three answer buttons ≥ 96 px tall, one sentence of copy per screen, no typing anywhere, guests can play. |
 | Performance and Optimization | ≤ 8 avatar clones in view (1 performer + 6 audience + 1 preview), all within 10 m of the camera; staggered spawns; primitives + ≤ 10 catalog props; no particles, no dynamic lights. |
 | Creativity and Originality | Asynchronous charades performed by real players' ghosts — nothing like it among DCL's six official mobile sample scenes. |
-| Retention and Discovery Value | "Who decoded me" on return, daily decks, decoder/hardest-ghost boards, in-scene invite link, auto-listed on Places. |
+| Retention and Discovery Value | "Who understood me" on return, daily decks, decoder/Crowd Pleaser boards, in-scene invite link, auto-listed on Places. |
 | Overall Execution | One loop, finished and stable; a blind five-minute phone audit on 30 Aug with repair aimed at the lowest-scoring criterion; 48-hour internal lock. |
 
 ## 5. Architecture

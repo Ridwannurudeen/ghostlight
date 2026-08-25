@@ -421,15 +421,17 @@ describe('state mutations', () => {
     expect(state.recentVisitors.some((visitor) => visitor.address === 'address-0')).toBe(false)
   })
 
-  it('computes decoder standings and hardest ghosts without counting house or old charades', () => {
+  it('ranks eligible Crowd Pleasers by distance from a 60% solve rate, then audience size', () => {
     const { state } = setup()
-    state.upsertCharade(makeCharade('hard-four', { guesses: { total: 4, correct: 0 } }))
-    state.upsertCharade(makeCharade('hard-two', { guesses: { total: 2, correct: 0 } }))
-    state.upsertCharade(makeCharade('medium', { guesses: { total: 4, correct: 1 } }))
+    state.upsertCharade(makeCharade('exact-small', { guesses: { total: 5, correct: 3 } }))
+    state.upsertCharade(makeCharade('exact-large', { guesses: { total: 10, correct: 6 } }))
+    state.upsertCharade(makeCharade('near', { guesses: { total: 3, correct: 2 } }))
+    state.upsertCharade(makeCharade('far', { guesses: { total: 4, correct: 1 } }))
+    state.upsertCharade(makeCharade('under-threshold', { guesses: { total: 2, correct: 1 } }))
     state.upsertCharade(
       makeCharade('yesterday', {
         createdAt: FIXED_NOW - 24 * 60 * 60 * 1000,
-        guesses: { total: 10, correct: 0 }
+        guesses: { total: 10, correct: 6 }
       })
     )
     HOUSE_CHARADES.forEach((charade) => state.upsertCharade(charade))
@@ -441,8 +443,30 @@ describe('state mutations', () => {
       { address: 'alice', name: 'Alice', correct: 1, total: 2 },
       { address: 'bob', name: 'Bob', correct: 1, total: 1 }
     ])
-    expect(state.boards.hardest.map((row) => row.charadeId)).toEqual(['hard-four', 'hard-two', 'medium'])
+    expect(state.boards.hardest.map((row) => row.charadeId)).toEqual(['exact-large', 'exact-small', 'near', 'far'])
     expect(state.getPool().some((charade) => charade.isHouse)).toBe(false)
+  })
+
+  it('breaks mathematically equal solve-rate distances by the larger audience exactly', () => {
+    const { state } = setup()
+    state.upsertCharade(makeCharade('forty-percent', { guesses: { total: 5, correct: 2 } }))
+    state.upsertCharade(makeCharade('eighty-percent', { guesses: { total: 10, correct: 8 } }))
+
+    expect(state.boards.hardest.map((row) => row.charadeId)).toEqual(['eighty-percent', 'forty-percent'])
+  })
+
+  it('has no Crowd Pleaser or Ghost of the Night before a performance receives three guesses', async () => {
+    const { state } = setup()
+    state.upsertCharade(makeCharade('not-ready', { guesses: { total: 2, correct: 1 } }))
+    state.upsertCharade(
+      makeCharade('guest-ready', { author: { isGuest: true }, guesses: { total: 3, correct: 2 } })
+    )
+    state.upsertCharade(
+      makeCharade('private-ready', { recipient: `0x${'a'.repeat(40)}`, guesses: { total: 5, correct: 3 } })
+    )
+
+    expect(state.boards.hardest).toEqual([])
+    await expect(state.getGhostOfNight()).resolves.toBeNull()
   })
 
   it('resets decoder standings when the UTC day changes', () => {
@@ -543,7 +567,7 @@ describe('state mutations', () => {
       () => FIXED_NOW
     )
     state.upsertCharade(makeCharade('guest-show', { author: { isGuest: true }, guesses: { total: 5, correct: 0 } }))
-    state.upsertCharade(makeCharade('wallet-show', { guesses: { total: 2, correct: 1 } }))
+    state.upsertCharade(makeCharade('wallet-show', { guesses: { total: 3, correct: 2 } }))
     for (let index = 0; index < MAX_DAILY_DECODERS + 5; index += 1) {
       state.recordDecoder(`decoder-${index}`, `Decoder ${index}`, index % 2 === 0)
     }
@@ -587,7 +611,7 @@ describe('state mutations', () => {
     expect(secondState.boards.decoders.some((row) => row.address === 'guest-session')).toBe(false)
   })
 
-  it('builds the playbill from the latest six real performances and selects the hardest ghost of the night', async () => {
+  it('builds the playbill from the latest six real performances and selects its Crowd Pleaser as Ghost of the Night', async () => {
     const { state } = setup()
     for (let index = 0; index < 7; index += 1) {
       state.upsertCharade(
@@ -616,7 +640,7 @@ describe('state mutations', () => {
     ])
     expect(playbill[0].title).toBe('Understudy')
     expect(playbill.some((performer) => performer.name === 'House')).toBe(false)
-    expect(ghost).toMatchObject({ charade: { id: 'show-0', isHouse: false }, title: '' })
+    expect(ghost).toMatchObject({ charade: { id: 'show-2', isHouse: false }, title: '' })
   })
 
   it('keeps mailed charades private while retaining bounded recipient delivery state', async () => {
@@ -626,7 +650,7 @@ describe('state mutations', () => {
     const publicCharade = makeCharade('public', {
       author: { address: recipient, name: 'Recipient' },
       createdAt: FIXED_NOW - 1,
-      guesses: { total: 2, correct: 0 }
+      guesses: { total: 3, correct: 2 }
     })
     const mailed = makeCharade('private-mail', {
       author: { address: sender, name: 'Sender' },

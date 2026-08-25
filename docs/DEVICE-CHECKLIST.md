@@ -163,14 +163,16 @@ one interrupted clip, and the covered-screen result.
 
 Evidence: unlock and stamp recordings, a second-phone prop recording for all three titles, and reconnect clips.
 
-## Playbill portraits and Ghost of the Night
+## Playbill portraits, Crowd Pleaser, and Ghost of the Night
 
 - [ ] Open TODAY'S BOARDS after named and guest accounts have performed. The playbill shows no more than the six
       most recent performers with name, title or NEW GHOST, and a plausible JUST NOW/minutes/hours age.
 - [ ] Named accounts show their own portrait. Guest performers show the designed card placeholder rather than a
       blank, stale, or another player's face.
-- [ ] The hardest eligible real-player ghost appears on the Ghost of the Night pedestal in foyer/boards views with
-      the correct look. House content never occupies the pedestal or boards.
+- [ ] Among real-player performances with at least three guesses, the one closest to a 60% solve rate appears first
+      as Crowd Pleaser and its author appears on the Ghost of the Night pedestal with the correct look. More guesses
+      break an equal-distance tie. With no qualifying performance, the board and pedestal show no winner. House
+      content never occupies the pedestal or boards.
 
 Evidence: one boards screenshot containing a named portrait and guest placeholder, plus a pedestal screenshot.
 

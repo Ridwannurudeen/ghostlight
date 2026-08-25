@@ -2153,7 +2153,7 @@ describe('live protocol', () => {
       mailCharade: 2_542,
       charadeReply: 2_278,
       since: 244,
-      boards: 3_263,
+      boards: 3_049,
       ready: 110,
       inlineCharade: 4_735
     })

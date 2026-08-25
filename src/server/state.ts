@@ -712,7 +712,7 @@ export class GhostlightState {
     const reservedBoards: Boards = {
       decoders: this.boards.decoders,
       hardest:
-        charade.recipient === undefined && !charade.author.isGuest && charade.guesses.total > 0
+        charade.recipient === undefined && !charade.author.isGuest && charade.guesses.total >= 3
           ? [
               ...this.boards.hardest,
               {
@@ -808,12 +808,16 @@ export class GhostlightState {
           !charade.author.isGuest &&
           charade.recipient === undefined &&
           dayKey(charade.createdAt) === today &&
-          charade.guesses.total > 0
+          charade.guesses.total >= 3
       )
       .sort((a, b) => {
-        const aRate = a.guesses.correct / a.guesses.total
-        const bRate = b.guesses.correct / b.guesses.total
-        return aRate - bRate || b.guesses.total - a.guesses.total || a.createdAt - b.createdAt
+        const aDifference = BigInt(a.guesses.correct) * 5n - BigInt(a.guesses.total) * 3n
+        const bDifference = BigInt(b.guesses.correct) * 5n - BigInt(b.guesses.total) * 3n
+        const distanceComparison =
+          (aDifference < 0n ? -aDifference : aDifference) * BigInt(b.guesses.total) -
+          (bDifference < 0n ? -bDifference : bDifference) * BigInt(a.guesses.total)
+        if (distanceComparison !== 0n) return distanceComparison < 0n ? -1 : 1
+        return b.guesses.total - a.guesses.total || a.createdAt - b.createdAt || a.id.localeCompare(b.id)
       })
       .slice(0, 10)
       .map((charade) => ({

@@ -91,18 +91,21 @@ Players watching an active live round can press Laugh, Gasp, or Applause; a real
 emote and stamp while the server rate-limits the address and relays the reaction only to the other players present.
 Two or more concurrent visitors race on the same charade.
 
-Social activity survives an empty room. Authors return to a “Since you left” report showing attempts, Answer-Back
-replies, and waiting Ghost Mail. Ghost Mail lets a signed-in player target a real recent performer without free
-text; it stays out of the public pool and boards, is delivered only to that recipient, and can receive the
-recipient's Answer-Back. The House fallback is always labelled and never contributes to participation counts.
+Social activity survives an empty room. Authors return to a report showing how many players understood their ghost,
+alongside Answer-Back replies and waiting Ghost Mail. Ghost Mail lets a signed-in player target a real recent
+performer without free text; it stays out of the public pool and boards, is delivered only to that recipient, and can
+receive the recipient's Answer-Back. The House fallback is always labelled and never contributes to participation
+counts.
 
 ### Why players return, replay, share, and invite
 
 Each UTC day brings a new Tonight's Show theme. For a signed-in player, three decodes plus one authored charade
 earns a server-stored daily stamp. Verified participation unlocks Understudy, Scene Stealer, and Ghostlight
-Legend titles with visible top-hat, mask, and trophy props. The playbill shows recent performers, and the day's
-hardest real charade becomes Ghost of the Night. The server persists performances and duets; signed-in player
-scores, stamps, titles, private Ghost Mail, and return reports make each visit a continuation rather than a reset.
+Legend titles with visible top-hat, mask, and trophy props. The playbill shows recent performers. Among performances
+with at least three guesses, Crowd Pleaser ranks the one closest to a 60% solve rate, breaking ties by audience size,
+and its author becomes Ghost of the Night. If none qualifies, there is no winner. The server persists performances
+and duets; signed-in player scores, stamps, titles, private Ghost Mail, and return reports make each visit a
+continuation rather than a reset.
 
 Players can replay a performance before guessing, make their own version after the reveal, or answer back to
 the same phrase. After posting, Copy Invite copies `Join me for Ghostlight:` plus the Decentraland World

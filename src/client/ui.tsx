@@ -312,7 +312,12 @@ function foyerScreen(state: ClientFlowState) {
 function sinceScreen(state: ClientFlowState) {
   const since = state.since
   const sentence = since
-    ? copy('since.summary', { tried: since.triedYou, replies: since.replies, mail: since.mail })
+    ? copy('since.summary', {
+        got: since.gotYou,
+        tried: since.triedYou,
+        replies: since.replies,
+        mail: since.mail
+      })
     : copy('since.ready')
   return screenShell(
     sentence,
@@ -895,7 +900,7 @@ function playbillCard(performer: ClientFlowState['boards']['playbill'][number], 
 
 function boardsScreen(state: ClientFlowState) {
   const decoders = state.boards.topDecoders.slice(0, 3)
-  const hardest = state.boards.hardestGhosts.slice(0, 3)
+  const crowdPleasers = state.boards.hardestGhosts.slice(0, 3)
   const playbill = (state.boards.playbill ?? []).slice(0, 6)
   const alignedNow = Date.now() + state.serverClockOffset
   return screenShell(
@@ -935,17 +940,19 @@ function boardsScreen(state: ClientFlowState) {
         </UiEntity>
         <UiEntity uiTransform={{ width: '49%', flexDirection: 'column' }}>
           <Label
-            value={copy('boards.hardest')}
+            value={copy('boards.crowdPleaser')}
             fontSize={uiFontSize(18)}
             font="monospace"
             color={COLORS.muted}
             uiTransform={{ height: 40 }}
           />
-          {hardest.length > 0 ? (
-            hardest.map((entry, index) => boardRow(index + 1, entry.authorName, `${entry.correct}/${entry.total}`))
+          {crowdPleasers.length > 0 ? (
+            crowdPleasers.map((entry, index) =>
+              boardRow(index + 1, entry.authorName, `${entry.correct}/${entry.total}`)
+            )
           ) : (
             <Label
-              value={copy('boards.noGuesses')}
+              value={copy('boards.noCrowdPleaser')}
               fontSize={uiFontSize(20)}
               color={COLORS.muted}
               uiTransform={{ height: 48 }}

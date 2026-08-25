@@ -195,7 +195,7 @@ describe('audience ghosts', () => {
     for (let index = 0; index < 6; index += 1) system(1 / 3)
     const entityCount = vi.mocked(engine.addEntity).mock.calls.length
 
-    showGhostOfNight(makeLook('hardest', 'Hardest'))
+    showGhostOfNight(makeLook('crowd-pleaser', 'Crowd Pleaser'))
     clearGhostOfNight()
     system(1 / 3)
 

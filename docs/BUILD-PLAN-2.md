@@ -130,7 +130,9 @@ Ghostlight Legend (3 daily stamps + 25 correct). Server computes `title` in `Pla
 carry `title` and `nextUnlock` (additive). Client: title under the player's name on the progress ribbon;
 reward props via `AvatarAttach` (`prop_tophat` Understudy, `prop_mask` Scene Stealer, `prop_trophy`
 Legend) attached with the player's own address, visible to everyone; `unlock.mp3` + card on unlock. Ghost
-of the Night pedestal: the day's hardest-to-decode author's clone (reuse an audience slot if none free).
+of the Night pedestal: the day's Crowd Pleaser author's clone, chosen only after at least three guesses by
+distance from a 60% solve rate and then audience size (reuse an audience slot if none free; show no winner if none
+qualifies).
 Lobby playbill: a UI list of the last 6 performers with portrait (`AvatarTexture`, placeholder for guests),
 name, title, "performed 3h ago". Gate: rewards persist and restore after reconnect (test).
 

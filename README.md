@@ -27,8 +27,8 @@ performances spanning all six themes. House content is excluded from player stat
    a private Ghost Mail to a recent real performer.
 6. Preview and post the ordered three-emote performance, inspect today's boards, or copy a general World invite
    for a friend. The server selects eligible content after arrival; the link does not target one charade.
-7. Return later to see how many people tried your ghosts, whether anyone answered back, and how much Ghost Mail is
-   waiting.
+7. Return later to see how many people understood your ghosts, whether anyone answered back, and how much Ghost Mail
+   is waiting.
 
 With two or more players present, the Multiplayer Server serves a shared live round and accepts one first-correct
 winner. The winner moves directly into the author flow; solo visitors continue through the asynchronous loop.
@@ -45,8 +45,9 @@ before it ages out during a release or judging window.
 
 The current theme drives the foyer marquee and UI accent. For a signed-in player, three real-player decodes plus
 one authored charade on the same UTC day awards one saved daily completion stamp. The playbill shows the six most
-recent player-authored performances, and Ghost of the Night places the day's hardest-to-decode real performer on
-the foyer pedestal.
+recent player-authored performances. Among performances with at least three guesses, Crowd Pleaser ranks the one
+closest to a 60% solve rate, with audience size breaking ties; its author becomes Ghost of the Night on the foyer
+pedestal. If none qualifies, the pedestal has no winner.
 
 ## Titles and reward props
 
