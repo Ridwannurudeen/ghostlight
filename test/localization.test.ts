@@ -92,7 +92,7 @@ const ERROR_CODES = [
 describe('localization copy', () => {
   it('has the same complete, non-empty player-copy key set in every language', () => {
     const expectedKeys = Object.keys(COPY.en).sort()
-    expect(expectedKeys).toHaveLength(194)
+    expect(expectedKeys).toHaveLength(198)
 
     for (const language of LANGUAGES) {
       expect(Object.keys(COPY[language]).sort(), language).toEqual(expectedKeys)
@@ -100,6 +100,54 @@ describe('localization copy', () => {
         expect(value.trim().length, `${language}:${key}`).toBeGreaterThan(0)
       }
     }
+  })
+
+  it('uses exact three-beat authoring copy in every language', () => {
+    expect({
+      en: {
+        setup: COPY.en['beat.setup'],
+        action: COPY.en['beat.action'],
+        punchline: COPY.en['beat.punchline'],
+        more: COPY.en['author.more'],
+        guidance: COPY.en['author.chooseThree']
+      },
+      es: {
+        setup: COPY.es['beat.setup'],
+        action: COPY.es['beat.action'],
+        punchline: COPY.es['beat.punchline'],
+        more: COPY.es['author.more'],
+        guidance: COPY.es['author.chooseThree']
+      },
+      pt: {
+        setup: COPY.pt['beat.setup'],
+        action: COPY.pt['beat.action'],
+        punchline: COPY.pt['beat.punchline'],
+        more: COPY.pt['author.more'],
+        guidance: COPY.pt['author.chooseThree']
+      }
+    }).toEqual({
+      en: {
+        setup: 'SETUP',
+        action: 'ACTION',
+        punchline: 'PUNCHLINE',
+        more: 'MORE',
+        guidance: 'Build the performance one beat at a time.'
+      },
+      es: {
+        setup: 'PREPARACIÓN',
+        action: 'ACCIÓN',
+        punchline: 'REMATE',
+        more: 'MÁS',
+        guidance: 'Crea la actuación, un paso a la vez.'
+      },
+      pt: {
+        setup: 'PREPARAÇÃO',
+        action: 'AÇÃO',
+        punchline: 'DESFECHO',
+        more: 'MAIS',
+        guidance: 'Monte a apresentação, um passo de cada vez.'
+      }
+    })
   })
 
   it('localizes every how-to-play and contextual guidance line outside English', () => {
