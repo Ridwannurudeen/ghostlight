@@ -5,6 +5,7 @@ import {
   clearPerformer,
   clearPreview,
   freezePerformer,
+  getPerformerBeatIndex,
   playPerformerEmote,
   replayPerformer,
   resumePerformer,
@@ -87,16 +88,28 @@ describe('audience ghosts', () => {
     const system = vi.mocked(engine.addSystem).mock.calls[0][0]
     const mutationsBeforeFreeze = vi.mocked(AvatarShape.getMutable).mock.calls.length
 
+    expect(getPerformerBeatIndex()).toBe(0)
+    system(2.5)
+    expect(getPerformerBeatIndex()).toBe(1)
+
     freezePerformer()
     system(10)
-    expect(AvatarShape.getMutable).toHaveBeenCalledTimes(mutationsBeforeFreeze)
-
-    playPerformerEmote('wave')
+    expect(getPerformerBeatIndex()).toBe(1)
     expect(AvatarShape.getMutable).toHaveBeenCalledTimes(mutationsBeforeFreeze + 1)
 
-    resumePerformer()
-    system(10)
+    playPerformerEmote('wave')
+    expect(getPerformerBeatIndex()).toBe(1)
     expect(AvatarShape.getMutable).toHaveBeenCalledTimes(mutationsBeforeFreeze + 2)
+
+    resumePerformer()
+    system(2.5)
+    expect(getPerformerBeatIndex()).toBe(2)
+
+    replayPerformer()
+    expect(getPerformerBeatIndex()).toBe(0)
+
+    clearPerformer()
+    expect(getPerformerBeatIndex()).toBeNull()
   })
 
   it('alternates complete author and reply sequences in the existing performer and preview slots', () => {
@@ -120,15 +133,25 @@ describe('audience ghosts', () => {
       { look: makeLook('0xAuthor'), emotes: ['wave', 'clap', 'dab'] },
       { look: makeLook('0xReply'), emotes: ['shrug', 'kiss', 'headexplode'] }
     )
+    expect(getPerformerBeatIndex()).toBe(0)
     system(2.5)
+    expect(getPerformerBeatIndex()).toBe(1)
+    system(2.5)
+    expect(getPerformerBeatIndex()).toBe(2)
+    system(2.5)
+    expect(getPerformerBeatIndex()).toBe(0)
+    system(2.5)
+    expect(getPerformerBeatIndex()).toBe(1)
 
     freezePerformer()
     const mutationsBeforePause = vi.mocked(AvatarShape.getMutable).mock.calls.length
     system(10)
+    expect(getPerformerBeatIndex()).toBe(1)
     expect(AvatarShape.getMutable).toHaveBeenCalledTimes(mutationsBeforePause)
 
     resumePerformer()
     replayPerformer()
+    expect(getPerformerBeatIndex()).toBe(0)
     system(2.5)
     expect(
       vi
@@ -136,6 +159,9 @@ describe('audience ghosts', () => {
         .mock.calls.slice(-2)
         .map(([entity]) => entity)
     ).toEqual([1, 1])
+
+    clearPerformer()
+    expect(getPerformerBeatIndex()).toBeNull()
   })
 
   it('reserves one audience avatar slot while a two-performer duet is active', () => {

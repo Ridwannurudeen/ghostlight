@@ -11,6 +11,7 @@ import {
 } from './theater'
 
 export type GhostEmotes = readonly [string, string, string]
+export type PerformerBeatIndex = 0 | 1 | 2
 export type AudienceReaction = 'clap' | 'shrug' | 'laugh' | 'confused' | 'genius' | 'gasp' | 'applause'
 
 export type DuetPerformer = {
@@ -23,7 +24,7 @@ type GhostSlot = {
   active: boolean
   address: string
   sequence: GhostEmotes | null
-  emoteIndex: number
+  emoteIndex: PerformerBeatIndex
   elapsed: number
   lamport: number
   frozen: boolean
@@ -37,7 +38,7 @@ type QueuedAudienceGhost = {
 type DuetState = {
   sequences: readonly [GhostEmotes, GhostEmotes]
   performerIndex: 0 | 1
-  emoteIndex: number
+  emoteIndex: PerformerBeatIndex
   elapsed: number
   frozen: boolean
 }
@@ -247,6 +248,12 @@ export function getPerformerEntity() {
   return slots[0].entity
 }
 
+export function getPerformerBeatIndex(): PerformerBeatIndex | null {
+  if (!initialized || !slots[0].active) return null
+  if (duet) return duet.emoteIndex
+  return slots[0].sequence === null ? null : slots[0].emoteIndex
+}
+
 function ghostSystem(dt: number) {
   spawnNextAudienceGhost(dt)
   advanceDuet(dt)
@@ -255,7 +262,7 @@ function ghostSystem(dt: number) {
     slot.elapsed += dt
     if (slot.elapsed < EMOTE_STEP_SECONDS) continue
     slot.elapsed = 0
-    slot.emoteIndex = (slot.emoteIndex + 1) % slot.sequence.length
+    slot.emoteIndex = slot.emoteIndex === 0 ? 1 : slot.emoteIndex === 1 ? 2 : 0
     trigger(slot, slot.sequence[slot.emoteIndex])
   }
 }
@@ -267,7 +274,7 @@ function advanceDuet(dt: number) {
 
   duet.elapsed = 0
   if (duet.emoteIndex < duet.sequences[duet.performerIndex].length - 1) {
-    duet.emoteIndex += 1
+    duet.emoteIndex = duet.emoteIndex === 0 ? 1 : 2
   } else {
     duet.performerIndex = duet.performerIndex === 0 ? 1 : 0
     duet.emoteIndex = 0
