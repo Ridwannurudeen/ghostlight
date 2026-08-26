@@ -27,6 +27,7 @@ vi.mock('../src/client/ghosts', () => ({
   freezePerformer: vi.fn(),
   playPerformerEmote: vi.fn(),
   react: vi.fn(),
+  replayPerformerBeat: vi.fn(),
   resumePerformer: vi.fn()
 }))
 
@@ -38,8 +39,9 @@ vi.mock('../src/client/theater', () => ({
 }))
 
 import { Tween, engine } from '@dcl/sdk/ecs'
+import { playPerformerEmote, react, replayPerformerBeat } from '../src/client/ghosts'
 import { releaseTheaterCamera, switchTheaterCamera } from '../src/client/setup'
-import { curtains } from '../src/client/theater'
+import { curtains, lights } from '../src/client/theater'
 
 const charade: DecodeCharade = {
   id: 'charade-1',
@@ -255,5 +257,114 @@ describe('scene reveal adapter', () => {
       verdictText: 'VOCÊ ACERTOU!',
       unlockedTitle: 'Rouba-cena'
     })
+  })
+
+  it('spotlights only the selected retry beat for 2.5 seconds', () => {
+    const controller = createSceneRevealController({ play: vi.fn(), duck: vi.fn(), restore: vi.fn() })
+    const presentationSystem = vi.mocked(engine.addSystem).mock.calls[0][0]
+
+    controller.retry(2)
+
+    expect(lights.set).toHaveBeenCalledWith('tension')
+    expect(lights.setSpotlightColor).toHaveBeenCalledWith('white')
+    expect(replayPerformerBeat).toHaveBeenCalledWith(2)
+    presentationSystem(2.49)
+    expect(lights.set).not.toHaveBeenCalledWith('house')
+    presentationSystem(0.01)
+    expect(lights.set).toHaveBeenCalledWith('house')
+  })
+
+  it('keeps the retry cue and staged second-miss verdict under reduced motion without avatar motion', () => {
+    updateClientSettings({ reducedMotion: true })
+    const audio = { play: vi.fn(), duck: vi.fn(), restore: vi.fn() }
+    const controller = createSceneRevealController(audio)
+
+    controller.retry(1)
+    expect(replayPerformerBeat).not.toHaveBeenCalled()
+    controller.begin(charade, 0)
+    controller.resolve(
+      {
+        charadeId: charade.id,
+        correct: false,
+        phrase: 'Flying a kite',
+        stats: { correct: 0, total: 1 },
+        yourScore: 0,
+        daily: { day: '2026-08-26', decoded: 1, authored: 0, stamped: false },
+        stampAwarded: false,
+        title: '',
+        nextUnlock: { nextTitle: 'Understudy', requirement: 'Post your first charade', progress: 0 },
+        titleUnlocked: false,
+        spotlight: true,
+        scoreDelta: -100,
+        attempt: 2
+      },
+      charade
+    )
+
+    vi.advanceTimersByTime(800)
+    expect(getRevealViewState()).toMatchObject({
+      answerRevealed: false,
+      verdict: 'miss',
+      verdictText: 'THE GHOST GOT YOU · SPOTLIGHT −100'
+    })
+    expect(audio.play).toHaveBeenCalledWith('laugh')
+    expect(react).not.toHaveBeenCalled()
+    expect(playPerformerEmote).not.toHaveBeenCalled()
+
+    vi.advanceTimersByTime(500)
+    expect(getRevealViewState()).toMatchObject({ answerRevealed: true, phrase: 'Flying a kite' })
+  })
+
+  it.each([
+    { label: 'standard', verdictAt: 2_600, phraseAt: 4_000 },
+    { label: 'ordinary', verdictAt: 1_000, phraseAt: 1_700 },
+    { label: 'reduced motion', verdictAt: 800, phraseAt: 1_300 }
+  ])('cannot advance a $label second miss before the phrase card', ({ label, verdictAt, phraseAt }) => {
+    if (label === 'reduced motion') updateClientSettings({ reducedMotion: true })
+    const controller = createSceneRevealController({ play: vi.fn(), duck: vi.fn(), restore: vi.fn() })
+    if (label === 'ordinary') {
+      controller.begin(charade, 0)
+      controller.resolve(
+        {
+          charadeId: charade.id,
+          correct: true,
+          phrase: 'Flying a kite',
+          stats: { correct: 1, total: 1 },
+          yourScore: 1,
+          daily: { day: '2026-08-26', decoded: 1, authored: 0, stamped: false },
+          stampAwarded: false,
+          title: '',
+          nextUnlock: { nextTitle: 'Understudy', requirement: 'Post your first charade', progress: 0 },
+          titleUnlocked: false
+        },
+        charade
+      )
+      vi.advanceTimersByTime(2_600)
+      controller.cancel()
+    }
+    controller.begin(charade, 0)
+    controller.resolve(
+      {
+        charadeId: charade.id,
+        correct: false,
+        phrase: 'Flying a kite',
+        stats: { correct: 0, total: 1 },
+        yourScore: 0,
+        daily: { day: '2026-08-26', decoded: 1, authored: 0, stamped: false },
+        stampAwarded: false,
+        title: '',
+        nextUnlock: { nextTitle: 'Understudy', requirement: 'Post your first charade', progress: 0 },
+        titleUnlocked: false,
+        attempt: 2
+      },
+      charade
+    )
+
+    vi.advanceTimersByTime(verdictAt)
+    expect(controller.canAdvance()).toBe(false)
+    expect(getRevealViewState()).toMatchObject({ verdict: 'miss', answerRevealed: false })
+    vi.advanceTimersByTime(phraseAt - verdictAt)
+    expect(controller.canAdvance()).toBe(true)
+    expect(getRevealViewState()).toMatchObject({ answerRevealed: true, phrase: 'Flying a kite' })
   })
 })

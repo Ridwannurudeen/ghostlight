@@ -37,6 +37,7 @@ const SOUND_FILES = [
   'drumroll.mp3',
   'gasp.mp3',
   'hit.mp3',
+  'laugh.mp3',
   'miss.mp3',
   'room_tone.mp3',
   'stamp.mp3',
@@ -409,8 +410,9 @@ describe('generated asset budget', () => {
     const composite = JSON.parse(readFileSync(COMPOSITE, 'utf8')) as {
       components: Array<{ name: string; data?: Record<string, { json: Record<string, unknown> }> }>
     }
-    const metadata = composite.components.find((component) => component.name === 'inspector::SceneMetadata')
-      ?.data?.['0'].json as {
+    const metadata = composite.components.find((component) => component.name === 'inspector::SceneMetadata')?.data?.[
+      '0'
+    ].json as {
       email?: string
       layout: { base: { x: number; y: number }; parcels: Array<{ x: number; y: number }> }
       spawnPoints: Array<{

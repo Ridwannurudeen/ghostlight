@@ -8,6 +8,7 @@ import {
   getPerformerBeatIndex,
   playPerformerEmote,
   replayPerformer,
+  replayPerformerBeat,
   resumePerformer,
   setAudience,
   showDuet,
@@ -110,6 +111,19 @@ describe('audience ghosts', () => {
 
     clearPerformer()
     expect(getPerformerBeatIndex()).toBeNull()
+  })
+
+  it('replays one selected solo beat for the existing 2.5-second cadence', () => {
+    showPerformer(makeLook('0xPerformer'), ['wave', 'clap', 'dab'])
+    const system = vi.mocked(engine.addSystem).mock.calls[0][0]
+
+    replayPerformerBeat(2)
+    expect(getPerformerBeatIndex()).toBe(2)
+    system(2.49)
+    expect(getPerformerBeatIndex()).toBe(2)
+    system(0.01)
+    expect(getPerformerBeatIndex()).toBe(0)
+    expect(engine.addEntity).toHaveBeenCalledTimes(8)
   })
 
   it('alternates complete author and reply sequences in the existing performer and preview slots', () => {

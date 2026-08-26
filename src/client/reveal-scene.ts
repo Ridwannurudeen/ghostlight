@@ -1,8 +1,9 @@
 import { Billboard, TextShape, Transform, Tween, engine, type Entity } from '@dcl/sdk/ecs'
 import { Color3, Color4, Vector3 } from '@dcl/sdk/math'
+import { EMOTE_STEP_SECONDS } from '../shared/config'
 import { phraseText, t, titleLabel } from '../shared/i18n'
 import type { DecodeCharade, RevealResult } from './flow'
-import { freezePerformer, playPerformerEmote, react, resumePerformer } from './ghosts'
+import { freezePerformer, playPerformerEmote, react, replayPerformerBeat, resumePerformer } from './ghosts'
 import {
   createRevealController,
   type RevealClock,
@@ -28,6 +29,7 @@ export type RevealViewState = {
   selectedAnswerIndex: number
   answers: readonly string[]
   phrase: string
+  answerRevealed: boolean
   correct: boolean | null
   verdict: 'hit' | 'miss' | null
   verdictText: string
@@ -45,6 +47,7 @@ const EMPTY_REVEAL_VIEW: RevealViewState = {
   selectedAnswerIndex: -1,
   answers: [],
   phrase: '',
+  answerRevealed: false,
   correct: null,
   verdict: null,
   verdictText: '',
@@ -72,6 +75,7 @@ export function createSceneRevealController(audio: RevealAudioPort, clock?: Reve
   let titleProgressTarget = 0
   let titleProgressElapsed = TITLE_PROGRESS_SECONDS
   let reducedMotion = false
+  let retrySecondsRemaining = 0
 
   function ensureFloatingEntity() {
     if (floatingEntity !== null) return floatingEntity
@@ -82,6 +86,11 @@ export function createSceneRevealController(audio: RevealAudioPort, clock?: Reve
   }
 
   function revealPresentationSystem(deltaSeconds: number) {
+    if (retrySecondsRemaining > 0) {
+      retrySecondsRemaining = Math.max(0, retrySecondsRemaining - deltaSeconds)
+      if (retrySecondsRemaining === 0) lights.set('house')
+    }
+
     if (floatingEntity !== null && floatingSecondsRemaining > 0) {
       floatingSecondsRemaining = Math.max(0, floatingSecondsRemaining - deltaSeconds)
       if (floatingSecondsRemaining === 0) {
@@ -145,10 +154,13 @@ export function createSceneRevealController(audio: RevealAudioPort, clock?: Reve
         Tween.setMove(entity, FLOATING_START, FLOATING_END, FLOATING_SECONDS * 1_000)
         floatingSecondsRemaining = FLOATING_SECONDS
       }
-      revealView = { ...revealView, verdict: 'hit', verdictText: text }
+      revealView = { ...revealView, answerRevealed: true, verdict: 'hit', verdictText: text }
+    },
+    showGhostGotYou: (text) => {
+      revealView = { ...revealView, answerRevealed: false, verdict: 'miss', verdictText: text }
     },
     showMissVerdictCard: (text) => {
-      revealView = { ...revealView, verdict: 'miss', verdictText: text }
+      revealView = { ...revealView, answerRevealed: true, verdict: 'miss', verdictText: text }
     },
     reactAudience: (reaction) => {
       if (!reducedMotion) react(reaction)
@@ -182,6 +194,7 @@ export function createSceneRevealController(audio: RevealAudioPort, clock?: Reve
 
   return {
     begin(charade: DecodeCharade, answerIndex: number, runOptions: RevealRunOptions = {}) {
+      retrySecondsRemaining = 0
       reducedMotion = getClientSettings().reducedMotion
       const language = getClientSettings().language
       titleProgressTarget = 0
@@ -209,18 +222,25 @@ export function createSceneRevealController(audio: RevealAudioPort, clock?: Reve
               ? `−${Math.abs(scoreDelta)}`
               : '0'
       const spotlightHitText =
-        reveal.spotlight === true && spotlightDelta
-          ? t('spotlight.won', language, { delta: spotlightDelta })
-          : t('reveal.hit', language)
+        reveal.attempt === 2
+          ? t('reveal.recovered', language)
+          : reveal.spotlight === true && spotlightDelta
+            ? t('spotlight.won', language, { delta: spotlightDelta })
+            : t('reveal.hit', language)
       const spotlightMissText =
-        reveal.spotlight === true && spotlightDelta
+        reveal.attempt !== 2 && reveal.spotlight === true && spotlightDelta
           ? t('spotlight.lost', language, { delta: spotlightDelta })
           : t('reveal.miss', language, { author: authorName.toUpperCase(), phrase: phrase.toUpperCase() })
+      const gotYouText =
+        reveal.spotlight === true && spotlightDelta
+          ? t('reveal.gotYouSpotlight', language)
+          : t('reveal.gotYou', language)
       revealView = {
         ...revealView,
         answers:
           charade.answerIds?.map((id, index) => phraseText(id, language) ?? charade.answers[index]) ?? charade.answers,
         phrase,
+        answerRevealed: false,
         correct: reveal.correct,
         stampAwarded: reveal.stampAwarded
       }
@@ -232,17 +252,33 @@ export function createSceneRevealController(audio: RevealAudioPort, clock?: Reve
         titleProgress: reveal.nextUnlock.progress,
         unlockedTitle: reveal.titleUnlocked ? titleLabel(reveal.title, language) : '',
         stampAwarded: reveal.stampAwarded,
+        attempt: reveal.attempt,
         hitText: spotlightHitText,
-        missText: spotlightMissText
+        missText: spotlightMissText,
+        gotYouText
       })
     },
+    retry(beatIndex: 0 | 1 | 2) {
+      controller.cancel()
+      hideFloatingVerdict()
+      reducedMotion = getClientSettings().reducedMotion
+      retrySecondsRemaining = EMOTE_STEP_SECONDS
+      revealView = { ...EMPTY_REVEAL_VIEW }
+      lights.set('tension')
+      lights.setSpotlightColor('white')
+      if (!reducedMotion) replayPerformerBeat(beatIndex)
+    },
     hasShownVerdict: controller.hasShownVerdict,
+    canAdvance: () => controller.hasShownVerdict() && revealView.answerRevealed,
     skipToEnd: controller.skipToEnd,
     cancel() {
+      const retryActive = retrySecondsRemaining > 0
+      retrySecondsRemaining = 0
       const cancelled = controller.cancel()
+      if (retryActive) lights.set('house')
       hideFloatingVerdict()
       revealView = { ...EMPTY_REVEAL_VIEW }
-      return cancelled
+      return cancelled || retryActive
     },
     getStatus: controller.getStatus
   }

@@ -4,7 +4,7 @@ import { AUTHOR_COOLDOWN_SECONDS, PROTOCOL_VERSION, WIRE_INT_MAX, themeForTimest
 import { DECK, EMOTE_VOCABULARY } from '../shared/deck'
 import { normalizePlayerName } from '../shared/i18n'
 import { Messages, SPECTATOR_REACTION_KINDS, room } from '../shared/messages'
-import { chooseCharadeFor, chooseHouseCharade, pickDecoys, shuffleSeeded } from '../shared/pick'
+import { chooseCharadeFor, chooseHouseCharade, chooseRetryBeat, pickDecoys, shuffleSeeded } from '../shared/pick'
 import type { Charade, Look, PlayerProgress, PlayerStats, ShowSet } from '../shared/types'
 import { SHOW_SET_SIZE, STORAGE_SCHEMA_VERSION } from '../shared/types'
 import { LiveRounds } from './rounds'
@@ -29,6 +29,7 @@ type RevealPayload = {
   daily: ReturnType<GhostlightState['getDaily']>
   revision: number
   stampAwarded: boolean
+  attempt: 1 | 2
   title: PlayerProgress['title']
   nextUnlock: PlayerProgress['nextUnlock']
   titleUnlocked: boolean
@@ -42,6 +43,13 @@ type RevealPayload = {
   setUnderstood: number
   setComplete: boolean
   isFinale: boolean
+}
+
+type RetryPayload = {
+  requestId: string
+  charadeId: string
+  removedAnswerIndex: number
+  replayBeatIndex: number
 }
 
 type PostedPayload = {
@@ -63,6 +71,17 @@ type PreparedCharade = {
   answers: string[]
   answerIds: string[]
   correctIndex: number
+}
+
+type ServedCharade = {
+  prepared: PreparedCharade
+  retry: {
+    requestId: string
+    removedAnswerIndex: number
+    replayBeatIndex: number
+    spotlight: boolean
+    response: RetryPayload
+  } | null
 }
 
 type CachedRequest<T> = {
@@ -234,7 +253,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
   const negotiated = new Set<string>()
   const welcomePromises = new Map<string, Promise<boolean>>()
   const cancelledWelcomePromises = new WeakSet<Promise<boolean>>()
-  const servedAnswers = new Map<string, PreparedCharade>()
+  const servedAnswers = new Map<string, ServedCharade>()
   const activeDecoders = new Set<string>()
   const lastAuthors = new Map<string, string>()
   const lastPosts = new Map<string, number>()
@@ -242,8 +261,8 @@ export function createServerProtocol(options: ServerProtocolOptions) {
   const completedRequests = new Map<
     string,
     CachedRequest<{
-      type: 'reveal' | 'posted'
-      data: RevealPayload | PostedPayload
+      type: 'retry' | 'reveal' | 'posted'
+      data: RetryPayload | RevealPayload | PostedPayload
       durable: boolean
     }>
   >()
@@ -831,29 +850,32 @@ export function createServerProtocol(options: ServerProtocolOptions) {
   }
 
   async function sendCharade(address: string, generation: number, requestId: string, prepared: PreparedCharade) {
-    const { charade } = prepared
     const addressKey = canonicalAddress(address)
+    if (!isCurrentSession(address, generation)) return false
+    const servedKey = `${addressKey}:${prepared.publicId}`
+    for (const answerKey of servedAnswers.keys()) {
+      if (answerKey.startsWith(`${addressKey}:`) && answerKey !== servedKey) servedAnswers.delete(answerKey)
+    }
+    const served = servedAnswers.get(servedKey) ?? { prepared, retry: null }
+    servedAnswers.set(servedKey, served)
+    const presentation = served.prepared
+    const { charade } = presentation
     const cachedAuthorStats = options.state.playerStats.get(canonicalAddress(charade.author.address))
     const authorTitle = charade.isHouse || !cachedAuthorStats ? '' : progressFor(cachedAuthorStats).title
     const showSet = options.state.playerStats.get(addressKey)?.showSet ?? emptyShowSet()
     const setRound = Math.min(showSet.round + 1, SHOW_SET_SIZE)
-    if (!isCurrentSession(address, generation)) return false
-    for (const answerKey of servedAnswers.keys()) {
-      if (answerKey.startsWith(`${addressKey}:`)) servedAnswers.delete(answerKey)
-    }
-    servedAnswers.set(`${addressKey}:${prepared.publicId}`, prepared)
     activeDecoders.add(addressKey)
     lastAuthors.set(addressKey, charade.author.address)
     const authorLook = withoutLastSeen(charade.author)
     await sendTo(address, 'charade', {
       requestId,
-      id: prepared.publicId,
+      id: presentation.publicId,
       authorName: authorLook.name,
       authorAddress: authorLook.address,
       look: authorLook,
       emotes: [...charade.emotes],
-      answers: prepared.answers,
-      answerIds: prepared.answerIds,
+      answers: presentation.answers,
+      answerIds: presentation.answerIds,
       createdAt: charade.createdAt,
       isHouse: charade.isHouse,
       authorTitle,
@@ -900,6 +922,13 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     const key = canonicalAddress(address)
     const selectionKey = `${key}:${data.requestId}`
     let selection = cacheGet(nextRequests, selectionKey)
+    const activeRetry = [...servedAnswers.entries()].find(
+      ([servedKey, served]) => servedKey.startsWith(`${key}:`) && served.retry !== null
+    )?.[1]
+    if (activeRetry && !selection) {
+      await sendError(address, 'invalid-next-charade')
+      return
+    }
     if (!selection) {
       selection = (async () => {
         const look = looks.get(key)
@@ -956,6 +985,10 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     }
     const prepared = await selection
     if (!isCurrentSession(address, generation)) return
+    if (activeRetry && prepared.publicId !== activeRetry.prepared.publicId) {
+      await sendError(address, 'invalid-next-charade')
+      return
+    }
     if (rounds.playerCount === 1 && !rounds.current && prepared.charade.recipient === undefined) {
       activeRoundCharade = prepared
     }
@@ -998,11 +1031,12 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       return
     }
     const servedKey = `${key}:${data.charadeId}`
-    const served = servedAnswers.get(servedKey)
-    if (!served) {
+    const servedState = servedAnswers.get(servedKey)
+    if (!servedState) {
       await sendError(address, 'charade-not-served')
       return
     }
+    const served = servedState.prepared
     const { charade } = served
     const look = looks.get(key)
     const phrase = DECK.find((candidate) => candidate.id === charade.phraseId)
@@ -1015,12 +1049,8 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       !charade.isHouse && charade.recipient === undefined && !(look?.isGuest ?? true) && !charade.author.isGuest
     const notifyAuthor = !charade.isHouse && !(look?.isGuest ?? true) && !charade.author.isGuest
     let stats: Awaited<ReturnType<GhostlightState['getOrCreateStats']>>
-    let authorStats: Awaited<ReturnType<GhostlightState['getOrCreateStats']>> | null
     try {
       stats = await options.state.getOrCreateStats(key, playerName(key), !(look?.isGuest ?? true))
-      authorStats = notifyAuthor
-        ? await options.state.getOrCreateStats(charade.author.address, charade.author.name, true)
-        : null
     } catch (error) {
       if (!(error instanceof StorageUnavailableError)) console.error('[storage] guess prerequisites failed', error)
       if (isCurrentSession(address, generation)) await sendError(address, 'storage-unavailable')
@@ -1031,25 +1061,77 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       await sendError(address, 'already-guessed')
       return
     }
+    const correct = data.answerIndex === served.correctIndex
+    const storedRetry = servedState.retry
+    if (storedRetry?.requestId === data.requestId) {
+      await sendTo(address, 'retry', storedRetry.response)
+      return
+    }
+    if (!storedRetry && !correct) {
+      const replayBeatIndex = chooseRetryBeat(
+        charade.emotes,
+        served.answerIds,
+        data.answerIndex,
+        `${served.publicId}:${served.answerIds.join('|')}:${data.answerIndex}:retry`
+      )
+      const retry: RetryPayload = {
+        requestId: data.requestId,
+        charadeId: data.charadeId,
+        removedAnswerIndex: data.answerIndex,
+        replayBeatIndex
+      }
+      servedState.retry = {
+        requestId: data.requestId,
+        removedAnswerIndex: data.answerIndex,
+        replayBeatIndex,
+        spotlight: data.spotlight === true,
+        response: retry
+      }
+      cacheSet(completedRequests, idempotencyKey, key, { type: 'retry', data: retry, durable: true })
+      if (!isCurrentSession(address, generation)) return
+      await sendTo(address, 'retry', retry)
+      return
+    }
+    if (storedRetry && data.answerIndex === storedRetry.removedAnswerIndex) {
+      await sendError(address, 'invalid-guess')
+      return
+    }
+
+    let authorStats: Awaited<ReturnType<GhostlightState['getOrCreateStats']>> | null
+    try {
+      authorStats = notifyAuthor
+        ? await options.state.getOrCreateStats(charade.author.address, charade.author.name, true)
+        : null
+    } catch (error) {
+      if (!(error instanceof StorageUnavailableError)) console.error('[storage] guess prerequisites failed', error)
+      if (isCurrentSession(address, generation)) await sendError(address, 'storage-unavailable')
+      return
+    }
+    if (!isCurrentSession(address, generation)) return
+
     const previousTitle = progressFor(stats).title
-    const spotlight = data.spotlight === true
+    const attempt = storedRetry ? 2 : 1
+    const recovered = attempt === 2 && correct
+    const spotlight = storedRetry?.spotlight ?? data.spotlight === true
 
     servedAnswers.delete(servedKey)
+    for (const [request, entry] of nextRequests) {
+      if (entry.owner === key) nextRequests.delete(request)
+    }
     activeDecoders.delete(key)
     const roundIsActive = rounds.current?.charadeId === data.charadeId && rounds.isLive && rounds.isParticipant(key)
-    const correct = data.answerIndex === served.correctIndex
     if (roundIsActive) rounds.guess(key, data.charadeId, !charade.isHouse && correct)
 
     let stampAwarded = false
     const showSet = showSetFor(stats)
-    const scoreDelta = correct ? (spotlight ? 200 : 100) : spotlight ? -100 : 0
+    const scoreDelta = recovered ? 50 : correct ? (spotlight ? 200 : 100) : spotlight ? -100 : 0
     showSet.round = Math.min(showSet.round + 1, SHOW_SET_SIZE)
     showSet.score = Math.max(0, Math.min(showSet.score + scoreDelta, SHOW_SET_SIZE * 200))
-    if (correct) {
+    if (correct && !recovered) {
       showSet.streak = Math.min(showSet.streak + 1, SHOW_SET_SIZE)
       showSet.bestStreak = Math.max(showSet.bestStreak, showSet.streak)
       showSet.understood = Math.min(showSet.understood + 1, SHOW_SET_SIZE)
-    } else {
+    } else if (!correct) {
       showSet.streak = 0
     }
     if (!charade.isHouse) {
@@ -1064,8 +1146,8 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       options.state.advanceProgressRevision(stats)
     }
     if (authorStats) {
-      authorStats!.pending.triedYou = Math.min(authorStats!.pending.triedYou + 1, WIRE_INT_MAX)
-      authorStats!.pending.gotYou = Math.min(authorStats!.pending.gotYou + (correct ? 1 : 0), WIRE_INT_MAX)
+      authorStats.pending.triedYou = Math.min(authorStats.pending.triedYou + 1, WIRE_INT_MAX)
+      authorStats.pending.gotYou = Math.min(authorStats.pending.gotYou + (correct ? 1 : 0), WIRE_INT_MAX)
       options.state.saveStats(charade.author.address, true)
     }
     options.state.saveStats(key, !(look?.isGuest ?? true))
@@ -1084,6 +1166,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       daily: { ...options.state.getDaily(stats) },
       revision: stats.revision,
       stampAwarded,
+      attempt,
       ...progress,
       titleUnlocked,
       spotlight,
@@ -1501,16 +1584,19 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     handlePing: (data: PingPayload, address: string) =>
       withRequestAdmission(address, 'ping', data, () => handlePing(data, address)),
     handleNextCharade: (data: NextCharadePayload, address: string) =>
-      withRequestAdmission(address, 'next-charade', data, () => handleNextCharade(data, address)),
+      withRequestAdmission(address, 'next-charade', data, async () => {
+        if (!validWireString(data.requestId)) return handleNextCharade(data, address)
+        return serializeRequest(`${canonicalAddress(address)}:decode`, () => handleNextCharade(data, address))
+      }),
     handleGuess: (data: GuessPayload, address: string) =>
       withRequestAdmission(address, 'guess', data, async () => {
         if (!validWireString(data.requestId)) return handleGuess(data, address)
-        return serializeRequest(`${canonicalAddress(address)}:guess`, () => handleGuess(data, address))
+        return serializeRequest(`${canonicalAddress(address)}:decode`, () => handleGuess(data, address))
       }),
     handleRoundGuess: (data: GuessPayload, address: string) =>
       withRequestAdmission(address, 'guess', data, async () => {
         if (!validWireString(data.requestId)) return handleGuess(data, address)
-        return serializeRequest(`${canonicalAddress(address)}:guess`, () => handleGuess(data, address))
+        return serializeRequest(`${canonicalAddress(address)}:decode`, () => handleGuess(data, address))
       }),
     handlePost: (data: PostPayload, address: string) =>
       withRequestAdmission(address, 'post', data, async () => {
@@ -1522,6 +1608,9 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     resourceCounts: () => ({
       present: present.size,
       sessionGenerations: sessionGenerations.size,
+      servedAnswers: servedAnswers.size,
+      retryStates: [...servedAnswers.values()].filter((served) => served.retry !== null).length,
+      activeDecoders: activeDecoders.size,
       completedRequests: completedRequests.size,
       nextRequests: nextRequests.size,
       outstandingRequests: [...outstandingRequests.values()].reduce((total, count) => total + count, 0),

@@ -66,6 +66,7 @@ const reveal = vi.hoisted(() => ({
   begin: vi.fn(),
   resolve: vi.fn(),
   hasShownVerdict: vi.fn(),
+  canAdvance: vi.fn(),
   skipToEnd: vi.fn(),
   cancel: vi.fn()
 }))
@@ -120,7 +121,7 @@ describe('client presentation integration', () => {
     expect(harness.effects).toMatchObject({
       beginReveal: reveal.begin,
       resolveReveal: reveal.resolve,
-      canAdvanceReveal: reveal.hasShownVerdict,
+      canAdvanceReveal: reveal.canAdvance,
       skipReveal: reveal.skipToEnd,
       cancelReveal: reveal.cancel,
       clearPreview: ghosts.clearPreview,

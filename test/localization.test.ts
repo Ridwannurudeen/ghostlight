@@ -58,6 +58,16 @@ const SHOW_SET_KEYS = [
   'spotlight.lost'
 ] as const
 
+const SECOND_CHANCE_KEYS = [
+  'hint.retry',
+  'decode.secondChance',
+  'spotlight.retryOn',
+  'spotlight.retryOff',
+  'reveal.recovered',
+  'reveal.gotYou',
+  'reveal.gotYouSpotlight'
+] as const
+
 const ERROR_CODES = [
   'already-guessed',
   'charade-not-served',
@@ -92,7 +102,7 @@ const ERROR_CODES = [
 describe('localization copy', () => {
   it('has the same complete, non-empty player-copy key set in every language', () => {
     const expectedKeys = Object.keys(COPY.en).sort()
-    expect(expectedKeys).toHaveLength(198)
+    expect(expectedKeys).toHaveLength(205)
 
     for (const language of LANGUAGES) {
       expect(Object.keys(COPY[language]).sort(), language).toEqual(expectedKeys)
@@ -175,6 +185,45 @@ describe('localization copy', () => {
       expect(COPY.es[key], `es:${key}`).not.toBe(COPY.en[key])
       expect(COPY.pt[key], `pt:${key}`).not.toBe(COPY.en[key])
     }
+  })
+
+  it('uses the exact second-chance and final-miss copy in every language', () => {
+    expect(
+      Object.fromEntries(
+        LANGUAGES.map((language) => [
+          language,
+          Object.fromEntries(SECOND_CHANCE_KEYS.map((key) => [key, COPY[language][key]]))
+        ])
+      )
+    ).toEqual({
+      en: {
+        'hint.retry': 'SECOND CHANCE · Watch the spotlighted beat. Pick one of the two left.',
+        'decode.secondChance': 'SECOND CHANCE',
+        'spotlight.retryOn': 'SPOTLIGHT · −100 ON MISS',
+        'spotlight.retryOff': 'SPOTLIGHT · LOCKED OFF',
+        'reveal.recovered': 'SECOND CHANCE · +50',
+        'reveal.gotYou': 'THE GHOST GOT YOU',
+        'reveal.gotYouSpotlight': 'THE GHOST GOT YOU · SPOTLIGHT −100'
+      },
+      es: {
+        'hint.retry': 'SEGUNDA OPORTUNIDAD · Mira el gesto bajo el foco. Elige una de las dos.',
+        'decode.secondChance': 'SEGUNDA OPORTUNIDAD',
+        'spotlight.retryOn': 'FOCO · −100 SI FALLAS',
+        'spotlight.retryOff': 'FOCO · DESACTIVADO',
+        'reveal.recovered': 'SEGUNDA OPORTUNIDAD · +50',
+        'reveal.gotYou': 'EL FANTASMA TE ATRAPÓ',
+        'reveal.gotYouSpotlight': 'EL FANTASMA TE ATRAPÓ · FOCO −100'
+      },
+      pt: {
+        'hint.retry': 'SEGUNDA CHANCE · Veja o gesto sob o holofote. Escolha uma das duas.',
+        'decode.secondChance': 'SEGUNDA CHANCE',
+        'spotlight.retryOn': 'HOLOFOTE · −100 SE ERRAR',
+        'spotlight.retryOff': 'HOLOFOTE · DESATIVADO',
+        'reveal.recovered': 'SEGUNDA CHANCE · +50',
+        'reveal.gotYou': 'O FANTASMA PEGOU VOCÊ',
+        'reveal.gotYouSpotlight': 'O FANTASMA PEGOU VOCÊ · HOLOFOTE −100'
+      }
+    })
   })
 
   it('localizes themes, titles, requirements, emotes, known errors, and invite interpolation', () => {

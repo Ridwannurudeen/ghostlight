@@ -101,6 +101,14 @@ export type RevealResult = ProgressView & {
   setUnderstood?: number
   setComplete?: boolean
   isFinale?: boolean
+  attempt?: 1 | 2
+}
+
+export type RetryState = {
+  charadeId: string
+  removedAnswerIndex: 0 | 1 | 2
+  replayBeatIndex: 0 | 1 | 2
+  spotlight: boolean
 }
 
 export type SinceSummary = ProgressView & {
@@ -251,6 +259,7 @@ export type ClientFlowState = {
   progressRevision: number
   notices: ProgressNotice[]
   charade: DecodeCharade | null
+  retry: RetryState | null
   reveal: RevealResult | null
   author: AuthorDraft | null
   authorReturnScreen: 'foyer' | 'decode' | 'reveal' | 'mail'
@@ -307,6 +316,8 @@ export type FlowAction =
   | { type: 'pong'; now: number }
   | { type: 'heartbeatTimeout' }
   | { type: 'charade'; charade: DecodeCharade }
+  | { type: 'retry'; retry: RetryState }
+  | { type: 'abandonRetry' }
   | { type: 'charadeReply'; charadeId: string; reply: DecodeReply }
   | { type: 'reveal'; reveal: RevealResult }
   | { type: 'author'; draft: AuthorDraft; returnScreen: ClientFlowState['authorReturnScreen'] }
@@ -367,6 +378,7 @@ export function createInitialFlowState(): ClientFlowState {
     progressRevision: -1,
     notices: [],
     charade: null,
+    retry: null,
     reveal: null,
     author: null,
     authorReturnScreen: 'foyer',
@@ -455,6 +467,7 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
         screen,
         resumeScreen: null,
         charade: newInstance ? null : state.charade,
+        retry: newInstance ? null : state.retry,
         reveal: newInstance ? null : state.reveal,
         author: newInstance ? null : state.author,
         authorReturnScreen: newInstance ? 'foyer' : state.authorReturnScreen,
@@ -505,12 +518,39 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
         ...state,
         screen: state.screen === 'since' && !state.sinceShown ? 'since' : 'decode',
         charade: action.charade,
+        retry: null,
         reveal: null,
         reactionMenuOpen: false,
         spotlightEnabled: false,
         errorCode: '',
         pending: state.pending.filter((request) => request.kind !== 'nextCharade')
       }
+    case 'retry':
+      return {
+        ...state,
+        screen: 'decode',
+        retry: action.retry,
+        reveal: null,
+        spotlightEnabled: action.retry.spotlight,
+        errorCode: '',
+        pending: state.pending.filter((request) => request.kind !== 'guess' && request.kind !== 'roundGuess')
+      }
+    case 'abandonRetry': {
+      const abandonRound = state.roundCharadeId === state.retry?.charadeId
+      return {
+        ...state,
+        screen: 'foyer',
+        resumeScreen: null,
+        charade: null,
+        retry: null,
+        reveal: null,
+        spotlightEnabled: false,
+        roundId: abandonRound ? '' : state.roundId,
+        roundCharadeId: abandonRound ? '' : state.roundCharadeId,
+        pending: state.pending.filter((request) => request.kind !== 'guess' && request.kind !== 'roundGuess'),
+        errorCode: ''
+      }
+    }
     case 'charadeReply':
       return state.charade?.id === action.charadeId
         ? { ...state, charade: { ...state.charade, reply: action.reply } }
@@ -520,6 +560,7 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
       return {
         ...state,
         screen: state.screen === 'author' ? 'author' : 'reveal',
+        retry: null,
         reveal: action.reveal,
         progress: freshProgress
           ? {
@@ -550,11 +591,7 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
     case 'authorPhase':
       return state.author ? { ...state, author: { ...state.author, phase: action.phase } } : state
     case 'authorSelect': {
-      if (
-        !state.author ||
-        !EMOTE_VOCABULARY.includes(action.emote) ||
-        state.author.selectedEmotes.length >= 3
-      ) {
+      if (!state.author || !EMOTE_VOCABULARY.includes(action.emote) || state.author.selectedEmotes.length >= 3) {
         return state
       }
       const selectedEmotes = [...state.author.selectedEmotes, action.emote]
@@ -686,6 +723,7 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
         : state
     case 'toggleSpotlight':
       return state.screen === 'decode' &&
+        !state.retry &&
         !state.pending.some((request) => request.kind === 'guess' || request.kind === 'roundGuess')
         ? { ...state, spotlightEnabled: !state.spotlightEnabled }
         : state
@@ -781,6 +819,15 @@ export type ServerMessage =
       }
     }
   | { type: 'charadeReply'; data: ServerReply }
+  | {
+      type: 'retry'
+      data: {
+        requestId: string
+        charadeId: string
+        removedAnswerIndex: number
+        replayBeatIndex: number
+      }
+    }
   | { type: 'reveal'; data: ServerReveal }
   | { type: 'posted'; data: ServerPosted }
   | {
@@ -799,6 +846,7 @@ export type FlowEffects = {
   showPerformer?: (look: Look, emotes: GhostEmotes) => void
   showDuet?: (author: { look: Look; emotes: GhostEmotes }, reply: DecodeReply) => void
   replayPerformer?: () => void
+  showRetryBeat?: (beatIndex: 0 | 1 | 2) => void
   showPreview?: (look: Look, emotes: GhostEmotes) => void
   clearPreview?: () => void
   clearPerformer?: () => void
@@ -862,6 +910,14 @@ function optionalSafeInt(value: unknown) {
 
 function optionalBoolean(value: unknown) {
   return typeof value === 'boolean' ? value : undefined
+}
+
+function optionalAttempt(value: unknown): 1 | 2 | undefined {
+  return value === 1 || value === 2 ? value : undefined
+}
+
+function isAnswerIndex(value: unknown): value is 0 | 1 | 2 {
+  return Number.isSafeInteger(value) && typeof value === 'number' && value >= 0 && value <= 2
 }
 
 function roundSequence(roundId: string) {
@@ -952,6 +1008,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
   let helloSent = false
   let lastHelloInstance = ''
   let roundMismatchRefetchAttempted = false
+  let retryTransportDropped = false
   const requests = new Map<string, StoredRequest>()
   const pendingReplies = new Map<string, DecodeReply>()
   const listeners = new Set<(nextState: ClientFlowState) => void>()
@@ -959,6 +1016,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
   const createRequestId = options.createRequestId ?? (() => `${Math.floor(now())}-${++requestSequence}`)
 
   function dispatch(action: FlowAction) {
+    if (action.type === 'transport' && !action.ready && state.retry) retryTransportDropped = true
     state = flowReducer(state, action)
     for (const listener of listeners) listener(state)
   }
@@ -1038,6 +1096,8 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         const receivedAt = now()
         recordDiagnosticsServerReady(receivedAt)
         const instanceChanged = state.instanceId !== message.data.instanceId
+        const abandonedRetryCharadeId =
+          state.retry && (instanceChanged || retryTransportDropped) ? state.retry.charadeId : ''
         const theme =
           THEMES.find((candidate) => candidate.id === message.data.theme) ??
           THEMES.find((candidate) => candidate.id === state.theme)!
@@ -1052,6 +1112,11 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           effects.clearPreview?.()
           effects.clearPerformer?.()
           effects.clearStageReward?.()
+        } else if (abandonedRetryCharadeId) {
+          for (const [requestId, stored] of requests) {
+            if (stored.request.kind === 'guess' || stored.request.kind === 'roundGuess') requests.delete(requestId)
+          }
+          cancelReveal()
         }
         dispatch({
           type: 'ready',
@@ -1064,8 +1129,11 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           playerName: profile ? normalizePlayerName(profile.name) : state.playerName,
           playerIsGuest: profile?.isGuest ?? state.playerIsGuest
         })
+        retryTransportDropped = false
+        if (abandonedRetryCharadeId) dispatch({ type: 'abandonRetry' })
         if (instanceChanged || lastHelloInstance !== message.data.instanceId) sendHello(true)
-        requestRoundCharadeIfNeeded()
+        if (abandonedRetryCharadeId) requestNextCharadeExcluding(abandonedRetryCharadeId)
+        else requestRoundCharadeIfNeeded()
         break
       }
       case 'progress': {
@@ -1173,6 +1241,34 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         }
         break
       }
+      case 'retry': {
+        const stored = requests.get(message.data.requestId)
+        if (
+          !stored ||
+          state.retry ||
+          !state.charade ||
+          state.screen !== 'decode' ||
+          (stored.message.type !== 'guess' && stored.message.type !== 'roundGuess') ||
+          stored.message.data.charadeId !== state.charade.id ||
+          message.data.charadeId !== state.charade.id ||
+          !isAnswerIndex(message.data.removedAnswerIndex) ||
+          !isAnswerIndex(message.data.replayBeatIndex) ||
+          stored.message.data.answerIndex !== message.data.removedAnswerIndex
+        ) {
+          break
+        }
+        const retry: RetryState = {
+          charadeId: message.data.charadeId,
+          removedAnswerIndex: message.data.removedAnswerIndex,
+          replayBeatIndex: message.data.replayBeatIndex,
+          spotlight: stored.message.data.spotlight === true
+        }
+        if (!resolveRequest(message.data.requestId, 'guess', 'roundGuess')) break
+        cancelReveal()
+        dispatch({ type: 'retry', retry })
+        effects.showRetryBeat?.(retry.replayBeatIndex)
+        break
+      }
       case 'reveal': {
         const {
           requestId,
@@ -1186,6 +1282,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           setUnderstood: rawSetUnderstood,
           setComplete: rawSetComplete,
           isFinale: rawIsFinale,
+          attempt: rawAttempt,
           ...revealData
         } = message.data
         if (state.charade?.id !== message.data.charadeId || !resolveRequest(requestId, 'guess', 'roundGuess')) {
@@ -1204,6 +1301,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         const setUnderstood = optionalNonNegativeInt(rawSetUnderstood)
         const setComplete = optionalBoolean(rawSetComplete)
         const isFinale = optionalBoolean(rawIsFinale)
+        const attempt = optionalAttempt(rawAttempt)
         const reveal: RevealResult = {
           ...revealData,
           ...revealProgress,
@@ -1220,7 +1318,8 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           ...(setBestStreak !== undefined ? { setBestStreak } : {}),
           ...(setUnderstood !== undefined ? { setUnderstood } : {}),
           ...(setComplete !== undefined ? { setComplete } : {}),
-          ...(isFinale !== undefined ? { isFinale } : {})
+          ...(isFinale !== undefined ? { isFinale } : {}),
+          ...(attempt !== undefined ? { attempt } : {})
         }
         if (state.roundCharadeId === message.data.charadeId) roundMismatchRefetchAttempted = false
         recordDiagnosticsGuess()
@@ -1333,6 +1432,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         break
       case 'error':
         const refetchUnservedCharade = message.data.code === 'charade-not-served' && state.screen === 'decode'
+        const abandonedUnservedRetryId = refetchUnservedCharade ? (state.retry?.charadeId ?? '') : ''
         const resumeDeferredRound =
           state.screen === 'decode' &&
           !!state.roundCharadeId &&
@@ -1347,7 +1447,10 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           lastHelloInstance = ''
           sendHello(true)
         }
-        if (refetchUnservedCharade) requestNextCharade()
+        if (abandonedUnservedRetryId) {
+          dispatch({ type: 'abandonRetry' })
+          requestNextCharadeExcluding(abandonedUnservedRetryId)
+        } else if (refetchUnservedCharade) requestNextCharade()
         else if (resumeDeferredRound) requestRoundCharadeIfNeeded()
         break
     }
@@ -1403,7 +1506,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     if (state.toast && currentTime - state.toast.shownAt >= TOAST_MILLISECONDS) dispatch({ type: 'clearToast' })
   }
 
-  function requestNextCharade() {
+  function requestNextCharadeExcluding(excludedCharadeId = state.charade?.id ?? '') {
     if (
       !state.ready ||
       options.canDecode?.() === false ||
@@ -1418,10 +1521,14 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     const requestId = createRequestId()
     sendRequest(
       'nextCharade',
-      { type: 'nextCharade', data: { requestId, exclude: state.charade ? [state.charade.id] : [] } },
+      { type: 'nextCharade', data: { requestId, exclude: excludedCharadeId ? [excludedCharadeId] : [] } },
       requestId
     )
     return true
+  }
+
+  function requestNextCharade() {
+    return requestNextCharadeExcluding()
   }
 
   function requestRoundCharadeIfNeeded() {
@@ -1431,6 +1538,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
       state.roundCharadeId &&
       state.charade?.id !== state.roundCharadeId &&
       !roundMismatchRefetchAttempted &&
+      !state.retry &&
       !guessPending
     ) {
       requestNextCharade()
@@ -1444,7 +1552,8 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
       state.screen !== 'decode' ||
       options.canDecode?.() === false ||
       answerIndex < 0 ||
-      answerIndex >= state.charade.answers.length
+      answerIndex >= state.charade.answers.length ||
+      state.retry?.removedAnswerIndex === answerIndex
     ) {
       return false
     }
@@ -1460,7 +1569,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           charadeId: state.charade.id,
           answerIndex,
           requestId,
-          ...(state.spotlightEnabled ? { spotlight: true } : {})
+          ...(!state.retry && state.spotlightEnabled ? { spotlight: true } : {})
         }
       },
       requestId
@@ -1484,6 +1593,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     if (
       !state.ready ||
       state.playerIsGuest ||
+      (!preservePendingGuess && state.screen === 'reveal' && effects.canAdvanceReveal?.() === false) ||
       (!preservePendingGuess &&
         state.pending.some((request) => request.kind === 'guess' || request.kind === 'roundGuess'))
     ) {
@@ -1513,7 +1623,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
   }
 
   function beginAnswerBack() {
-    if (!canAnswerBack(state)) return false
+    if (!canAnswerBack(state) || effects.canAdvanceReveal?.() === false) return false
     const charade = state.charade!
     const phrase = DECK.find((candidate) => candidate.id === state.reveal!.phraseId)
     if (!phrase) {
@@ -1608,11 +1718,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
   }
 
   function selectAuthorEmote(emote: Emote) {
-    if (
-      !state.author ||
-      state.author.selectedEmotes.length >= 3 ||
-      !EMOTE_VOCABULARY.includes(emote)
-    ) {
+    if (!state.author || state.author.selectedEmotes.length >= 3 || !EMOTE_VOCABULARY.includes(emote)) {
       return false
     }
     dispatch({ type: 'authorSelect', emote })
@@ -1673,7 +1779,8 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     },
     replay() {
       if (!state.charade || state.screen !== 'decode') return false
-      effects.replayPerformer?.()
+      if (state.retry) effects.showRetryBeat?.(state.retry.replayBeatIndex)
+      else effects.replayPerformer?.()
       return true
     },
     beginAuthoring,
@@ -1739,6 +1846,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
       dispatch({ type: 'show', screen: 'howToPlay' })
     },
     toggleReactionMenu() {
+      if (state.screen === 'reveal' && effects.canAdvanceReveal?.() === false) return
       dispatch({ type: 'toggleReactionMenu' })
     },
     showLocalReaction(kind: ReactionKind) {
@@ -1826,6 +1934,7 @@ export function startClientFlow() {
   room.onMessage('charadeReply', (data) =>
     clientFlow.receive({ type: 'charadeReply', data: data as unknown as ServerReply })
   )
+  room.onMessage('retry', (data) => clientFlow.receive({ type: 'retry', data }))
   room.onMessage('reveal', (data) => clientFlow.receive({ type: 'reveal', data: data as unknown as ServerReveal }))
   room.onMessage('posted', (data) => clientFlow.receive({ type: 'posted', data: data as unknown as ServerPosted }))
   room.onMessage('since', (data) =>

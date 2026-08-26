@@ -23,15 +23,18 @@ describe('sound controller', () => {
     controller.play('tick')
     controller.play('tick')
     controller.play('hit')
+    controller.play('laugh')
 
     expect(entityCount()).toBe(Object.keys(SOUND_CLIPS).length)
     expect(sources.size).toBe(Object.keys(SOUND_CLIPS).length)
     expect(playSource.mock.calls[0][0]).toBe(playSource.mock.calls[1][0])
     expect(playSource.mock.calls[2][0]).not.toBe(playSource.mock.calls[0][0])
+    expect(playSource.mock.calls[3][0]).not.toBe(playSource.mock.calls[2][0])
     expect(playSource.mock.calls.map((call) => call[1])).toEqual([
       'assets/sounds/tick.mp3',
       'assets/sounds/tick.mp3',
-      'assets/sounds/hit.mp3'
+      'assets/sounds/hit.mp3',
+      'assets/sounds/laugh.mp3'
     ])
   })
 

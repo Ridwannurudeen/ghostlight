@@ -11,9 +11,19 @@ const REDUCED_MOTION_REVEAL_OUTCOME_SECONDS = 0.8
 const REDUCED_MOTION_REVEAL_RESET_SECONDS = 2.5
 
 export type RevealLightMood = 'house' | 'tension' | 'hit' | 'miss'
-export type RevealSoundName = 'tick' | 'drumroll' | 'sting' | 'hit' | 'miss' | 'applause' | 'gasp' | 'unlock' | 'stamp'
+export type RevealSoundName =
+  | 'tick'
+  | 'drumroll'
+  | 'sting'
+  | 'hit'
+  | 'miss'
+  | 'applause'
+  | 'gasp'
+  | 'laugh'
+  | 'unlock'
+  | 'stamp'
 export type RevealCamera = 'push-in' | 'stage'
-export type RevealAudienceReaction = 'clap' | 'shrug'
+export type RevealAudienceReaction = 'clap' | 'shrug' | 'laugh'
 export type RevealStatus = 'idle' | 'running' | 'complete'
 export type RevealRunOptions = {
   isFinale?: boolean
@@ -32,8 +42,10 @@ export type RevealOutcome = {
   titleProgress: number
   unlockedTitle: string
   stampAwarded: boolean
+  attempt?: 1 | 2
   hitText?: string
   missText?: string
+  gotYouText?: string
 }
 
 export type RevealEffects = {
@@ -48,9 +60,10 @@ export type RevealEffects = {
   fadeWrongAnswers: () => void
   setSpotlightColor: (color: 'white') => void
   showFloatingVerdict: (text: string) => void
+  showGhostGotYou: (text: string) => void
   showMissVerdictCard: (text: string) => void
   reactAudience: (reaction: RevealAudienceReaction) => void
-  playPerformerEmote: (emote: 'wave') => void
+  playPerformerEmote: (emote: 'wave' | 'fistpump') => void
   showStats: (stats: RevealStats) => void
   animateTitleProgress: (progress: number, unlockedTitle: string) => void
   resetRevealVisuals: () => void
@@ -125,6 +138,13 @@ export const REVEAL_TIMELINE: readonly RevealTimelineEntry[] = [
       }
 
       effects.setLights('miss')
+      if (outcome.attempt === 2) {
+        effects.playSound('laugh')
+        effects.showGhostGotYou(outcome.gotYouText ?? t('reveal.gotYou', 'en'))
+        effects.reactAudience('laugh')
+        effects.playPerformerEmote('fistpump')
+        return
+      }
       effects.playSound('miss')
       effects.showMissVerdictCard(
         outcome.missText ??
@@ -138,6 +158,14 @@ export const REVEAL_TIMELINE: readonly RevealTimelineEntry[] = [
     beat: 'reaction',
     run(effects, outcome) {
       if (!outcome) return
+      if (!outcome.correct && outcome.attempt === 2) {
+        effects.playSound('miss')
+        effects.showMissVerdictCard(
+          outcome.missText ??
+            t('reveal.miss', 'en', { author: outcome.authorName.toUpperCase(), phrase: outcome.phrase.toUpperCase() })
+        )
+        return
+      }
       effects.playPerformerEmote('wave')
       effects.playSound(outcome.correct ? 'applause' : 'gasp')
     }
@@ -202,6 +230,13 @@ export const ORDINARY_REVEAL_TIMELINE: readonly RevealTimelineEntry[] = [
       }
 
       effects.setLights('miss')
+      if (outcome.attempt === 2) {
+        effects.playSound('laugh')
+        effects.showGhostGotYou(outcome.gotYouText ?? t('reveal.gotYou', 'en'))
+        effects.reactAudience('laugh')
+        effects.playPerformerEmote('fistpump')
+        return
+      }
       effects.playSound('miss')
       effects.showMissVerdictCard(
         outcome.missText ??
@@ -214,6 +249,14 @@ export const ORDINARY_REVEAL_TIMELINE: readonly RevealTimelineEntry[] = [
     beat: 'reaction',
     run(effects, outcome) {
       if (!outcome) return
+      if (!outcome.correct && outcome.attempt === 2) {
+        effects.playSound('miss')
+        effects.showMissVerdictCard(
+          outcome.missText ??
+            t('reveal.miss', 'en', { author: outcome.authorName.toUpperCase(), phrase: outcome.phrase.toUpperCase() })
+        )
+        return
+      }
       effects.reactAudience(outcome.correct ? 'clap' : 'shrug')
       effects.playPerformerEmote('wave')
       effects.playSound(outcome.correct ? 'applause' : 'gasp')
@@ -272,6 +315,13 @@ export const REDUCED_MOTION_REVEAL_TIMELINE: readonly RevealTimelineEntry[] = [
       }
 
       effects.setLights('miss')
+      if (outcome.attempt === 2) {
+        effects.playSound('laugh')
+        effects.showGhostGotYou(outcome.gotYouText ?? t('reveal.gotYou', 'en'))
+        effects.reactAudience('laugh')
+        effects.playPerformerEmote('fistpump')
+        return
+      }
       effects.playSound('miss')
       effects.showMissVerdictCard(
         outcome.missText ??
@@ -284,6 +334,14 @@ export const REDUCED_MOTION_REVEAL_TIMELINE: readonly RevealTimelineEntry[] = [
     beat: 'reaction',
     run(effects, outcome) {
       if (!outcome) return
+      if (!outcome.correct && outcome.attempt === 2) {
+        effects.playSound('miss')
+        effects.showMissVerdictCard(
+          outcome.missText ??
+            t('reveal.miss', 'en', { author: outcome.authorName.toUpperCase(), phrase: outcome.phrase.toUpperCase() })
+        )
+        return
+      }
       effects.playSound(outcome.correct ? 'applause' : 'gasp')
     }
   },

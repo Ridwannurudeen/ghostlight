@@ -108,6 +108,12 @@ export const Messages = {
     requestId: Schemas.String,
     spotlight: Schemas.Optional(Schemas.Boolean)
   }),
+  retry: Schemas.Map({
+    requestId: Schemas.String,
+    charadeId: Schemas.String,
+    removedAnswerIndex: Schemas.Int,
+    replayBeatIndex: Schemas.Int
+  }),
   reveal: Schemas.Map({
     requestId: Schemas.String,
     charadeId: Schemas.String,
@@ -122,6 +128,7 @@ export const Messages = {
     daily,
     revision: Schemas.Int,
     stampAwarded: Schemas.Boolean,
+    attempt: Schemas.Optional(Schemas.Int),
     title: Schemas.String,
     nextUnlock,
     titleUnlocked: Schemas.Boolean,

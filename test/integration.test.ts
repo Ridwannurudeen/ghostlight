@@ -2,10 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 const ecsHarness = vi.hoisted(() => ({
   nextEntity: 0,
-  activeAvatars: new Map<
-    number,
-    { id: string; expressionTriggerId?: string; expressionTriggerTimestamp?: number }
-  >(),
+  activeAvatars: new Map<number, { id: string; expressionTriggerId?: string; expressionTriggerTimestamp?: number }>(),
   systems: new Map<string, (deltaSeconds: number) => void>()
 }))
 
@@ -92,20 +89,9 @@ import {
   type OutboundMessage,
   type ServerMessage
 } from '../src/client/flow'
-import {
-  setAudience,
-  showDuet,
-  showGhostOfNight,
-  showPerformer,
-  showPreview
-} from '../src/client/ghosts'
+import { setAudience, showDuet, showGhostOfNight, showPerformer, showPreview } from '../src/client/ghosts'
 import { createOpeningController, type OpeningEffects } from '../src/client/opening'
-import {
-  createRevealController,
-  type RevealClock,
-  type RevealEffects,
-  type RevealOutcome
-} from '../src/client/reveal'
+import { createRevealController, type RevealClock, type RevealEffects, type RevealOutcome } from '../src/client/reveal'
 import { INVITE_URL, MAX_GHOSTS, themeForTimestamp } from '../src/shared/config'
 import { DECK } from '../src/shared/deck'
 import { createServerProtocol, type ProtocolSend } from '../src/server/server'
@@ -251,6 +237,9 @@ class FakeRoom {
       case 'charadeReply':
         runtime.receive({ type, data: data as ServerData<'charadeReply'> })
         break
+      case 'retry':
+        runtime.receive({ type, data: data as ServerData<'retry'> })
+        break
       case 'reveal':
         runtime.receive({ type, data: data as ServerData<'reveal'> })
         break
@@ -300,6 +289,7 @@ function createRevealHarness() {
     fadeWrongAnswers: () => record('answers:fade-wrong'),
     setSpotlightColor: (color) => record(`spotlight:${color}`),
     showFloatingVerdict: (text) => record(`floating:${text}`),
+    showGhostGotYou: (text) => record(`got-you:${text}`),
     showMissVerdictCard: (text) => record(`card:${text}`),
     reactAudience: (reaction) => record(`audience:${reaction}`),
     playPerformerEmote: (emote) => record(`performer:${emote}`),
@@ -355,7 +345,10 @@ describe('full experience integration', () => {
           stats: result.stats,
           titleProgress: result.nextUnlock.progress,
           unlockedTitle: result.titleUnlocked ? result.title : '',
-          stampAwarded: result.stampAwarded
+          stampAwarded: result.stampAwarded,
+          ...(result.attempt !== undefined ? { attempt: result.attempt } : {}),
+          ...(result.correct && result.attempt === 2 ? { hitText: 'SECOND CHANCE · +50' } : {}),
+          ...(!result.correct && result.attempt === 2 ? { gotYouText: 'THE GHOST GOT YOU' } : {})
         }
         reveal.controller.resolve(outcome)
       },
@@ -541,7 +534,10 @@ describe('full experience integration', () => {
             stats: result.stats,
             titleProgress: result.nextUnlock.progress,
             unlockedTitle: result.titleUnlocked ? result.title : '',
-            stampAwarded: result.stampAwarded
+            stampAwarded: result.stampAwarded,
+            ...(result.attempt !== undefined ? { attempt: result.attempt } : {}),
+            ...(result.correct && result.attempt === 2 ? { hitText: 'SECOND CHANCE · +50' } : {}),
+            ...(!result.correct && result.attempt === 2 ? { gotYouText: 'THE GHOST GOT YOU' } : {})
           })
         },
         skipReveal: replierReveal.controller.skipToEnd,
@@ -627,5 +623,187 @@ describe('full experience integration', () => {
     expect(activeAvatarIds).toEqual(
       [playerAddress, replierAddress, 'hardest', ...requestedAudience.slice(0, 4).map((look) => look.address)].sort()
     )
+  })
+
+  it('runs recovery and stages the ghost victory before revealing a second-miss phrase', async () => {
+    const authorAddress = `0x${'a'.repeat(40)}`
+    const recoveryAddress = `0x${'1'.repeat(40)}`
+    const missAddress = `0x${'2'.repeat(40)}`
+    const storage = new FakeStorage()
+    const repository = createStorageRepository(storage)
+    const state = new GhostlightState(repository, () => FIXED_NOW)
+    await state.hydrate()
+    const target = makeCharade('retry-target', {
+      author: { address: authorAddress, name: 'Maya' },
+      phraseId: DECK[0].id
+    })
+    state.upsertCharade(target)
+
+    const room = new FakeRoom()
+    const protocol = createServerProtocol({
+      state,
+      send: room.sendFromServer,
+      snapshotLook: async (address) =>
+        makeLook(
+          address,
+          address.toLowerCase() === recoveryAddress.toLowerCase()
+            ? 'Recovery Decoder'
+            : address.toLowerCase() === missAddress.toLowerCase()
+              ? 'Miss Decoder'
+              : 'Maya'
+        ),
+      flush: repository.flushNow,
+      now: () => FIXED_NOW,
+      instanceId: 'retry-integration-server',
+      lookAttempts: 1,
+      lookRetryMilliseconds: 0,
+      random: () => 0.5
+    })
+    room.connectProtocol(protocol)
+
+    const connectDecoder = async (address: string, name: string) => {
+      const reveal = createRevealHarness()
+      const retryBeats: number[] = []
+      let transportReady = false
+      let requestSequence = 0
+      const runtime = createFlowRuntime({
+        send: room.senderFor(address),
+        now: () => FIXED_NOW,
+        createRequestId: () => `${name.toLowerCase().replaceAll(' ', '-')}-${++requestSequence}`,
+        getProfile: () => ({ address, name, isGuest: false }),
+        getLook: () => makeLook(address, name),
+        isTransportReady: () => transportReady,
+        effects: {
+          showRetryBeat: (beatIndex) => retryBeats.push(beatIndex),
+          beginReveal: (_charade, _answerIndex, options) => reveal.controller.begin(options),
+          resolveReveal: (result, charade) => {
+            reveal.controller.resolve({
+              correct: result.correct,
+              authorName: charade.authorName,
+              phrase: result.phrase,
+              stats: result.stats,
+              titleProgress: result.nextUnlock.progress,
+              unlockedTitle: result.titleUnlocked ? result.title : '',
+              stampAwarded: result.stampAwarded,
+              ...(result.attempt !== undefined ? { attempt: result.attempt } : {}),
+              ...(result.correct && result.attempt === 2 ? { hitText: 'SECOND CHANCE · +50' } : {}),
+              ...(!result.correct && result.attempt === 2 ? { gotYouText: 'THE GHOST GOT YOU' } : {})
+            })
+          },
+          skipReveal: reveal.controller.skipToEnd,
+          cancelReveal: reveal.controller.cancel
+        }
+      })
+      room.connectClient(address, runtime)
+      await protocol.handleEnter(address)
+      transportReady = true
+      runtime.tick(0)
+      await room.pumpClient(address)
+      expect(runtime.getState()).toMatchObject({ ready: true, screen: 'foyer' })
+      expect(runtime.requestNextCharade()).toBe(true)
+      await room.pumpClient(address)
+      expect(runtime.getState()).toMatchObject({ screen: 'decode', charade: { id: target.id } })
+      return { runtime, reveal, retryBeats }
+    }
+
+    const phrase = DECK.find((candidate) => candidate.id === target.phraseId)!
+    const recovery = await connectDecoder(recoveryAddress, 'Recovery Decoder')
+    const recoveryCharade = recovery.runtime.getState().charade!
+    const recoveryCorrectIndex = recoveryCharade.answers.indexOf(phrase.text)
+    const recoveryWrongIndex = recoveryCharade.answers.findIndex((_, index) => index !== recoveryCorrectIndex)
+    const recoveryStatsBefore = structuredClone(state.playerStats.get(recoveryAddress.toLowerCase())!)
+    const guessesBefore = structuredClone(state.getCharade(target.id)!.guesses)
+
+    expect(recovery.runtime.guess(recoveryWrongIndex)).toBe(true)
+    await room.pumpClient(recoveryAddress)
+    expect(recovery.runtime.getState()).toMatchObject({
+      screen: 'decode',
+      retry: { charadeId: target.id, removedAnswerIndex: recoveryWrongIndex },
+      reveal: null
+    })
+    expect(recovery.reveal.controller.getStatus()).toBe('idle')
+    expect(recovery.retryBeats).toEqual([recovery.runtime.getState().retry!.replayBeatIndex])
+    expect(state.playerStats.get(recoveryAddress.toLowerCase())).toEqual(recoveryStatsBefore)
+    expect(state.getCharade(target.id)?.guesses).toEqual(guessesBefore)
+    const retryPayload = room.serverMessages.find(
+      (message) => message.type === 'retry' && message.to?.[0].toLowerCase() === recoveryAddress.toLowerCase()
+    )!.data as Record<string, unknown>
+    expect(Object.keys(retryPayload).sort()).toEqual([
+      'charadeId',
+      'removedAnswerIndex',
+      'replayBeatIndex',
+      'requestId'
+    ])
+    expect(JSON.stringify(retryPayload)).not.toContain(phrase.id)
+    expect(JSON.stringify(retryPayload)).not.toContain(phrase.text)
+
+    expect(recovery.runtime.guess(recoveryCorrectIndex)).toBe(true)
+    await room.pumpClient(recoveryAddress)
+    expect(recovery.runtime.getState()).toMatchObject({
+      screen: 'reveal',
+      retry: null,
+      reveal: { charadeId: target.id, correct: true, attempt: 2, scoreDelta: 50, setScore: 50 }
+    })
+    recovery.reveal.clock.advanceTo(2_600)
+    expect(recovery.reveal.events).toContain('2600:floating:SECOND CHANCE · +50')
+    expect(state.playerStats.get(recoveryAddress.toLowerCase())).toMatchObject({
+      decoded: 1,
+      correct: 1,
+      seen: [target.id],
+      showSet: { round: 1, score: 50, streak: 0, bestStreak: 0, understood: 0 }
+    })
+    expect(state.getCharade(target.id)?.guesses).toEqual({ total: 1, correct: 1 })
+    expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 0, retryStates: 0 })
+    await protocol.handleLeave(recoveryAddress)
+    room.disconnectClient(recoveryAddress)
+
+    const miss = await connectDecoder(missAddress, 'Miss Decoder')
+    const missCharade = miss.runtime.getState().charade!
+    const missCorrectIndex = missCharade.answers.indexOf(phrase.text)
+    const missWrongIndexes = missCharade.answers.map((_, index) => index).filter((index) => index !== missCorrectIndex)
+    expect(miss.runtime.guess(missWrongIndexes[0])).toBe(true)
+    await room.pumpClient(missAddress)
+    expect(miss.runtime.getState()).toMatchObject({
+      screen: 'decode',
+      retry: { charadeId: target.id, removedAnswerIndex: missWrongIndexes[0] },
+      reveal: null
+    })
+    expect(miss.runtime.guess(missWrongIndexes[0])).toBe(false)
+    expect(miss.runtime.guess(missWrongIndexes[1])).toBe(true)
+    await room.pumpClient(missAddress)
+    expect(miss.runtime.getState()).toMatchObject({
+      screen: 'reveal',
+      retry: null,
+      reveal: { charadeId: target.id, correct: false, attempt: 2, scoreDelta: 0, setScore: 0 }
+    })
+
+    miss.reveal.clock.advanceTo(2_600)
+    expect(miss.reveal.events).toContain('2600:sound:laugh')
+    expect(miss.reveal.events).toContain('2600:got-you:THE GHOST GOT YOU')
+    expect(miss.reveal.events).toContain('2600:audience:laugh')
+    expect(miss.reveal.events).toContain('2600:performer:fistpump')
+    expect(miss.reveal.events.some((event) => event.includes('card:'))).toBe(false)
+    miss.reveal.clock.advanceTo(4_000)
+    const gotYouEvent = miss.reveal.events.indexOf('2600:got-you:THE GHOST GOT YOU')
+    const phraseRevealEvent = miss.reveal.events.indexOf(`4000:card:MAYA MEANT: ${phrase.text.toUpperCase()}`)
+    expect(gotYouEvent).toBeGreaterThanOrEqual(0)
+    expect(phraseRevealEvent).toBeGreaterThan(gotYouEvent)
+    expect(state.playerStats.get(missAddress.toLowerCase())).toMatchObject({
+      decoded: 1,
+      correct: 0,
+      seen: [target.id],
+      showSet: { round: 1, score: 0, streak: 0, bestStreak: 0, understood: 0 }
+    })
+    expect(state.getCharade(target.id)?.guesses).toEqual({ total: 2, correct: 1 })
+    expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 0, retryStates: 0 })
+    await protocol.handleLeave(missAddress)
+    room.disconnectClient(missAddress)
+    expect(protocol.resourceCounts()).toMatchObject({
+      present: 0,
+      servedAnswers: 0,
+      retryStates: 0,
+      activeDecoders: 0,
+      completedRequests: 0
+    })
   })
 })

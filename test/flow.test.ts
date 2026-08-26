@@ -73,6 +73,7 @@ function createFlowHarness(
     showPerformer: vi.fn(),
     showDuet: vi.fn(),
     replayPerformer: vi.fn(),
+    showRetryBeat: vi.fn(),
     showPreview: vi.fn(),
     clearPreview: vi.fn(),
     clearPerformer: vi.fn(),
@@ -907,6 +908,31 @@ describe('flow lifecycle', () => {
     expect(messagesOfType(sent, 'nextCharade')).toHaveLength(1)
   })
 
+  it('blocks every player-driven reveal action until the phrase has been disclosed', () => {
+    const { runtime, effects } = createFlowHarness()
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    const charade = makeDecodeCharade()
+    serveCharade(runtime, charade)
+    runtime.dispatch({ type: 'roundStart', roundId: '1', charadeId: charade.id, sequence: 1 })
+    runtime.guess(0)
+    receiveReveal(runtime, {
+      charadeId: charade.id,
+      correct: false,
+      phraseId: DECK[0].id,
+      phrase: DECK[0].text,
+      stats: { total: 1, correct: 0 },
+      yourScore: 0,
+      attempt: 2
+    })
+    effects.canAdvanceReveal.mockReturnValue(false)
+
+    expect(runtime.requestNextCharade()).toBe(false)
+    expect(runtime.beginAuthoring()).toBe(false)
+    expect(runtime.beginAnswerBack()).toBe(false)
+    runtime.toggleReactionMenu()
+    expect(runtime.getState().reactionMenuOpen).toBe(false)
+  })
+
   it('cancels reveal choreography before opening Boards', () => {
     const { runtime, effects } = createFlowHarness()
     runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
@@ -1614,5 +1640,200 @@ describe('author controls and request guards', () => {
     expect(runtime.getState().author?.phase).toBe('confirm')
     expect(runtime.reviseAuthorEmotes()).toBe(true)
     expect(runtime.getState().author).toMatchObject({ selectedEmotes: [], emotePage: 0, phase: 'emotes' })
+  })
+})
+
+describe('second-chance client flow', () => {
+  function enterRetry(
+    harness: ReturnType<typeof createFlowHarness>,
+    removedAnswerIndex: 0 | 1 | 2 = 1,
+    replayBeatIndex: 0 | 1 | 2 = 2
+  ) {
+    const { runtime } = harness
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    serveCharade(runtime, makeDecodeCharade())
+    expect(runtime.guess(removedAnswerIndex)).toBe(true)
+    const requestId = runtime.getState().pending.find((request) => request.kind === 'guess')!.requestId
+    const retryMessage = {
+      type: 'retry' as const,
+      data: { requestId, charadeId: 'charade-1', removedAnswerIndex, replayBeatIndex }
+    }
+    runtime.receive(retryMessage)
+    return retryMessage
+  }
+
+  it('accepts one exact retry, locks the original spotlight stake, and never accepts the removed answer', () => {
+    const harness = createFlowHarness()
+    const { runtime, sent, effects } = harness
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    serveCharade(runtime, makeDecodeCharade())
+    expect(runtime.toggleSpotlight()).toBe(true)
+    expect(runtime.guess(1)).toBe(true)
+    const firstRequestId = runtime.getState().pending.find((request) => request.kind === 'guess')!.requestId
+    const retryMessage = {
+      type: 'retry' as const,
+      data: {
+        requestId: firstRequestId,
+        charadeId: 'charade-1',
+        removedAnswerIndex: 1,
+        replayBeatIndex: 2
+      }
+    }
+
+    runtime.receive(retryMessage)
+    runtime.receive(retryMessage)
+
+    expect(runtime.getState()).toMatchObject({
+      screen: 'decode',
+      retry: {
+        charadeId: 'charade-1',
+        removedAnswerIndex: 1,
+        replayBeatIndex: 2,
+        spotlight: true
+      },
+      reveal: null,
+      spotlightEnabled: true,
+      pending: []
+    })
+    expect(effects.showRetryBeat).toHaveBeenCalledTimes(1)
+    expect(runtime.toggleSpotlight()).toBe(false)
+    expect(runtime.guess(1)).toBe(false)
+    expect(runtime.guess(0)).toBe(true)
+    expect(messagesOfType(sent, 'guess').at(-1)?.data).toEqual({
+      charadeId: 'charade-1',
+      answerIndex: 0,
+      requestId: 'request-3'
+    })
+  })
+
+  it('validates retry fields before resolving the exact pending guess', () => {
+    const { runtime, effects } = createFlowHarness()
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    serveCharade(runtime, makeDecodeCharade())
+    runtime.guess(1)
+    const requestId = runtime.getState().pending.find((request) => request.kind === 'guess')!.requestId
+
+    runtime.receive({
+      type: 'retry',
+      data: { requestId, charadeId: 'charade-1', removedAnswerIndex: 0, replayBeatIndex: 2 }
+    })
+    runtime.receive({
+      type: 'retry',
+      data: { requestId, charadeId: 'charade-1', removedAnswerIndex: 1, replayBeatIndex: 3 }
+    })
+
+    expect(runtime.getState().retry).toBeNull()
+    expect(runtime.getState().pending).toHaveLength(1)
+    expect(effects.showRetryBeat).not.toHaveBeenCalled()
+  })
+
+  it('clears retry on final reveal so a third guess cannot be constructed', () => {
+    const harness = createFlowHarness()
+    const { runtime } = harness
+    enterRetry(harness)
+    expect(runtime.guess(0)).toBe(true)
+    receiveReveal(runtime, {
+      charadeId: 'charade-1',
+      correct: true,
+      phrase: 'Answer one',
+      stats: { total: 1, correct: 1 },
+      yourScore: 50,
+      attempt: 2
+    })
+
+    expect(runtime.getState()).toMatchObject({ screen: 'reveal', retry: null, reveal: { attempt: 2 } })
+    expect(runtime.guess(2)).toBe(false)
+  })
+
+  it('abandons retry after a real same-instance transport drop and excludes that charade from the refetch', () => {
+    const harness = createFlowHarness({ canDecode: () => true })
+    const { runtime, sent, setTransportReady, advance } = harness
+    enterRetry(harness)
+    expect(runtime.guess(0)).toBe(true)
+
+    setTransportReady(false)
+    advance(0)
+    setTransportReady(true)
+    advance(0)
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+
+    expect(runtime.getState()).toMatchObject({ screen: 'foyer', charade: null, retry: null })
+    expect(runtime.getState().pending.some((request) => request.kind === 'guess')).toBe(false)
+    expect(messagesOfType(sent, 'nextCharade').at(-1)?.data.exclude).toEqual(['charade-1'])
+  })
+
+  it('abandons volatile retry state when the server instance changes and fetches a different charade', () => {
+    const harness = createFlowHarness({ canDecode: () => true })
+    const { runtime, sent } = harness
+    enterRetry(harness)
+
+    runtime.receive({ type: 'ready', data: { instanceId: 'restarted-server', serverTime: FIXED_NOW } })
+
+    expect(runtime.getState()).toMatchObject({ screen: 'foyer', charade: null, retry: null })
+    expect(runtime.getState().pending.some((request) => request.kind === 'guess')).toBe(false)
+    expect(messagesOfType(sent, 'nextCharade').at(-1)?.data.exclude).toEqual(['charade-1'])
+  })
+
+  it('clears a disconnected retry outside the decode region without issuing a replacement request', () => {
+    let canDecode = true
+    const harness = createFlowHarness({ canDecode: () => canDecode })
+    const { runtime, sent, setTransportReady, advance } = harness
+    enterRetry(harness)
+    const nextRequestsBefore = messagesOfType(sent, 'nextCharade').length
+    canDecode = false
+
+    setTransportReady(false)
+    advance(0)
+    setTransportReady(true)
+    advance(0)
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+
+    expect(runtime.getState()).toMatchObject({ screen: 'foyer', charade: null, retry: null })
+    expect(messagesOfType(sent, 'nextCharade')).toHaveLength(nextRequestsBefore)
+  })
+
+  it('abandons a retry the server no longer recognizes and excludes the stale charade', () => {
+    const harness = createFlowHarness({ canDecode: () => true })
+    const { runtime, sent } = harness
+    enterRetry(harness)
+    expect(runtime.guess(0)).toBe(true)
+
+    runtime.receive({ type: 'error', data: { code: 'charade-not-served' } })
+
+    expect(runtime.getState()).toMatchObject({ screen: 'foyer', charade: null, retry: null })
+    expect(runtime.getState().pending.some((request) => request.kind === 'guess')).toBe(false)
+    expect(messagesOfType(sent, 'nextCharade').at(-1)?.data.exclude).toEqual(['charade-1'])
+  })
+
+  it('preserves retry across a heartbeat-only timeout and pong', () => {
+    const harness = createFlowHarness()
+    const { runtime } = harness
+    enterRetry(harness, 0, 1)
+
+    runtime.dispatch({ type: 'heartbeatTimeout' })
+    runtime.receive({ type: 'pong', data: { seq: 1 } })
+
+    expect(runtime.getState()).toMatchObject({
+      screen: 'decode',
+      ready: true,
+      retry: { charadeId: 'charade-1', removedAnswerIndex: 0, replayBeatIndex: 1 }
+    })
+  })
+
+  it('finishes the current retry before requesting a newly announced live round', () => {
+    const harness = createFlowHarness()
+    const { runtime, sent } = harness
+    enterRetry(harness)
+    const nextRequestsBefore = messagesOfType(sent, 'nextCharade').length
+
+    runtime.receive({ type: 'roundStart', data: { roundId: '7', charadeId: 'new-live-charade' } })
+
+    expect(runtime.getState()).toMatchObject({
+      screen: 'decode',
+      charade: { id: 'charade-1' },
+      retry: { charadeId: 'charade-1' },
+      roundCharadeId: 'new-live-charade'
+    })
+    expect(messagesOfType(sent, 'nextCharade')).toHaveLength(nextRequestsBefore)
   })
 })

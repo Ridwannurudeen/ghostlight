@@ -11,6 +11,7 @@ const uiTest = vi.hoisted(() => ({
     complete: false,
     selectedAnswerIndex: -1,
     wrongAnswersFaded: false,
+    answerRevealed: false,
     phrase: ''
   },
   state: {} as Record<string, unknown>,
@@ -308,6 +309,7 @@ beforeEach(() => {
     complete: false,
     selectedAnswerIndex: -1,
     wrongAnswersFaded: false,
+    answerRevealed: true,
     phrase: ''
   }
   uiTest.mailRecipients = []
@@ -586,6 +588,34 @@ describe('mobile control budget', () => {
       'GASP',
       'APPLAUSE',
       'BACK TO THE SHOW'
+    ])
+  })
+
+  it('blocks every reveal action until the second-miss phrase is visible', () => {
+    uiTest.canReply = true
+    uiTest.revealPresentation = {
+      verdict: 'miss',
+      verdictText: 'THE GHOST GOT YOU',
+      stats: null,
+      complete: false,
+      selectedAnswerIndex: 0,
+      wrongAnswersFaded: true,
+      answerRevealed: false,
+      phrase: 'One'
+    }
+    uiTest.state = { ...stateFor('reveal'), roundCharadeId: 'charade-1', reactionMenuOpen: true }
+
+    expect(collectButtons(uiComponent())).toEqual([
+      { value: 'NEXT GHOST', disabled: true },
+      { value: 'MAKE YOUR OWN', disabled: true }
+    ])
+
+    uiTest.revealPresentation.answerRevealed = true
+    expect(collectButtons(uiComponent()).map(({ value, disabled }) => ({ value, disabled }))).toEqual([
+      { value: 'LAUGH', disabled: false },
+      { value: 'GASP', disabled: false },
+      { value: 'APPLAUSE', disabled: false },
+      { value: 'BACK TO THE SHOW', disabled: false }
     ])
   })
 
@@ -869,5 +899,40 @@ describe('decode region gates', () => {
 
     uiTest.canReply = false
     expect(collectButtons(uiComponent()).some((button) => button.value === 'ANSWER BACK')).toBe(false)
+  })
+})
+
+describe('second-chance decode controls', () => {
+  it('shows two original-index answers and exactly four 96px controls', () => {
+    updateClientSettings({ language: 'en' })
+    uiTest.region = 'stage'
+    uiTest.state = {
+      ...stateFor('decode'),
+      spotlightEnabled: true,
+      retry: {
+        charadeId: 'charade-1',
+        removedAnswerIndex: 1,
+        replayBeatIndex: 2,
+        spotlight: true
+      },
+      pending: []
+    }
+
+    const component = uiComponent()
+    const buttons = collectButtons(component)
+
+    expect(buttons).toEqual([
+      { value: 'SPOTLIGHT · −100 ON MISS', disabled: true },
+      { value: 'REPLAY', disabled: false },
+      { value: 'ONE', disabled: false },
+      { value: 'THREE', disabled: false }
+    ])
+    for (const button of buttons) {
+      expect(findButton(component, button.value)?.uiTransform).toMatchObject({ minHeight: 96, height: 96 })
+    }
+    expect(findStaticText(component, 'SECOND CHANCE')).not.toBeNull()
+    expect(
+      findStaticText(component, 'SECOND CHANCE · Watch the spotlighted beat. Pick one of the two left.')
+    ).not.toBeNull()
   })
 })

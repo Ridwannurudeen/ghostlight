@@ -82,6 +82,12 @@ type CharadeMessage = {
 }
 
 type ErrorMessage = { code: string }
+type RetryMessage = {
+  requestId: string
+  charadeId: string
+  removedAnswerIndex: number
+  replayBeatIndex: number
+}
 type PostedMessage = { requestId: string; charadeId: string; replyTo?: string; revision: number }
 
 type CharadeReplyMessage = ReturnType<typeof makeReply> & {
@@ -168,6 +174,22 @@ async function serveAndGuess(harness: ProtocolHarness, address: string, charadeI
     },
     address
   )
+}
+
+function servedPhraseId(state: GhostlightState, served: CharadeMessage) {
+  return (
+    state.getCharade(served.id)?.phraseId ??
+    HOUSE_CHARADES.find((charade) => charade.emotes.join(':') === served.emotes.join(':'))?.phraseId
+  )
+}
+
+function correctAnswerIndex(state: GhostlightState, served: CharadeMessage) {
+  return served.answerIds.indexOf(servedPhraseId(state, served)!)
+}
+
+function wrongAnswerIndexes(state: GhostlightState, served: CharadeMessage) {
+  const correctIndex = correctAnswerIndex(state, served)
+  return served.answerIds.map((_answerId, index) => index).filter((index) => index !== correctIndex)
 }
 
 describe('server readiness and welcome', () => {
@@ -641,21 +663,28 @@ describe('charade serving and guesses', () => {
     expect(messagesOfType(sent, 'error')).toEqual([])
   })
 
-  it('bounds completed replay entries and consumes every served answer after one accepted guess', async () => {
+  it('bounds completed replay entries and consumes every served answer after final resolution', async () => {
     let timestamp = FIXED_NOW
-    const { sent, protocol } = await createHarness({ now: () => timestamp })
+    const { state, sent, protocol } = await createHarness({ now: () => timestamp })
     await negotiate(protocol, 'player')
     sent.length = 0
 
     await protocol.handleNextCharade({ requestId: 'first-next', exclude: [] }, 'player')
     const first = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
-    const firstGuess = { requestId: 'oldest-guess', charadeId: first.id, answerIndex: 0 }
+    const firstGuess = {
+      requestId: 'oldest-guess',
+      charadeId: first.id,
+      answerIndex: correctAnswerIndex(state, first)
+    }
     await protocol.handleGuess(firstGuess, 'player')
     for (let index = 0; index < 33; index += 1) {
       timestamp += 1_000
       await protocol.handleNextCharade({ requestId: `next-${index}`, exclude: [] }, 'player')
       const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
-      await protocol.handleGuess({ requestId: `guess-${index}`, charadeId: served.id, answerIndex: 0 }, 'player')
+      await protocol.handleGuess(
+        { requestId: `guess-${index}`, charadeId: served.id, answerIndex: correctAnswerIndex(state, served) },
+        'player'
+      )
     }
     sent.length = 0
 
@@ -680,13 +709,17 @@ describe('charade serving and guesses', () => {
     const admitted = Array.from({ length: 4 }, (_, index) =>
       protocol.handleNextCharade({ requestId: `pending-${index}`, exclude: [] }, 'player')
     )
-    await vi.waitFor(() => expect(messagesOfType(sent, 'charade')).toHaveLength(4))
+    await vi.waitFor(() => expect(protocol.resourceCounts().outstandingRequests).toBe(4))
+    await vi.waitFor(() => expect(messagesOfType(sent, 'charade')).toHaveLength(1))
     await protocol.handleNextCharade({ requestId: 'rejected-fifth', exclude: [] }, 'player')
 
-    expect(messagesOfType(sent, 'charade')).toHaveLength(4)
+    expect(protocol.resourceCounts().outstandingRequests).toBe(4)
+    expect(messagesOfType(sent, 'charade')).toHaveLength(1)
     expect(messagesOfType(sent, 'error')).toEqual([])
     gate.resolve()
     await Promise.all(admitted)
+    expect(messagesOfType(sent, 'charade')).toHaveLength(4)
+    expect(protocol.resourceCounts().outstandingRequests).toBe(0)
   })
 
   it('rate-limits sustained valid request traffic per player', async () => {
@@ -800,6 +833,187 @@ describe('charade serving and guesses', () => {
     expect(sent.every((message) => message.to?.[0] === '0xPlayer')).toBe(true)
   })
 
+  it('records nothing on a first miss and replays the identical answerless retry after cache expiry', async () => {
+    let timestamp = FIXED_NOW
+    const { repository, state, sent, checkpoint, protocol } = await createHarness({ now: () => timestamp })
+    const charade = makeCharade('first-miss-only', { author: { address: 'author', name: 'Author' } })
+    state.upsertCharade(charade)
+    await negotiate(protocol, 'player')
+    await state.getOrCreateStats('author', 'Author')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'player')
+    const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+    const wrongIndex = wrongAnswerIndexes(state, served)[0]
+    const before = {
+      player: JSON.parse(JSON.stringify(state.playerStats.get('player'))),
+      author: JSON.parse(JSON.stringify(state.playerStats.get('author'))),
+      charade: JSON.parse(JSON.stringify(state.getCharade(charade.id))),
+      boards: JSON.parse(JSON.stringify(state.boards)),
+      dirty: repository.getDirtyKeys()
+    }
+    const request = {
+      charadeId: served.id,
+      answerIndex: wrongIndex,
+      requestId: 'first-miss-request',
+      spotlight: true
+    }
+    sent.length = 0
+    checkpoint.mockClear()
+
+    await protocol.handleGuess(request, 'player')
+
+    const retry = dataOf<RetryMessage>(messagesOfType(sent, 'retry')[0])
+    expect(Object.keys(retry).sort()).toEqual(['charadeId', 'removedAnswerIndex', 'replayBeatIndex', 'requestId'])
+    expect(retry).toEqual({
+      requestId: request.requestId,
+      charadeId: served.id,
+      removedAnswerIndex: wrongIndex,
+      replayBeatIndex: expect.any(Number)
+    })
+    expect(retry.replayBeatIndex).toBeGreaterThanOrEqual(0)
+    expect(retry.replayBeatIndex).toBeLessThan(charade.emotes.length)
+    expect(JSON.stringify(retry)).not.toContain(charade.phraseId)
+    expect(JSON.stringify(retry)).not.toContain(DECK.find((phrase) => phrase.id === charade.phraseId)!.text)
+    expect(messagesOfType(sent, 'reveal')).toEqual([])
+    expect(checkpoint).not.toHaveBeenCalled()
+    expect({
+      player: state.playerStats.get('player'),
+      author: state.playerStats.get('author'),
+      charade: state.getCharade(charade.id),
+      boards: state.boards,
+      dirty: repository.getDirtyKeys()
+    }).toEqual(before)
+    expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 1, retryStates: 1, activeDecoders: 1 })
+
+    await protocol.handleGuess(
+      { ...request, answerIndex: correctAnswerIndex(state, served), spotlight: false },
+      'player'
+    )
+    timestamp += 16_000
+    await protocol.handleGuess(
+      { ...request, answerIndex: wrongAnswerIndexes(state, served)[1], spotlight: false },
+      'player'
+    )
+
+    expect(messagesOfType(sent, 'retry').map((message) => message.data)).toEqual([retry, retry, retry])
+    expect(messagesOfType(sent, 'reveal')).toEqual([])
+    expect(checkpoint).not.toHaveBeenCalled()
+  })
+
+  it('records a recovery exactly once, holds streak and understood, and rejects a third request', async () => {
+    const { state, sent, checkpoint, protocol } = await createHarness()
+    const charade = makeCharade('recovery-final', { author: { address: 'author', name: 'Author' } })
+    state.upsertCharade(charade)
+    await negotiate(protocol, 'player')
+    const stats = state.playerStats.get('player')!
+    stats.daily = { day: '2026-08-23', decoded: 2, authored: 1, stamped: false }
+    stats.showSet = { round: 4, score: 600, streak: 2, bestStreak: 3, understood: 1 }
+    state.saveStats('player')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'player')
+    const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+    const wrongIndex = wrongAnswerIndexes(state, served)[0]
+    const first = {
+      charadeId: served.id,
+      answerIndex: wrongIndex,
+      requestId: 'recovery-first',
+      spotlight: true
+    }
+    const final = {
+      charadeId: served.id,
+      answerIndex: correctAnswerIndex(state, served),
+      requestId: 'recovery-final',
+      spotlight: false
+    }
+    sent.length = 0
+    checkpoint.mockClear()
+
+    await protocol.handleGuess(first, 'player')
+    expect(checkpoint).not.toHaveBeenCalled()
+    await protocol.handleGuess(final, 'player')
+    const reveal = messagesOfType(sent, 'reveal').at(-1)!.data
+
+    expect(reveal).toMatchObject({
+      requestId: final.requestId,
+      correct: true,
+      attempt: 2,
+      spotlight: true,
+      scoreDelta: 50,
+      stampAwarded: true,
+      setRound: 5,
+      setScore: 650,
+      setStreak: 2,
+      setBestStreak: 3,
+      setUnderstood: 1,
+      setComplete: true
+    })
+    expect(state.playerStats.get('player')).toMatchObject({
+      decoded: 1,
+      correct: 1,
+      revision: 1,
+      seen: [charade.id],
+      daily: { decoded: 3, authored: 1, stamped: true },
+      showSet: { round: 5, score: 650, streak: 2, bestStreak: 3, understood: 1 }
+    })
+    expect(state.playerStats.get('author')?.pending).toEqual({ triedYou: 1, gotYou: 1, replies: 0, mail: 0 })
+    expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 1, correct: 1 })
+    expect(state.boards.decoders).toEqual([{ address: 'player', name: 'PLAYER', correct: 1, total: 1 }])
+    expect(checkpoint).toHaveBeenCalledOnce()
+    expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 0, retryStates: 0, activeDecoders: 0 })
+
+    await protocol.handleGuess({ ...final, answerIndex: wrongIndex, spotlight: true }, 'player')
+    expect(messagesOfType(sent, 'reveal').at(-1)!.data).toEqual(reveal)
+    expect(checkpoint).toHaveBeenCalledOnce()
+    await protocol.handleGuess({ ...final, requestId: 'third-request' }, 'player')
+    expect(dataOf<ErrorMessage>(messagesOfType(sent, 'error').at(-1)!).code).toBe('charade-not-served')
+    expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 1, correct: 1 })
+  })
+
+  it('records a Spotlight second miss exactly once across every public statistic surface', async () => {
+    const { state, sent, checkpoint, protocol } = await createHarness()
+    const charade = makeCharade('second-miss-final', { author: { address: 'author', name: 'Author' } })
+    state.upsertCharade(charade)
+    await negotiate(protocol, 'player')
+    const stats = state.playerStats.get('player')!
+    stats.showSet = { round: 0, score: 50, streak: 2, bestStreak: 2, understood: 1 }
+    state.saveStats('player')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'player')
+    const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+    const wrong = wrongAnswerIndexes(state, served)
+    sent.length = 0
+    checkpoint.mockClear()
+
+    await protocol.handleGuess(
+      { charadeId: served.id, answerIndex: wrong[0], requestId: 'miss-first', spotlight: true },
+      'player'
+    )
+    await protocol.handleGuess(
+      { charadeId: served.id, answerIndex: wrong[1], requestId: 'miss-final', spotlight: false },
+      'player'
+    )
+    const reveal = messagesOfType(sent, 'reveal').at(-1)!.data
+
+    expect(reveal).toMatchObject({ correct: false, attempt: 2, spotlight: true, scoreDelta: -100, setScore: 0 })
+    expect(state.playerStats.get('player')).toMatchObject({
+      decoded: 1,
+      correct: 0,
+      revision: 1,
+      seen: [charade.id],
+      daily: { decoded: 1 },
+      showSet: { round: 1, score: 0, streak: 0, bestStreak: 2, understood: 1 }
+    })
+    expect(state.playerStats.get('author')?.pending).toEqual({ triedYou: 1, gotYou: 0, replies: 0, mail: 0 })
+    expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 1, correct: 0 })
+    expect(state.boards.decoders).toEqual([{ address: 'player', name: 'PLAYER', correct: 0, total: 1 }])
+    expect(checkpoint).toHaveBeenCalledOnce()
+
+    await protocol.handleGuess(
+      { charadeId: served.id, answerIndex: wrong[1], requestId: 'miss-final', spotlight: true },
+      'player'
+    )
+    expect(messagesOfType(sent, 'reveal').at(-1)!.data).toEqual(reveal)
+    expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 1, correct: 0 })
+    expect(checkpoint).toHaveBeenCalledOnce()
+  })
+
   it('withholds reveal acknowledgement until a failed checkpoint succeeds on retry', async () => {
     let failCheckpoint = false
     const flush = vi.fn(async () => {
@@ -883,10 +1097,18 @@ describe('charade serving and guesses', () => {
     await protocol.handleNextCharade(nextCharadeRequest(), decoder)
     const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
     const phrase = DECK.find((candidate) => candidate.id === charade.phraseId)!
+    await protocol.handleGuess(
+      {
+        charadeId: served.id,
+        answerIndex: wrongAnswerIndexes(state, served)[0],
+        requestId: 'corrupt-author-first'
+      },
+      decoder
+    )
     const guess = {
       charadeId: served.id,
       answerIndex: served.answers.indexOf(phrase.text),
-      requestId: 'corrupt-author-guess'
+      requestId: 'corrupt-author-final'
     }
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     sent.length = 0
@@ -899,6 +1121,7 @@ describe('charade serving and guesses', () => {
     expect(messagesOfType(sent, 'reveal')).toEqual([])
     expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 0, correct: 0 })
     expect(state.playerStats.get(decoder)?.seen).not.toContain(charade.id)
+    expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 1, retryStates: 1, activeDecoders: 1 })
 
     storage.putPlayerJSON(author, PLAYER_STATS_KEY, makeStats({ name: 'Author' }))
     sent.length = 0
@@ -906,6 +1129,7 @@ describe('charade serving and guesses', () => {
     errorSpy.mockRestore()
 
     expect(messagesOfType(sent, 'reveal')).toHaveLength(1)
+    expect(messagesOfType(sent, 'reveal')[0].data).toMatchObject({ correct: true, attempt: 2, scoreDelta: 50 })
     expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 1, correct: 1 })
   })
 
@@ -938,7 +1162,7 @@ describe('charade serving and guesses', () => {
       await protocol.handleGuess(
         {
           charadeId: served.id,
-          answerIndex: 0,
+          answerIndex: correctAnswerIndex(state, served),
           requestId: `house-${attempt}`
         },
         'player'
@@ -960,11 +1184,23 @@ describe('charade serving and guesses', () => {
       const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
       const house = HOUSE_CHARADES.find((candidate) => candidate.emotes.join(':') === served.emotes.join(':'))!
       const correctIndex = served.answerIds.indexOf(house.phraseId)
+      const wrongIndexes = wrongAnswerIndexes(state, served)
       const guess = {
         charadeId: served.id,
-        answerIndex: correct ? correctIndex : (correctIndex + 1) % served.answers.length,
+        answerIndex: correct ? correctIndex : wrongIndexes[1],
         requestId,
         spotlight
+      }
+      if (!correct) {
+        await protocol.handleGuess(
+          {
+            charadeId: served.id,
+            answerIndex: wrongIndexes[0],
+            requestId: `${requestId}-first`,
+            spotlight
+          },
+          'player'
+        )
       }
       await protocol.handleGuess(guess, 'player')
       return {
@@ -1036,6 +1272,76 @@ describe('charade serving and guesses', () => {
     })
   })
 
+  it.each([
+    { label: 'first hit', outcome: 'first', spotlight: false, delta: 100, score: 300, streak: 3, understood: 2 },
+    {
+      label: 'Spotlight first hit',
+      outcome: 'first',
+      spotlight: true,
+      delta: 200,
+      score: 400,
+      streak: 3,
+      understood: 2
+    },
+    { label: 'recovery', outcome: 'recovery', spotlight: false, delta: 50, score: 250, streak: 2, understood: 1 },
+    {
+      label: 'Spotlight recovery',
+      outcome: 'recovery',
+      spotlight: true,
+      delta: 50,
+      score: 250,
+      streak: 2,
+      understood: 1
+    },
+    { label: 'second miss', outcome: 'miss', spotlight: false, delta: 0, score: 200, streak: 0, understood: 1 },
+    {
+      label: 'Spotlight second miss',
+      outcome: 'miss',
+      spotlight: true,
+      delta: -100,
+      score: 100,
+      streak: 0,
+      understood: 1
+    }
+  ])('prices $label exactly', async ({ outcome, spotlight, delta, score, streak, understood }) => {
+    const { state, sent, protocol } = await createHarness()
+    await negotiate(protocol, 'player')
+    const stats = state.playerStats.get('player')!
+    stats.showSet = { round: 0, score: 200, streak: 2, bestStreak: 2, understood: 1 }
+    state.saveStats('player')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'player')
+    const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+    const correctIndex = correctAnswerIndex(state, served)
+    const wrong = wrongAnswerIndexes(state, served)
+    sent.length = 0
+
+    if (outcome !== 'first') {
+      await protocol.handleGuess(
+        { charadeId: served.id, answerIndex: wrong[0], requestId: 'matrix-first', spotlight },
+        'player'
+      )
+    }
+    await protocol.handleGuess(
+      {
+        charadeId: served.id,
+        answerIndex: outcome === 'miss' ? wrong[1] : correctIndex,
+        requestId: 'matrix-final',
+        spotlight: outcome === 'first' ? spotlight : !spotlight
+      },
+      'player'
+    )
+
+    expect(messagesOfType(sent, 'reveal').at(-1)!.data).toMatchObject({
+      correct: outcome !== 'miss',
+      attempt: outcome === 'first' ? 1 : 2,
+      spotlight,
+      scoreDelta: delta,
+      setScore: score,
+      setStreak: streak,
+      setUnderstood: understood
+    })
+  })
+
   it('floors a Spotlight miss at zero and resumes an interrupted set after server sleep', async () => {
     const storage = new FakeStorage()
     const first = await createHarness({}, storage)
@@ -1043,12 +1349,20 @@ describe('charade serving and guesses', () => {
     first.sent.length = 0
     await first.protocol.handleNextCharade(nextCharadeRequest(), 'player')
     const served = dataOf<CharadeMessage>(messagesOfType(first.sent, 'charade').at(-1)!)
-    const house = HOUSE_CHARADES.find((candidate) => candidate.emotes.join(':') === served.emotes.join(':'))!
-    const correctIndex = served.answerIds.indexOf(house.phraseId)
+    const wrongIndexes = wrongAnswerIndexes(first.state, served)
     await first.protocol.handleGuess(
       {
         charadeId: served.id,
-        answerIndex: (correctIndex + 1) % served.answers.length,
+        answerIndex: wrongIndexes[0],
+        requestId: 'spotlight-floor-first',
+        spotlight: true
+      },
+      'player'
+    )
+    await first.protocol.handleGuess(
+      {
+        charadeId: served.id,
+        answerIndex: wrongIndexes[1],
         requestId: 'spotlight-floor',
         spotlight: true
       },
@@ -1075,6 +1389,66 @@ describe('charade serving and guesses', () => {
       setStreak: 0,
       isFinale: false
     })
+  })
+
+  it('forgets an unresolved retry on server restart without recording it and serves a replacement', async () => {
+    const storage = new FakeStorage()
+    const first = await createHarness({}, storage)
+    await negotiate(first.protocol, 'player')
+    first.sent.length = 0
+    first.checkpoint.mockClear()
+    await first.protocol.handleNextCharade(nextCharadeRequest(), 'player')
+    const served = dataOf<CharadeMessage>(messagesOfType(first.sent, 'charade').at(-1)!)
+    const before = structuredClone(first.state.playerStats.get('player'))
+
+    await first.protocol.handleGuess(
+      {
+        charadeId: served.id,
+        answerIndex: wrongAnswerIndexes(first.state, served)[0],
+        requestId: 'sleep-first-miss',
+        spotlight: true
+      },
+      'player'
+    )
+
+    expect(first.checkpoint).not.toHaveBeenCalled()
+    expect(first.state.playerStats.get('player')).toEqual(before)
+    expect(first.protocol.resourceCounts()).toMatchObject({ servedAnswers: 1, retryStates: 1 })
+
+    const second = await createHarness({}, storage)
+    await negotiate(second.protocol, 'player')
+    expect(second.state.playerStats.get('player')).toMatchObject({
+      decoded: before!.decoded,
+      correct: before!.correct,
+      seen: before!.seen
+    })
+    expect(
+      second.state.playerStats.get('player')?.showSet ?? {
+        round: 0,
+        score: 0,
+        streak: 0,
+        bestStreak: 0,
+        understood: 0
+      }
+    ).toEqual(before!.showSet)
+    second.sent.length = 0
+    await second.protocol.handleGuess(
+      {
+        charadeId: served.id,
+        answerIndex: correctAnswerIndex(first.state, served),
+        requestId: 'stale-second-attempt'
+      },
+      'player'
+    )
+    expect(messagesOfType(second.sent, 'error')).toEqual([
+      { type: 'error', data: { code: 'charade-not-served' }, to: ['player'] }
+    ])
+
+    const replacementRequest = nextCharadeRequest([served.id])
+    await second.protocol.handleNextCharade(replacementRequest, 'player')
+    const replacement = dataOf<CharadeMessage>(messagesOfType(second.sent, 'charade').at(-1)!)
+    expect(replacement.requestId).toBe(replacementRequest.requestId)
+    expect(second.protocol.resourceCounts()).toMatchObject({ servedAnswers: 1, retryStates: 0 })
   })
 
   it('skips stored charades with unknown phrases and immediately serves an opaque house fallback', async () => {
@@ -1116,6 +1490,118 @@ describe('charade serving and guesses', () => {
       { type: 'error', data: { code: 'charade-not-served' }, to: ['player'] }
     ])
   })
+
+  it('rejects skipping an unresolved retry and cleans served state on leave and replacement', async () => {
+    const { state, sent, protocol } = await createHarness()
+    const first = makeCharade('retry-cleanup-first', { author: { address: 'author-a' }, createdAt: FIXED_NOW - 2 })
+    const second = makeCharade('retry-cleanup-second', { author: { address: 'author-b' }, createdAt: FIXED_NOW - 1 })
+    state.upsertCharade(first)
+    state.upsertCharade(second)
+    await negotiate(protocol, 'player')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'player')
+    const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+    await protocol.handleGuess(
+      {
+        charadeId: served.id,
+        answerIndex: wrongAnswerIndexes(state, served)[0],
+        requestId: 'cleanup-first-miss'
+      },
+      'player'
+    )
+    expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 1, retryStates: 1, activeDecoders: 1 })
+
+    sent.length = 0
+    await protocol.handleNextCharade(nextCharadeRequest([served.id]), 'player')
+    expect(messagesOfType(sent, 'error')).toEqual([
+      { type: 'error', data: { code: 'invalid-next-charade' }, to: ['player'] }
+    ])
+    expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 1, retryStates: 1, activeDecoders: 1 })
+
+    await protocol.handleLeave('player')
+    expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 0, retryStates: 0, activeDecoders: 0 })
+    await negotiate(protocol, 'player')
+    sent.length = 0
+    await protocol.handleNextCharade(nextCharadeRequest([served.id]), 'player')
+    const replacement = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+    expect(replacement.id).not.toBe(served.id)
+    expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 1, retryStates: 0, activeDecoders: 1 })
+
+    await protocol.handleNextCharade(nextCharadeRequest([replacement.id]), 'player')
+    const afterReplacement = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+    expect(afterReplacement.id).not.toBe(replacement.id)
+    expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 1, retryStates: 0, activeDecoders: 1 })
+    sent.length = 0
+    await protocol.handleGuess(
+      {
+        charadeId: replacement.id,
+        answerIndex: correctAnswerIndex(state, replacement),
+        requestId: 'cleanup-old-final'
+      },
+      'player'
+    )
+    expect(messagesOfType(sent, 'error')).toEqual([
+      { type: 'error', data: { code: 'charade-not-served' }, to: ['player'] }
+    ])
+
+    await protocol.handleLeave('player')
+    expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 0, retryStates: 0, activeDecoders: 0 })
+    expect(state.getCharade(first.id)?.guesses).toEqual({ total: 0, correct: 0 })
+    expect(state.getCharade(second.id)?.guesses).toEqual({ total: 0, correct: 0 })
+  })
+
+  it('preserves retry state across cached serving replay and cannot reopen a resolved house charade', async () => {
+    const { state, sent, protocol } = await createHarness()
+    await negotiate(protocol, 'player')
+    sent.length = 0
+    const next = { requestId: 'cached-house-next', exclude: [] as string[] }
+    await protocol.handleNextCharade(next, 'player')
+    const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+    const wrongIndex = wrongAnswerIndexes(state, served)[0]
+    await protocol.handleGuess(
+      { charadeId: served.id, answerIndex: wrongIndex, requestId: 'cached-house-first' },
+      'player'
+    )
+    const retry = messagesOfType(sent, 'retry').at(-1)!.data
+
+    sent.length = 0
+    await protocol.handleNextCharade({ requestId: 'skip-retry', exclude: [served.id] }, 'player')
+    expect(messagesOfType(sent, 'error')).toEqual([
+      { type: 'error', data: { code: 'invalid-next-charade' }, to: ['player'] }
+    ])
+    expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 1, retryStates: 1 })
+    sent.length = 0
+
+    await protocol.handleNextCharade(next, 'player')
+    const replayed = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+    expect(replayed).toMatchObject({ id: served.id, answers: served.answers, answerIds: served.answerIds })
+    expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 1, retryStates: 1 })
+    sent.length = 0
+    await Promise.all([
+      protocol.handleGuess(
+        {
+          charadeId: served.id,
+          answerIndex: correctAnswerIndex(state, served),
+          requestId: 'cached-house-final'
+        },
+        'player'
+      ),
+      protocol.handleNextCharade(next, 'player')
+    ])
+    expect(messagesOfType(sent, 'reveal').at(-1)!.data).toMatchObject({ correct: true, attempt: 2, scoreDelta: 50 })
+    expect(retry).toMatchObject({ charadeId: served.id, removedAnswerIndex: wrongIndex })
+
+    const fresh = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+    expect(fresh.id).not.toBe(served.id)
+    expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 1, retryStates: 0 })
+    sent.length = 0
+    await protocol.handleGuess(
+      { charadeId: served.id, answerIndex: correctAnswerIndex(state, served), requestId: 'cached-house-third' },
+      'player'
+    )
+    expect(messagesOfType(sent, 'error')).toEqual([
+      { type: 'error', data: { code: 'charade-not-served' }, to: ['player'] }
+    ])
+  })
 })
 
 describe('authoring protocol', () => {
@@ -1132,7 +1618,15 @@ describe('authoring protocol', () => {
     const phrase = DECK.find((candidate) => candidate.id === charade.phraseId)!
     await protocol.handleGuess(
       {
-        requestId: 'guest-guess',
+        requestId: 'guest-first-miss',
+        charadeId: served.id,
+        answerIndex: wrongAnswerIndexes(state, served)[0]
+      },
+      'guest-session'
+    )
+    await protocol.handleGuess(
+      {
+        requestId: 'guest-recovery',
         charadeId: served.id,
         answerIndex: served.answers.indexOf(phrase.text)
       },
@@ -1146,6 +1640,7 @@ describe('authoring protocol', () => {
 
     expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 0, correct: 0 })
     expect(state.playerStats.get('guest-session')).toMatchObject({ decoded: 0, correct: 0, authoredCount: 0 })
+    expect(state.playerStats.get('guest-session')?.showSet).toMatchObject({ round: 1, score: 50 })
     expect(state.playerStats.has('author')).toBe(false)
     expect(state.boards).toEqual({ decoders: [], hardest: [] })
     expect(state.getPool().map((entry) => entry.id)).toEqual([charade.id])
@@ -1790,12 +2285,20 @@ describe('live protocol', () => {
     const bobCharade = dataOf<CharadeMessage>(
       messagesOfType(sent, 'charade').find((message) => message.to?.includes('bob'))!
     )
-    const bobPhraseId = state.getCharade(bobCharade.id)!.phraseId
+    const bobWrong = wrongAnswerIndexes(state, bobCharade)
     await protocol.handleRoundGuess(
       {
         charadeId: bobCharade.id,
-        answerIndex: (bobCharade.answerIds.indexOf(bobPhraseId) + 1) % 3,
-        requestId: 'bob-spectates'
+        answerIndex: bobWrong[0],
+        requestId: 'bob-spectates-first'
+      },
+      'bob'
+    )
+    await protocol.handleRoundGuess(
+      {
+        charadeId: bobCharade.id,
+        answerIndex: bobWrong[1],
+        requestId: 'bob-spectates-final'
       },
       'bob'
     )
@@ -1828,12 +2331,20 @@ describe('live protocol', () => {
     const aliceCharade = dataOf<CharadeMessage>(
       messagesOfType(sent, 'charade').find((message) => message.to?.includes('alice'))!
     )
-    const alicePhraseId = state.getCharade(aliceCharade.id)!.phraseId
+    const aliceWrong = wrongAnswerIndexes(state, aliceCharade)
     await protocol.handleRoundGuess(
       {
         charadeId: aliceCharade.id,
-        answerIndex: (aliceCharade.answerIds.indexOf(alicePhraseId) + 1) % 3,
-        requestId: 'alice-spectates'
+        answerIndex: aliceWrong[0],
+        requestId: 'alice-spectates-first'
+      },
+      'alice'
+    )
+    await protocol.handleRoundGuess(
+      {
+        charadeId: aliceCharade.id,
+        answerIndex: aliceWrong[1],
+        requestId: 'alice-spectates-final'
       },
       'alice'
     )
@@ -1919,6 +2430,76 @@ describe('live protocol', () => {
     expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 1, correct: 1 })
   })
 
+  it('isolates per-player retry state on one shared live charade and preserves it across cached serving replay', async () => {
+    const snapshotLook = async (address: string) => makeLook(address, address === 'alice' ? 'Alice' : 'Bob')
+    const { state, sent, protocol } = await createHarness({ snapshotLook })
+    const charade = makeCharade('isolated-live-retry', { author: { address: 'outside', name: 'Outside' } })
+    state.upsertCharade(charade)
+    await negotiate(protocol, 'alice')
+    await negotiate(protocol, 'bob')
+    sent.length = 0
+    const aliceNext = { requestId: 'alice-shared-next', exclude: [] as string[] }
+    const bobNext = { requestId: 'bob-shared-next', exclude: [] as string[] }
+    await protocol.handleNextCharade(aliceNext, 'alice')
+    await protocol.handleNextCharade(bobNext, 'bob')
+    const aliceServed = dataOf<CharadeMessage>(
+      messagesOfType(sent, 'charade').find((message) => message.to?.[0] === 'alice')!
+    )
+    const bobServed = dataOf<CharadeMessage>(
+      messagesOfType(sent, 'charade').find((message) => message.to?.[0] === 'bob')!
+    )
+    expect(aliceServed.answers).toEqual(bobServed.answers)
+    const aliceWrong = wrongAnswerIndexes(state, aliceServed)[0]
+    sent.length = 0
+
+    await protocol.handleRoundGuess(
+      { charadeId: charade.id, answerIndex: aliceWrong, requestId: 'alice-shared-first', spotlight: true },
+      'alice'
+    )
+    expect(protocol.rounds.current?.guessed).toEqual([])
+    expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 2, retryStates: 1, activeDecoders: 2 })
+    await protocol.handleNextCharade(aliceNext, 'alice')
+    expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 2, retryStates: 1, activeDecoders: 2 })
+
+    await protocol.handleRoundGuess(
+      {
+        charadeId: charade.id,
+        answerIndex: correctAnswerIndex(state, bobServed),
+        requestId: 'bob-shared-first'
+      },
+      'bob'
+    )
+    const bobReveal = dataOf<Record<string, unknown>>(
+      messagesOfType(sent, 'reveal').find((message) => message.to?.[0] === 'bob')!
+    )
+    expect(bobReveal).toMatchObject({ correct: true, attempt: 1, scoreDelta: 100 })
+    expect(protocol.rounds.current?.winner).toEqual({ address: 'bob', name: 'Bob' })
+    expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 1, retryStates: 1, activeDecoders: 1 })
+
+    await protocol.handleRoundGuess(
+      {
+        charadeId: charade.id,
+        answerIndex: correctAnswerIndex(state, aliceServed),
+        requestId: 'alice-shared-final',
+        spotlight: false
+      },
+      'alice'
+    )
+    const aliceReveal = dataOf<Record<string, unknown>>(
+      messagesOfType(sent, 'reveal').find((message) => message.to?.[0] === 'alice')!
+    )
+    expect(aliceReveal).toMatchObject({ correct: true, attempt: 2, spotlight: true, scoreDelta: 50 })
+    expect(messagesOfType(sent, 'roundWinner')).toEqual([
+      {
+        type: 'roundWinner',
+        data: { roundId: '1', charadeId: charade.id, address: 'bob', name: 'Bob' },
+        to: undefined
+      }
+    ])
+    expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 2, correct: 2 })
+    expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 0, retryStates: 0, activeDecoders: 0 })
+  })
+
   it('serves one authoritative live charade and broadcasts only the first correct winner', async () => {
     const snapshotLook = async (address: string) => makeLook(address, address === 'alice' ? 'Alice' : 'Bob')
     const { state, sent, protocol } = await createHarness({ snapshotLook })
@@ -1974,14 +2555,29 @@ describe('live protocol', () => {
       { charadeId: served.id, answerIndex: firstCorrect, requestId: 'alice-first' },
       'alice'
     )
-    await protocol.handleRoundGuess({ charadeId: served.id, answerIndex: 1, requestId: 'bob-first' }, 'bob')
+    const bobWrong = wrongAnswerIndexes(state, served)
+    await protocol.handleRoundGuess(
+      { charadeId: served.id, answerIndex: bobWrong[0], requestId: 'bob-first-miss' },
+      'bob'
+    )
+    await protocol.handleRoundGuess(
+      { charadeId: served.id, answerIndex: bobWrong[1], requestId: 'bob-second-miss' },
+      'bob'
+    )
     await protocol.handleNextCharade(nextCharadeRequest([served.id]), 'alice')
     await protocol.handleNextCharade(nextCharadeRequest([served.id]), 'bob')
     const nextServed = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
     sent.length = 0
 
-    await protocol.handleRoundGuess({ charadeId: nextServed.id, answerIndex: 0, requestId: 'bob-second' }, 'bob')
-    await protocol.handleRoundGuess({ charadeId: nextServed.id, answerIndex: 1, requestId: 'alice-second' }, 'alice')
+    const nextCorrect = correctAnswerIndex(state, nextServed)
+    await protocol.handleRoundGuess(
+      { charadeId: nextServed.id, answerIndex: nextCorrect, requestId: 'bob-second' },
+      'bob'
+    )
+    await protocol.handleRoundGuess(
+      { charadeId: nextServed.id, answerIndex: nextCorrect, requestId: 'alice-second' },
+      'alice'
+    )
 
     expect(nextServed.id).not.toBe(served.id)
     expect(messagesOfType(sent, 'reveal')).toHaveLength(2)
@@ -2001,16 +2597,22 @@ describe('live protocol', () => {
     await protocol.handleNextCharade(nextCharadeRequest(), 'alice')
     await protocol.handleNextCharade(nextCharadeRequest(), 'bob')
     const firstRound = dataOf<CharadeMessage>(messagesOfType(sent, 'charade')[0])
-    const correctIndex = firstRound.answers.indexOf(
-      DECK.find((phrase) => phrase.id === state.getCharade(firstRound.id)!.phraseId)!.text
-    )
-    const wrongIndex = (correctIndex + 1) % firstRound.answers.length
+    const wrongIndexes = wrongAnswerIndexes(state, firstRound)
     await protocol.handleRoundGuess(
-      { charadeId: firstRound.id, answerIndex: wrongIndex, requestId: 'alice-wrong' },
+      { charadeId: firstRound.id, answerIndex: wrongIndexes[0], requestId: 'alice-first-wrong' },
       'alice'
     )
     await protocol.handleRoundGuess(
-      { charadeId: firstRound.id, answerIndex: wrongIndex, requestId: 'bob-wrong' },
+      { charadeId: firstRound.id, answerIndex: wrongIndexes[0], requestId: 'bob-first-wrong' },
+      'bob'
+    )
+    expect(protocol.rounds.isSettled).toBe(false)
+    await protocol.handleRoundGuess(
+      { charadeId: firstRound.id, answerIndex: wrongIndexes[1], requestId: 'alice-second-wrong' },
+      'alice'
+    )
+    await protocol.handleRoundGuess(
+      { charadeId: firstRound.id, answerIndex: wrongIndexes[1], requestId: 'bob-second-wrong' },
       'bob'
     )
     expect(protocol.rounds.isSettled).toBe(true)
@@ -2068,14 +2670,20 @@ describe('live protocol', () => {
     await protocol.handleNextCharade(nextCharadeRequest(), 'alice')
     await protocol.handleNextCharade(nextCharadeRequest(), 'bob')
     const firstRound = dataOf<CharadeMessage>(messagesOfType(sent, 'charade')[0])
-    const correctIndex = firstRound.answers.indexOf(
-      DECK.find((phrase) => phrase.id === state.getCharade(firstRound.id)!.phraseId)!.text
+    const wrongIndexes = wrongAnswerIndexes(state, firstRound)
+    await protocol.handleRoundGuess(
+      {
+        charadeId: firstRound.id,
+        answerIndex: wrongIndexes[0],
+        requestId: 'alice-first-wrong'
+      },
+      'alice'
     )
     await protocol.handleRoundGuess(
       {
         charadeId: firstRound.id,
-        answerIndex: (correctIndex + 1) % firstRound.answers.length,
-        requestId: 'alice-wrong'
+        answerIndex: wrongIndexes[1],
+        requestId: 'alice-second-wrong'
       },
       'alice'
     )
@@ -2116,11 +2724,23 @@ describe('live protocol', () => {
     expect(protocol.rounds.hasPlayer('carol')).toBe(false)
     expect(protocol.rounds.current?.guessed).not.toContain('carol')
 
-    const phrase = DECK.find((candidate) => candidate.id === live.phraseId)!
-    const correctIndex = served.answers.indexOf(phrase.text)
-    const wrongIndex = (correctIndex + 1) % served.answers.length
-    await protocol.handleRoundGuess({ charadeId: live.id, answerIndex: wrongIndex, requestId: 'alice-wrong' }, 'alice')
-    await protocol.handleRoundGuess({ charadeId: live.id, answerIndex: wrongIndex, requestId: 'bob-wrong' }, 'bob')
+    const wrongIndexes = wrongAnswerIndexes(state, served)
+    await protocol.handleRoundGuess(
+      { charadeId: live.id, answerIndex: wrongIndexes[0], requestId: 'alice-first-wrong' },
+      'alice'
+    )
+    await protocol.handleRoundGuess(
+      { charadeId: live.id, answerIndex: wrongIndexes[0], requestId: 'bob-first-wrong' },
+      'bob'
+    )
+    await protocol.handleRoundGuess(
+      { charadeId: live.id, answerIndex: wrongIndexes[1], requestId: 'alice-second-wrong' },
+      'alice'
+    )
+    await protocol.handleRoundGuess(
+      { charadeId: live.id, answerIndex: wrongIndexes[1], requestId: 'bob-second-wrong' },
+      'bob'
+    )
 
     expect(protocol.rounds.isSettled).toBe(true)
   })
@@ -2159,11 +2779,24 @@ describe('live protocol', () => {
     expect(protocol.rounds.current?.guessed).not.toContain('author')
     expect(authorStats.pending.triedYou).toBe(triedYouBefore)
 
-    const phrase = DECK.find((candidate) => candidate.id === live.phraseId)!
-    const wrongIndex = (liveMessage.answers.indexOf(phrase.text) + 1) % liveMessage.answers.length
-    await protocol.handleRoundGuess({ charadeId: live.id, answerIndex: wrongIndex, requestId: 'alice-wrong' }, 'alice')
+    const wrongIndexes = wrongAnswerIndexes(state, liveMessage)
+    await protocol.handleRoundGuess(
+      { charadeId: live.id, answerIndex: wrongIndexes[0], requestId: 'alice-first-wrong' },
+      'alice'
+    )
     expect(protocol.rounds.isSettled).toBe(false)
-    await protocol.handleRoundGuess({ charadeId: live.id, answerIndex: wrongIndex, requestId: 'bob-wrong' }, 'bob')
+    await protocol.handleRoundGuess(
+      { charadeId: live.id, answerIndex: wrongIndexes[0], requestId: 'bob-first-wrong' },
+      'bob'
+    )
+    await protocol.handleRoundGuess(
+      { charadeId: live.id, answerIndex: wrongIndexes[1], requestId: 'alice-second-wrong' },
+      'alice'
+    )
+    await protocol.handleRoundGuess(
+      { charadeId: live.id, answerIndex: wrongIndexes[1], requestId: 'bob-second-wrong' },
+      'bob'
+    )
 
     expect(protocol.rounds.isSettled).toBe(true)
     expect(authorStats.pending.triedYou).toBe(triedYouBefore + 2)
@@ -2250,6 +2883,12 @@ describe('live protocol', () => {
     const since = messagesOfType(sent, 'since').at(-1)!.data
     const boards = messagesOfType(sent, 'boards').at(-1)!.data
     const ready = messagesOfType(sent, 'ready').at(-1)!.data
+    const firstMiss = wrongAnswerIndexes(state, charade)[0]
+    await protocol.handleGuess(
+      { requestId: 'maximal-retry', charadeId: charade.id, answerIndex: firstMiss, spotlight: false },
+      'player'
+    )
+    const retry = dataOf<RetryMessage>(messagesOfType(sent, 'retry').at(-1)!)
     const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).byteLength
     const wireMeasurements = {
       charade: bytes(charade),
@@ -2257,7 +2896,8 @@ describe('live protocol', () => {
       charadeReply: bytes(reply),
       since: bytes(since),
       boards: bytes(boards),
-      ready: bytes(ready)
+      ready: bytes(ready),
+      retry: bytes(retry)
     }
     const inlineCharade = bytes({
       ...charade,
@@ -2282,6 +2922,7 @@ describe('live protocol', () => {
       since: 244,
       boards: 3_049,
       ready: 110,
+      retry: 109,
       inlineCharade: 4_819
     })
   })

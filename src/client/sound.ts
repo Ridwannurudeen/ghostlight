@@ -1,10 +1,5 @@
 import { AudioSource, engine, type Entity } from '@dcl/sdk/ecs'
-import {
-  DEFAULT_CLIENT_SETTINGS,
-  getClientSettings,
-  subscribeClientSettings,
-  type ClientSettings
-} from './settings'
+import { DEFAULT_CLIENT_SETTINGS, getClientSettings, subscribeClientSettings, type ClientSettings } from './settings'
 
 export const SOUND_CLIPS = {
   roomTone: 'assets/sounds/room_tone.mp3',
@@ -15,6 +10,7 @@ export const SOUND_CLIPS = {
   miss: 'assets/sounds/miss.mp3',
   applause: 'assets/sounds/applause.mp3',
   gasp: 'assets/sounds/gasp.mp3',
+  laugh: 'assets/sounds/laugh.mp3',
   unlock: 'assets/sounds/unlock.mp3',
   curtain: 'assets/sounds/curtain.mp3',
   stamp: 'assets/sounds/stamp.mp3'

@@ -213,7 +213,7 @@ function hintFor(state: ClientFlowState) {
     case 'foyer':
       return copy(canDecodeInCurrentRegion() ? 'hint.foyerStage' : 'hint.foyerFar')
     case 'decode':
-      return copy('hint.decode')
+      return copy(state.retry ? 'hint.retry' : 'hint.decode')
     case 'reveal':
       return copy('hint.reveal')
     case 'author':
@@ -387,9 +387,16 @@ function decodeScreen(state: ClientFlowState) {
       ? copy('decode.mail', { performers })
       : copy('decode.ghost', { performers })
   const answers = localizedAnswers(charade)
+  const answerOptions = answers
+    .map((answer, index) => ({ answer, index }))
+    .filter(({ index }) => state.retry?.removedAnswerIndex !== index)
   const waiting = state.pending.some((request) => request.kind === 'guess' || request.kind === 'roundGuess')
   const question = copy(charade.reply ? 'decode.questionMany' : 'decode.questionOne', { performers })
-  const sentence = charade.isFinale ? `${copy('set.finale')} · ${question}` : question
+  const sentence = state.retry
+    ? copy('decode.secondChance')
+    : charade.isFinale
+      ? `${copy('set.finale')} · ${question}`
+      : question
   const status =
     charade.setRound !== undefined &&
     charade.setSize !== undefined &&
@@ -402,7 +409,10 @@ function decodeScreen(state: ClientFlowState) {
           score: charade.setScore
         })
       : ''
-  const performerBeat = getPerformerBeatIndex()
+  const performerBeat = state.retry?.replayBeatIndex ?? getPerformerBeatIndex()
+  const spotlightLabel = state.retry
+    ? copy(state.retry.spotlight ? 'spotlight.retryOn' : 'spotlight.retryOff')
+    : copy('spotlight.toggle')
   return screenShell(
     sentence,
     <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column' }}>
@@ -432,9 +442,9 @@ function decodeScreen(state: ClientFlowState) {
       <UiEntity uiTransform={{ width: '100%', flexDirection: 'row', justifyContent: 'space-between' }}>
         <UiEntity uiTransform={{ width: '49%' }}>
           {actionButton(
-            copy('spotlight.toggle'),
+            spotlightLabel,
             () => clientFlow.toggleSpotlight(),
-            waiting,
+            waiting || state.retry !== null,
             state.spotlightEnabled ? 'primary' : 'secondary',
             DECODE_BUTTON
           )}
@@ -443,12 +453,12 @@ function decodeScreen(state: ClientFlowState) {
           {actionButton(copy('decode.replay'), () => clientFlow.replay(), waiting, 'secondary', DECODE_BUTTON)}
         </UiEntity>
       </UiEntity>
-      {answers.map((answer, index) =>
+      {answerOptions.map(({ answer, index }, optionIndex) =>
         actionButton(
           answer.toUpperCase(),
           () => clientFlow.guess(index),
           waiting,
-          index === 0 ? 'primary' : 'secondary',
+          optionIndex === 0 ? 'primary' : 'secondary',
           DECODE_BUTTON
         )
       )}
@@ -534,18 +544,18 @@ function revealScreen(state: ClientFlowState) {
       ? playerText(state.charade.authorName)
       : copy('decode.theGhost')
   const canDecode = canDecodeInCurrentRegion()
-  const canReply = canAnswerBack(state)
-  const canReact = canSpectatorReact(state) && canDecode
+  const canReply = presentation.answerRevealed && canAnswerBack(state)
+  const canReact = presentation.answerRevealed && canSpectatorReact(state) && canDecode
   const actionCount = 2 + (canReply ? 1 : 0) + (canReact ? 1 : 0)
   const actionWidth = actionCount === 4 ? '23.5%' : actionCount === 3 ? '32%' : '49%'
   const phrase = reveal ? (phraseText(reveal.phraseId, getClientSettings().language) ?? reveal.phrase) : ''
   const answers = state.charade ? localizedAnswers(state.charade) : []
-  const sentence = presentation.verdict
+  const sentence = presentation.answerRevealed
     ? reveal
       ? copy('reveal.authorMeant', { author, phrase })
       : copy('reveal.answer')
     : copy('reveal.wait')
-  if (state.reactionMenuOpen) return screenShell(sentence, reactionMenu(), state)
+  if (state.reactionMenuOpen && presentation.answerRevealed) return screenShell(sentence, reactionMenu(), state)
   return screenShell(
     sentence,
     <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column' }}>
@@ -610,7 +620,9 @@ function revealScreen(state: ClientFlowState) {
       </UiEntity>
       <UiEntity uiTransform={{ width: '100%', flexDirection: 'row', justifyContent: 'space-between' }}>
         <UiEntity uiTransform={{ width: actionWidth }}>
-          {canDecode ? actionButton(copy('reveal.next'), () => clientFlow.requestNextCharade()) : stageInstruction()}
+          {canDecode
+            ? actionButton(copy('reveal.next'), () => clientFlow.requestNextCharade(), !presentation.answerRevealed)
+            : stageInstruction()}
         </UiEntity>
         {canReply ? (
           <UiEntity uiTransform={{ width: actionWidth }}>
@@ -623,7 +635,12 @@ function revealScreen(state: ClientFlowState) {
           </UiEntity>
         ) : null}
         <UiEntity uiTransform={{ width: actionWidth }}>
-          {actionButton(copy('foyer.make'), () => clientFlow.beginAuthoring(), state.playerIsGuest, 'secondary')}
+          {actionButton(
+            copy('foyer.make'),
+            () => clientFlow.beginAuthoring(),
+            state.playerIsGuest || !presentation.answerRevealed,
+            'secondary'
+          )}
         </UiEntity>
       </UiEntity>
     </UiEntity>,
@@ -632,7 +649,7 @@ function revealScreen(state: ClientFlowState) {
 }
 
 function revealAnswerCard(answer: string, index: number, presentation: RevealViewState) {
-  const isCorrect = presentation.phrase === answer
+  const isCorrect = presentation.answerRevealed && presentation.phrase === answer
   const faded = presentation.wrongAnswersFaded && !isCorrect
   const selected = presentation.selectedAnswerIndex === index
   return (

@@ -148,6 +148,26 @@ export function pickDecoys(
   return best ? [best.close, best.distant] : []
 }
 
+export function chooseRetryBeat(
+  performedEmotes: readonly string[],
+  answerIds: readonly string[],
+  removedAnswerIndex: number,
+  seed: Seed,
+  deck: readonly Phrase[] = DECK
+) {
+  const remaining = answerIds.filter((_answerId, index) => index !== removedAnswerIndex)
+  const ranked = performedEmotes.map((emote, index) => {
+    const frequency = remaining.reduce((count, answerId) => {
+      const phrase = deck.find((candidate) => candidate.id === answerId)
+      return count + (phrase?.suggested.includes(emote as Emote) ? 1 : 0)
+    }, 0)
+    return { index, rank: frequency === 1 ? 0 : frequency === 0 ? 1 : 2 }
+  })
+  const bestRank = Math.min(...ranked.map((candidate) => candidate.rank))
+  const candidates = ranked.filter((candidate) => candidate.rank === bestRank).map((candidate) => candidate.index)
+  return shuffleSeeded(candidates, seed)[0] ?? 0
+}
+
 export function dealPhrase(deck: readonly Phrase[], exclude: readonly string[], seed: Seed): Phrase | null {
   const excludedIds = new Set(exclude)
   const available = deck.filter((phrase) => !excludedIds.has(phrase.id))

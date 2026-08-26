@@ -14,6 +14,7 @@ import { Messages } from '../src/shared/messages'
 import {
   chooseCharadeFor,
   chooseHouseCharade,
+  chooseRetryBeat,
   dealPhrase,
   phraseTheme,
   pickDecoys,
@@ -351,6 +352,51 @@ describe('pickDecoys', () => {
   })
 })
 
+describe('chooseRetryBeat', () => {
+  const fixture: Phrase[] = [
+    {
+      id: 'one',
+      text: 'One',
+      category: 'everyday',
+      theme: 'everyday',
+      suggested: ['wave', 'clap', 'kiss']
+    },
+    {
+      id: 'two',
+      text: 'Two',
+      category: 'everyday',
+      theme: 'everyday',
+      suggested: ['wave', 'robot', 'money']
+    },
+    {
+      id: 'removed',
+      text: 'Removed',
+      category: 'everyday',
+      theme: 'everyday',
+      suggested: ['dab', 'shrug', 'dontsee']
+    }
+  ]
+
+  it('prefers a beat present in exactly one remaining canonical triplet, then zero, then two', () => {
+    expect(chooseRetryBeat(['wave', 'clap', 'dab'], ['one', 'two', 'removed'], 2, 'frequency', fixture)).toBe(1)
+    expect([1, 2]).toContain(
+      chooseRetryBeat(['wave', 'dab', 'shrug'], ['one', 'two', 'removed'], 2, 'zero-before-two', fixture)
+    )
+    expect(
+      chooseRetryBeat(['wave', 'wave', 'wave'], ['one', 'two', 'removed'], 2, 'all-common', fixture)
+    ).toBeGreaterThanOrEqual(0)
+  })
+
+  it('is deterministic and depends only on performed beats, public answers, removal, and seed', () => {
+    const args = [['clap', 'robot', 'dab'], ['one', 'two', 'removed'], 2, 'stable', fixture] as const
+    const selected = chooseRetryBeat(...args)
+
+    expect(selected).toBe(chooseRetryBeat(...args))
+    expect(selected).toBeGreaterThanOrEqual(0)
+    expect(selected).toBeLessThan(3)
+  })
+})
+
 describe('dealPhrase', () => {
   it('is deterministic, respects exclusions, and returns null when nothing remains', () => {
     const excluded = DECK.slice(0, 15).map((phrase) => phrase.id)
@@ -435,6 +481,7 @@ describe('installed protocol codec', () => {
         isFinale: true
       },
       guess: { charadeId: 'ghost-1', answerIndex: 1, requestId: 'guess-1', spotlight: true },
+      retry: { requestId: 'guess-1', charadeId: 'ghost-1', removedAnswerIndex: 1, replayBeatIndex: 2 },
       reveal: {
         requestId: 'guess-1',
         charadeId: 'ghost-1',
@@ -446,6 +493,7 @@ describe('installed protocol codec', () => {
         daily,
         revision: 2,
         stampAwarded: true,
+        attempt: 2,
         title: 'Understudy',
         nextUnlock,
         titleUnlocked: true,
@@ -550,11 +598,14 @@ describe('installed protocol codec', () => {
       }
     }
     expect(
-      Object.fromEntries(['charade', 'guess', 'reveal', 'roundGuess'].map((type) => [type, encodedSizes.get(type)]))
+      Object.fromEntries(
+        ['charade', 'guess', 'retry', 'reveal', 'roundGuess'].map((type) => [type, encodedSizes.get(type)])
+      )
     ).toEqual({
       charade: 2_350,
       guess: 45,
-      reveal: 232,
+      retry: 47,
+      reveal: 237,
       roundGuess: 50
     })
 

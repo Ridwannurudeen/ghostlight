@@ -209,6 +209,9 @@ class SoakRoom {
       case 'charadeReply':
         runtime.receive({ type, data: data as ServerData<'charadeReply'> })
         break
+      case 'retry':
+        runtime.receive({ type, data: data as ServerData<'retry'> })
+        break
       case 'reveal':
         runtime.receive({ type, data: data as ServerData<'reveal'> })
         break
@@ -440,9 +443,31 @@ describe('deterministic headless soak simulation', () => {
     const secondServed = secondDecoder.runtime.getState().charade!
     const secondPhrase = DECK.find((phrase) => phrase.id === state.getCharade(secondServed.id)?.phraseId)!
     const secondCorrectIndex = secondServed.answers.indexOf(secondPhrase.text)
-    expect(secondDecoder.runtime.guess((secondCorrectIndex + 1) % secondServed.answers.length)).toBe(true)
+    const secondWrongIndexes = secondServed.answers
+      .map((_, index) => index)
+      .filter((index) => index !== secondCorrectIndex)
+    const secondStatsBefore = structuredClone(state.playerStats.get(secondDecoder.address.toLowerCase())!)
+    const secondCharadeGuessesBefore = structuredClone(state.getCharade(secondServed.id)!.guesses)
+    expect(secondDecoder.runtime.guess(secondWrongIndexes[0])).toBe(true)
     await room.pump(secondDecoder.address)
-    expect(secondDecoder.runtime.getState().reveal?.correct).toBe(false)
+    expect(secondDecoder.runtime.getState()).toMatchObject({
+      screen: 'decode',
+      retry: { charadeId: secondServed.id, removedAnswerIndex: secondWrongIndexes[0] },
+      reveal: null
+    })
+    expect(state.playerStats.get(secondDecoder.address.toLowerCase())).toEqual(secondStatsBefore)
+    expect(state.getCharade(secondServed.id)?.guesses).toEqual(secondCharadeGuessesBefore)
+    expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 1, retryStates: 1 })
+
+    expect(secondDecoder.runtime.guess(secondWrongIndexes[0])).toBe(false)
+    expect(secondDecoder.runtime.guess(secondWrongIndexes[1])).toBe(true)
+    await room.pump(secondDecoder.address)
+    expect(secondDecoder.runtime.getState()).toMatchObject({
+      screen: 'reveal',
+      retry: null,
+      reveal: { charadeId: secondServed.id, correct: false, attempt: 2 }
+    })
+    expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 0, retryStates: 0 })
     await disconnect(secondDecoder)
 
     now += 60_001
@@ -555,7 +580,7 @@ describe('deterministic headless soak simulation', () => {
     await disconnect(decoder)
 
     await repository.flushNow()
-    await bootServer('soak-server-c')
+    protocol = await bootServer('soak-server-c')
     expect(state.getPool()).toEqual([])
     expect(state.getPlayerCharades()).toEqual([])
     expect(state.playerStats.size).toBeLessThanOrEqual(PLAYER_COUNT)
@@ -563,6 +588,17 @@ describe('deterministic headless soak simulation', () => {
     expect(storage.players.size).toBeLessThanOrEqual(PLAYER_COUNT)
     for (const values of storage.players.values()) expect(values.size).toBeLessThanOrEqual(4)
     expect(repository.getDirtyKeys()).toEqual([])
+    expect(protocol.resourceCounts()).toEqual({
+      present: 0,
+      sessionGenerations: 0,
+      servedAnswers: 0,
+      retryStates: 0,
+      activeDecoders: 0,
+      completedRequests: 0,
+      nextRequests: 0,
+      outstandingRequests: 0,
+      requestBuckets: 0
+    })
 
     expect(room.measurements.length).toBeGreaterThan(0)
     expect(room.measurements.every((measurement) => measurement.bytes < 4_000)).toBe(true)
@@ -576,8 +612,9 @@ describe('deterministic headless soak simulation', () => {
       post: payloadMaxima.get('client:post'),
       posted: payloadMaxima.get('server:posted'),
       charade: payloadMaxima.get('server:charade'),
+      retry: payloadMaxima.get('server:retry'),
       since: payloadMaxima.get('server:since')
-    }).toEqual({ post: 163, posted: 369, charade: 836, since: 263 })
+    }).toEqual({ post: 163, posted: 369, charade: 836, retry: 104, since: 263 })
     expect(avatarBudget.peak).toBeLessThanOrEqual(MAX_GHOSTS)
   })
 })

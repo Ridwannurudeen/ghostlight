@@ -152,6 +152,32 @@ def make_gasp():
     return fade(breath * inhale * 0.38 + voices, 0.08, 0.32)
 
 
+def make_laugh():
+    duration = 1.9
+    samples = filtered_noise(duration, 551, (500, 5_800), "bandpass") * 0.025
+    randomizer = np.random.default_rng(552)
+    for voice_index, base_frequency in enumerate((142.0, 169.0, 197.0, 226.0, 258.0)):
+        start = randomizer.uniform(0.0, 0.16) + voice_index * 0.018
+        cadence = randomizer.uniform(0.245, 0.33)
+        while start < duration - 0.1:
+            syllable_duration = randomizer.uniform(0.13, 0.21)
+            time = timeline(syllable_duration)
+            frequencies = base_frequency * (1.0 + 0.035 * np.sin(math.tau * 6.0 * time))
+            phase = math.tau * np.cumsum(frequencies) / SAMPLE_RATE
+            voice = np.sin(phase) + np.sin(phase * 2) * 0.42 + np.sin(phase * 3) * 0.18
+            envelope = np.sin(np.linspace(0, math.pi, time.size)) ** 0.72
+            breath = filtered_noise(
+                syllable_duration,
+                randomizer.integers(1, 1_000_000),
+                (650, 4_800),
+                "bandpass",
+            )
+            chuckle = (voice * 0.2 + breath * 0.075) * envelope
+            add_burst(samples, start, chuckle * randomizer.uniform(0.72, 1.0))
+            start += cadence + randomizer.uniform(-0.025, 0.025)
+    return fade(samples, 0.04, 0.28)
+
+
 def make_unlock():
     duration = 1.7
     samples = np.zeros(round(duration * SAMPLE_RATE), dtype=np.float64)
@@ -269,6 +295,7 @@ def main():
         "miss.mp3": make_miss(),
         "applause.mp3": make_applause(),
         "gasp.mp3": make_gasp(),
+        "laugh.mp3": make_laugh(),
         "unlock.mp3": make_unlock(),
         "curtain.mp3": make_curtain(),
         "stamp.mp3": make_stamp(),

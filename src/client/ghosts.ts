@@ -116,6 +116,25 @@ export function replayPerformer() {
   trigger(performer, performer.sequence[0])
 }
 
+export function replayPerformerBeat(beatIndex: PerformerBeatIndex) {
+  initializeGhosts()
+  const performer = slots[0]
+  if (duet) {
+    duet.performerIndex = 0
+    duet.emoteIndex = beatIndex
+    duet.elapsed = 0
+    duet.frozen = false
+    performer.frozen = false
+    trigger(performer, duet.sequences[0][beatIndex])
+    return
+  }
+  if (!performer.active || performer.sequence === null) return
+  performer.emoteIndex = beatIndex
+  performer.elapsed = 0
+  performer.frozen = false
+  trigger(performer, performer.sequence[beatIndex])
+}
+
 export function freezePerformer() {
   initializeGhosts()
   if (duet) duet.frozen = true

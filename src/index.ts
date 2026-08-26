@@ -93,6 +93,7 @@ export function main() {
       showDuet(author, reply)
     },
     replayPerformer,
+    showRetryBeat: (beatIndex) => reveal.retry(beatIndex),
     showPreview,
     clearPreview,
     clearPerformer,
@@ -105,7 +106,7 @@ export function main() {
     },
     beginReveal: reveal.begin,
     resolveReveal: reveal.resolve,
-    canAdvanceReveal: reveal.hasShownVerdict,
+    canAdvanceReveal: reveal.canAdvance,
     skipReveal: reveal.skipToEnd,
     cancelReveal: reveal.cancel,
     cancelOpening: opening.cancel

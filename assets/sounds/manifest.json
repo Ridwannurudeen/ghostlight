@@ -76,6 +76,15 @@
       "bytes": 17554
     },
     {
+      "file": "laugh.mp3",
+      "durationSeconds": 1.9,
+      "decodedSamples": 83790,
+      "sampleRate": 44100,
+      "channels": 1,
+      "peakDbfs": -1.43,
+      "bytes": 23510
+    },
+    {
       "file": "unlock.mp3",
       "durationSeconds": 1.7,
       "decodedSamples": 74970,
@@ -104,6 +113,6 @@
     }
   ],
   "totals": {
-    "bytes": 317539
+    "bytes": 341049
   }
 }

@@ -74,6 +74,7 @@ function createHarness(reducedMotion = () => false) {
     fadeWrongAnswers: () => record('answers:fade-wrong'),
     setSpotlightColor: (color) => record(`spotlight:${color}`),
     showFloatingVerdict: (text) => record(`floating:${text}`),
+    showGhostGotYou: (text) => record(`got-you:${text}`),
     showMissVerdictCard: (text) => record(`card:${text}`),
     reactAudience: (reaction) => record(`audience:${reaction}`),
     playPerformerEmote: (emote) => record(`performer:${emote}`),
@@ -260,6 +261,48 @@ describe('reveal timeline', () => {
 
     expect(events).toContain('10600:floating:YOU GOT IT')
     expect(events.at(-1)).toBe('16000:complete')
+  })
+})
+
+describe('second-miss reveal choreography', () => {
+  const SECOND_MISS: RevealOutcome = {
+    correct: false,
+    authorName: 'Maya',
+    phrase: 'Flying a kite',
+    stats: { correct: 7, total: 12 },
+    titleProgress: 0.4,
+    unlockedTitle: '',
+    stampAwarded: false,
+    attempt: 2,
+    gotYouText: 'THE GHOST GOT YOU'
+  }
+
+  it('plays the laugh and fist-pump before revealing the phrase', () => {
+    const { clock, events, controller } = createHarness()
+    controller.start(SECOND_MISS)
+
+    clock.advanceTo(2_600)
+    expect(events).toContain('2600:got-you:THE GHOST GOT YOU')
+    expect(events).toContain('2600:sound:laugh')
+    expect(events).toContain('2600:audience:laugh')
+    expect(events).toContain('2600:performer:fistpump')
+    expect(events.some((event) => event.startsWith('2600:card:'))).toBe(false)
+
+    clock.advanceTo(4_000)
+    const gotYouIndex = events.indexOf('2600:got-you:THE GHOST GOT YOU')
+    const phraseIndex = events.findIndex((event) => event.startsWith('4000:card:'))
+    expect(phraseIndex).toBeGreaterThan(gotYouIndex)
+  })
+
+  it('retains the staged verdict and phrase under reduced motion timing', () => {
+    const { clock, events, controller } = createHarness(() => true)
+    controller.start(SECOND_MISS)
+
+    clock.advanceTo(800)
+    expect(events).toContain('800:got-you:THE GHOST GOT YOU')
+    expect(events.some((event) => event.startsWith('800:card:'))).toBe(false)
+    clock.advanceTo(1_300)
+    expect(events.some((event) => event.startsWith('1300:card:'))).toBe(true)
   })
 })
 
