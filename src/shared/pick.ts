@@ -121,26 +121,34 @@ export function pickDecoys(
         tripletKey(candidate.suggested) !== performedTriplet
     ),
     `${typeof seed}:${seed}:decoys`
-  )
+  ).map((candidate) => ({
+    phrase: candidate,
+    firstWord: firstWord(candidate.text),
+    triplet: tripletKey(candidate.suggested),
+    overlap: emoteOverlap(candidate.suggested, performed)
+  }))
   let best: { close: Phrase; distant: Phrase; closeOverlap: number; distantOverlap: number } | null = null
 
   for (const close of candidates) {
-    const closeOverlap = emoteOverlap(close.suggested, performed)
     for (const distant of candidates) {
       if (
-        distant.id === close.id ||
-        firstWord(distant.text) === firstWord(close.text) ||
-        tripletKey(distant.suggested) === tripletKey(close.suggested)
+        distant.phrase.id === close.phrase.id ||
+        distant.firstWord === close.firstWord ||
+        distant.triplet === close.triplet
       ) {
         continue
       }
-      const distantOverlap = emoteOverlap(distant.suggested, performed)
       if (
         !best ||
-        closeOverlap > best.closeOverlap ||
-        (closeOverlap === best.closeOverlap && distantOverlap < best.distantOverlap)
+        close.overlap > best.closeOverlap ||
+        (close.overlap === best.closeOverlap && distant.overlap < best.distantOverlap)
       ) {
-        best = { close, distant, closeOverlap, distantOverlap }
+        best = {
+          close: close.phrase,
+          distant: distant.phrase,
+          closeOverlap: close.overlap,
+          distantOverlap: distant.overlap
+        }
       }
     }
   }
