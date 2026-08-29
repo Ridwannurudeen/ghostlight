@@ -1209,8 +1209,8 @@ describe('audience and rounds', () => {
       name: 'Remote B'
     })
     expect(runtime.getState()).toMatchObject({
-      roundId: '',
-      roundCharadeId: '',
+      roundId: '2',
+      roundCharadeId: 'round-b',
       roundWinner: { address: 'remote-b', name: 'Remote B' }
     })
   })
@@ -1261,8 +1261,31 @@ describe('audience and rounds', () => {
 
     serveCharade(runtime, makeDecodeCharade('live'))
     expect(runtime.guess(0)).toBe(true)
-    expect(messagesOfType(sent, 'roundGuess')).toHaveLength(1)
+    expect(messagesOfType(sent, 'roundGuess')).toEqual([
+      {
+        type: 'roundGuess',
+        data: { roundId: '1', charadeId: 'live', answerIndex: 0, requestId: 'request-3' }
+      }
+    ])
     expect(messagesOfType(sent, 'guess')).toHaveLength(0)
+  })
+
+  it('retains round identity so a participant can guess after another player wins', () => {
+    const { runtime, sent } = createFlowHarness()
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    serveCharade(runtime, makeDecodeCharade('live'))
+    announceRound(runtime, 'live')
+    announceWinner(runtime, { address: 'remote', name: 'Remote', charadeId: 'live' })
+    sent.length = 0
+
+    expect(runtime.guess(0)).toBe(true)
+    expect(messagesOfType(sent, 'roundGuess')).toEqual([
+      {
+        type: 'roundGuess',
+        data: { roundId: '1', charadeId: 'live', answerIndex: 0, requestId: 'request-2' }
+      }
+    ])
+    expect(messagesOfType(sent, 'guess')).toEqual([])
   })
 
   it('accepts the next charade after one round mismatch refetch', () => {
@@ -1343,7 +1366,7 @@ describe('audience and rounds', () => {
 
     announceWinner(runtime, { address: 'remote', name: 'Remote', charadeId: 'live' })
 
-    expect(runtime.getState().roundCharadeId).toBe('')
+    expect(runtime.getState().roundCharadeId).toBe('live')
     expect(canSpectatorReact(runtime.getState())).toBe(false)
   })
 
@@ -1457,7 +1480,7 @@ describe('audience and rounds', () => {
 
     expect(runtime.getState()).toMatchObject({
       screen: 'author',
-      roundCharadeId: '',
+      roundCharadeId: 'live',
       roundWinner: { address: '0xPLAYER', name: 'PLAYER' },
       toast: { winnerName: 'PLAYER', shownAt: FIXED_NOW }
     })
@@ -1508,8 +1531,8 @@ describe('audience and rounds', () => {
 
     expect(runtime.getState()).toMatchObject({
       screen: 'author',
-      roundId: '',
-      roundCharadeId: '',
+      roundId: '1',
+      roundCharadeId: charade.id,
       roundWinner: { address: '0xPLAYER', name: 'PLAYER' }
     })
   })

@@ -104,6 +104,13 @@ export class LiveRounds {
     return true
   }
 
+  reset() {
+    if (!this.active) return false
+    this.active = null
+    void this.send('roundStart', { roundId: String(++this.sequence), charadeId: '' })
+    return true
+  }
+
   abstain(address: string, roundId: string) {
     const key = address.toLowerCase()
     const active = this.active
@@ -113,7 +120,7 @@ export class LiveRounds {
     return true
   }
 
-  guess(address: string, charadeId: string, correct: boolean): RoundGuessResult {
+  guess(address: string, roundId: string, charadeId: string, correct: boolean): RoundGuessResult {
     const key = address.toLowerCase()
     const player = this.players.get(key)
     const active = this.active
@@ -122,6 +129,7 @@ export class LiveRounds {
       !active ||
       this.isSettled ||
       !active.participants.has(key) ||
+      active.roundId !== roundId ||
       active.charadeId !== charadeId ||
       active.guessed.has(key)
     ) {

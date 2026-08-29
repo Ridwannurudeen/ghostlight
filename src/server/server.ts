@@ -15,6 +15,7 @@ type HelloPayload = { displayName: string; isGuest: boolean; protocolVersion: nu
 type PingPayload = { seq: number }
 type NextCharadePayload = { requestId: string; exclude: string[] }
 type GuessPayload = { charadeId: string; answerIndex: number; requestId: string; spotlight?: boolean }
+type RoundGuessPayload = GuessPayload & { roundId: string }
 type PostPayload = { phraseId: string; emotes: string[]; requestId: string; replyTo?: string; recipient?: string }
 type ReactPayload = { kind: string }
 
@@ -129,6 +130,7 @@ const REQUEST_TOKEN_CAPACITY = 16
 const REQUEST_TOKENS_PER_SECOND = 8
 const DEFAULT_BODY_SHAPE = 'urn:decentraland:off-chain:base-avatars:BaseMale'
 const STABLE_ADDRESS = /^0x[a-f0-9]{40}$/iu
+const ROUND_ID = /^[1-9][0-9]*$/u
 
 function emptyShowSet(): ShowSet {
   return { round: 0, score: 0, streak: 0, bestStreak: 0, understood: 0 }
@@ -999,7 +1001,14 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     return `${canonicalAddress(address)}:${kind}:${requestId}`
   }
 
-  async function handleGuess(data: GuessPayload, address: string) {
+  function isCurrentRoundGuess(address: string, roundId: string | null, charadeId: string) {
+    const current = rounds.current
+    if (!current) return !rounds.isLive
+    if (roundId === null) return current.charadeId !== charadeId || !rounds.isParticipant(address)
+    return current.roundId === roundId && current.charadeId === charadeId && rounds.isParticipant(address)
+  }
+
+  async function handleGuess(data: GuessPayload, address: string, roundId: string | null) {
     await ready
     const generation = sessionGeneration(address)
     if (generation === null) {
@@ -1011,6 +1020,11 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     if (
       !validWireString(data.requestId) ||
       !validWireString(data.charadeId) ||
+      (roundId !== null &&
+        (typeof roundId !== 'string' ||
+          !validWireString(roundId) ||
+          !ROUND_ID.test(roundId) ||
+          !Number.isSafeInteger(Number(roundId)))) ||
       !Number.isInteger(data.answerIndex) ||
       data.answerIndex < 0 ||
       data.answerIndex > 2 ||
@@ -1036,6 +1050,10 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       await sendError(address, 'charade-not-served')
       return
     }
+    if (!isCurrentRoundGuess(key, roundId, data.charadeId)) {
+      await sendError(address, 'invalid-guess')
+      return
+    }
     const served = servedState.prepared
     const { charade } = served
     const look = looks.get(key)
@@ -1057,6 +1075,10 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       return
     }
     if (!isCurrentSession(address, generation)) return
+    if (!isCurrentRoundGuess(key, roundId, data.charadeId)) {
+      await sendError(address, 'invalid-guess')
+      return
+    }
     if (!charade.isHouse && stats.seen.includes(charade.id)) {
       await sendError(address, 'already-guessed')
       return
@@ -1108,6 +1130,10 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       return
     }
     if (!isCurrentSession(address, generation)) return
+    if (!isCurrentRoundGuess(key, roundId, data.charadeId)) {
+      await sendError(address, 'invalid-guess')
+      return
+    }
 
     const previousTitle = progressFor(stats).title
     const attempt = storedRetry ? 2 : 1
@@ -1119,8 +1145,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       if (entry.owner === key) nextRequests.delete(request)
     }
     activeDecoders.delete(key)
-    const roundIsActive = rounds.current?.charadeId === data.charadeId && rounds.isLive && rounds.isParticipant(key)
-    if (roundIsActive) rounds.guess(key, data.charadeId, !charade.isHouse && correct)
+    if (roundId !== null) rounds.guess(key, roundId, data.charadeId, !charade.isHouse && correct)
 
     let stampAwarded = false
     const showSet = showSetFor(stats)
@@ -1590,13 +1615,13 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       }),
     handleGuess: (data: GuessPayload, address: string) =>
       withRequestAdmission(address, 'guess', data, async () => {
-        if (!validWireString(data.requestId)) return handleGuess(data, address)
-        return serializeRequest(`${canonicalAddress(address)}:decode`, () => handleGuess(data, address))
+        if (!validWireString(data.requestId)) return handleGuess(data, address, null)
+        return serializeRequest(`${canonicalAddress(address)}:decode`, () => handleGuess(data, address, null))
       }),
-    handleRoundGuess: (data: GuessPayload, address: string) =>
+    handleRoundGuess: (data: RoundGuessPayload, address: string) =>
       withRequestAdmission(address, 'guess', data, async () => {
-        if (!validWireString(data.requestId)) return handleGuess(data, address)
-        return serializeRequest(`${canonicalAddress(address)}:decode`, () => handleGuess(data, address))
+        if (!validWireString(data.requestId)) return handleGuess(data, address, data.roundId)
+        return serializeRequest(`${canonicalAddress(address)}:decode`, () => handleGuess(data, address, data.roundId))
       }),
     handlePost: (data: PostPayload, address: string) =>
       withRequestAdmission(address, 'post', data, async () => {

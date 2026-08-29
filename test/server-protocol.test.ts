@@ -113,6 +113,16 @@ async function negotiate(protocol: ReturnType<typeof createServerProtocol>, addr
   return protocol.handleHello({ displayName: address, isGuest: false, protocolVersion: PROTOCOL_VERSION }, address)
 }
 
+async function handleCurrentRoundGuess(
+  protocol: ReturnType<typeof createServerProtocol>,
+  data: { charadeId: string; answerIndex: number; requestId: string; spotlight?: boolean },
+  address: string
+) {
+  const roundId = protocol.rounds.current?.roundId
+  if (!roundId) throw new Error('Expected an active round')
+  return protocol.handleRoundGuess({ roundId, ...data }, address)
+}
+
 async function createHarness(
   overrides: Partial<
     Pick<
@@ -2286,7 +2296,8 @@ describe('live protocol', () => {
       messagesOfType(sent, 'charade').find((message) => message.to?.includes('bob'))!
     )
     const bobWrong = wrongAnswerIndexes(state, bobCharade)
-    await protocol.handleRoundGuess(
+    await handleCurrentRoundGuess(
+      protocol,
       {
         charadeId: bobCharade.id,
         answerIndex: bobWrong[0],
@@ -2294,7 +2305,8 @@ describe('live protocol', () => {
       },
       'bob'
     )
-    await protocol.handleRoundGuess(
+    await handleCurrentRoundGuess(
+      protocol,
       {
         charadeId: bobCharade.id,
         answerIndex: bobWrong[1],
@@ -2332,7 +2344,8 @@ describe('live protocol', () => {
       messagesOfType(sent, 'charade').find((message) => message.to?.includes('alice'))!
     )
     const aliceWrong = wrongAnswerIndexes(state, aliceCharade)
-    await protocol.handleRoundGuess(
+    await handleCurrentRoundGuess(
+      protocol,
       {
         charadeId: aliceCharade.id,
         answerIndex: aliceWrong[0],
@@ -2340,7 +2353,8 @@ describe('live protocol', () => {
       },
       'alice'
     )
-    await protocol.handleRoundGuess(
+    await handleCurrentRoundGuess(
+      protocol,
       {
         charadeId: aliceCharade.id,
         answerIndex: aliceWrong[1],
@@ -2410,7 +2424,8 @@ describe('live protocol', () => {
     expect(messagesOfType(sent, 'roundWinner')).toEqual([])
     expect(messagesOfType(sent, 'reveal')).toEqual([])
 
-    await protocol.handleRoundGuess(
+    await handleCurrentRoundGuess(
+      protocol,
       {
         charadeId: charade.id,
         answerIndex: served.answers.indexOf(phrase.text),
@@ -2452,7 +2467,8 @@ describe('live protocol', () => {
     const aliceWrong = wrongAnswerIndexes(state, aliceServed)[0]
     sent.length = 0
 
-    await protocol.handleRoundGuess(
+    await handleCurrentRoundGuess(
+      protocol,
       { charadeId: charade.id, answerIndex: aliceWrong, requestId: 'alice-shared-first', spotlight: true },
       'alice'
     )
@@ -2461,7 +2477,8 @@ describe('live protocol', () => {
     await protocol.handleNextCharade(aliceNext, 'alice')
     expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 2, retryStates: 1, activeDecoders: 2 })
 
-    await protocol.handleRoundGuess(
+    await handleCurrentRoundGuess(
+      protocol,
       {
         charadeId: charade.id,
         answerIndex: correctAnswerIndex(state, bobServed),
@@ -2476,7 +2493,8 @@ describe('live protocol', () => {
     expect(protocol.rounds.current?.winner).toEqual({ address: 'bob', name: 'Bob' })
     expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 1, retryStates: 1, activeDecoders: 1 })
 
-    await protocol.handleRoundGuess(
+    await handleCurrentRoundGuess(
+      protocol,
       {
         charadeId: charade.id,
         answerIndex: correctAnswerIndex(state, aliceServed),
@@ -2522,11 +2540,16 @@ describe('live protocol', () => {
     const correctIndex = served[0].answers.indexOf(phrase.text)
     sent.length = 0
 
-    await protocol.handleRoundGuess(
+    await handleCurrentRoundGuess(
+      protocol,
       { charadeId: charade.id, answerIndex: correctIndex, requestId: 'alice-guess' },
       'alice'
     )
-    await protocol.handleRoundGuess({ charadeId: charade.id, answerIndex: correctIndex, requestId: 'bob-guess' }, 'bob')
+    await handleCurrentRoundGuess(
+      protocol,
+      { charadeId: charade.id, answerIndex: correctIndex, requestId: 'bob-guess' },
+      'bob'
+    )
 
     expect(messagesOfType(sent, 'roundWinner')).toEqual([
       {
@@ -2537,6 +2560,82 @@ describe('live protocol', () => {
     ])
     expect(messagesOfType(sent, 'reveal')).toHaveLength(2)
     expect(protocol.rounds.current?.winner).toEqual({ address: 'alice', name: 'Alice' })
+  })
+
+  it('does not award a restarted same-charade round to a stale round guess', async () => {
+    const snapshotLook = async (address: string) => makeLook(address, address === 'alice' ? 'Alice' : 'Bob')
+    const { state, sent, protocol } = await createHarness({ snapshotLook })
+    const charade = makeCharade('restarted-live-stage', { author: { address: 'outside', name: 'Outside' } })
+    state.upsertCharade(charade)
+    await negotiate(protocol, 'alice')
+    await negotiate(protocol, 'bob')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'alice')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'bob')
+    const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade')[0])
+    const correctIndex = correctAnswerIndex(state, served)
+    const staleRoundId = protocol.rounds.current!.roundId
+
+    expect(protocol.rounds.reset()).toBe(true)
+    sent.length = 0
+
+    await protocol.handleGuess(
+      { charadeId: charade.id, answerIndex: correctIndex, requestId: 'plain-reset-gap-guess' },
+      'alice'
+    )
+    expect(messagesOfType(sent, 'error')).toEqual([
+      { type: 'error', data: { code: 'invalid-guess' }, to: ['alice'] }
+    ])
+    expect(messagesOfType(sent, 'reveal')).toEqual([])
+    expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 0, correct: 0 })
+    sent.length = 0
+
+    expect(protocol.rounds.start(charade.id)).toBe(true)
+    const currentRoundId = protocol.rounds.current!.roundId
+    sent.length = 0
+
+    await protocol.handleRoundGuess(
+      { roundId: '01', charadeId: charade.id, answerIndex: correctIndex, requestId: 'malformed-round-guess' },
+      'alice'
+    )
+    expect(messagesOfType(sent, 'error')).toEqual([{ type: 'error', data: { code: 'invalid-guess' }, to: ['alice'] }])
+    expect(messagesOfType(sent, 'reveal')).toEqual([])
+    sent.length = 0
+
+    await protocol.handleGuess(
+      { charadeId: charade.id, answerIndex: correctIndex, requestId: 'plain-round-guess' },
+      'alice'
+    )
+    expect(messagesOfType(sent, 'error')).toEqual([
+      { type: 'error', data: { code: 'invalid-guess' }, to: ['alice'] }
+    ])
+    expect(messagesOfType(sent, 'reveal')).toEqual([])
+    expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 0, correct: 0 })
+    sent.length = 0
+
+    await protocol.handleRoundGuess(
+      { roundId: staleRoundId, charadeId: charade.id, answerIndex: correctIndex, requestId: 'stale-round-guess' },
+      'alice'
+    )
+    expect(messagesOfType(sent, 'error')).toEqual([
+      { type: 'error', data: { code: 'invalid-guess' }, to: ['alice'] }
+    ])
+    expect(messagesOfType(sent, 'reveal')).toEqual([])
+    expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 0, correct: 0 })
+    expect(state.playerStats.get('alice')?.decoded).toBe(0)
+    sent.length = 0
+
+    await protocol.handleRoundGuess(
+      { roundId: currentRoundId, charadeId: charade.id, answerIndex: correctIndex, requestId: 'current-round-guess' },
+      'bob'
+    )
+
+    expect(messagesOfType(sent, 'roundWinner')).toEqual([
+      {
+        type: 'roundWinner',
+        data: { roundId: currentRoundId, charadeId: charade.id, address: 'bob', name: 'Bob' },
+        to: undefined
+      }
+    ])
   })
 
   it('reveals house guesses without awarding a deterministic live-round winner', async () => {
@@ -2551,16 +2650,19 @@ describe('live protocol', () => {
     const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade')[0])
     const firstHouse = HOUSE_CHARADES.find((charade) => charade.emotes.join(':') === served.emotes.join(':'))!
     const firstCorrect = served.answerIds.indexOf(firstHouse.phraseId)
-    await protocol.handleRoundGuess(
+    await handleCurrentRoundGuess(
+      protocol,
       { charadeId: served.id, answerIndex: firstCorrect, requestId: 'alice-first' },
       'alice'
     )
     const bobWrong = wrongAnswerIndexes(state, served)
-    await protocol.handleRoundGuess(
+    await handleCurrentRoundGuess(
+      protocol,
       { charadeId: served.id, answerIndex: bobWrong[0], requestId: 'bob-first-miss' },
       'bob'
     )
-    await protocol.handleRoundGuess(
+    await handleCurrentRoundGuess(
+      protocol,
       { charadeId: served.id, answerIndex: bobWrong[1], requestId: 'bob-second-miss' },
       'bob'
     )
@@ -2570,11 +2672,13 @@ describe('live protocol', () => {
     sent.length = 0
 
     const nextCorrect = correctAnswerIndex(state, nextServed)
-    await protocol.handleRoundGuess(
+    await handleCurrentRoundGuess(
+      protocol,
       { charadeId: nextServed.id, answerIndex: nextCorrect, requestId: 'bob-second' },
       'bob'
     )
-    await protocol.handleRoundGuess(
+    await handleCurrentRoundGuess(
+      protocol,
       { charadeId: nextServed.id, answerIndex: nextCorrect, requestId: 'alice-second' },
       'alice'
     )
@@ -2598,20 +2702,24 @@ describe('live protocol', () => {
     await protocol.handleNextCharade(nextCharadeRequest(), 'bob')
     const firstRound = dataOf<CharadeMessage>(messagesOfType(sent, 'charade')[0])
     const wrongIndexes = wrongAnswerIndexes(state, firstRound)
-    await protocol.handleRoundGuess(
+    await handleCurrentRoundGuess(
+      protocol,
       { charadeId: firstRound.id, answerIndex: wrongIndexes[0], requestId: 'alice-first-wrong' },
       'alice'
     )
-    await protocol.handleRoundGuess(
+    await handleCurrentRoundGuess(
+      protocol,
       { charadeId: firstRound.id, answerIndex: wrongIndexes[0], requestId: 'bob-first-wrong' },
       'bob'
     )
     expect(protocol.rounds.isSettled).toBe(false)
-    await protocol.handleRoundGuess(
+    await handleCurrentRoundGuess(
+      protocol,
       { charadeId: firstRound.id, answerIndex: wrongIndexes[1], requestId: 'alice-second-wrong' },
       'alice'
     )
-    await protocol.handleRoundGuess(
+    await handleCurrentRoundGuess(
+      protocol,
       { charadeId: firstRound.id, answerIndex: wrongIndexes[1], requestId: 'bob-second-wrong' },
       'bob'
     )
@@ -2671,7 +2779,8 @@ describe('live protocol', () => {
     await protocol.handleNextCharade(nextCharadeRequest(), 'bob')
     const firstRound = dataOf<CharadeMessage>(messagesOfType(sent, 'charade')[0])
     const wrongIndexes = wrongAnswerIndexes(state, firstRound)
-    await protocol.handleRoundGuess(
+    await handleCurrentRoundGuess(
+      protocol,
       {
         charadeId: firstRound.id,
         answerIndex: wrongIndexes[0],
@@ -2679,7 +2788,8 @@ describe('live protocol', () => {
       },
       'alice'
     )
-    await protocol.handleRoundGuess(
+    await handleCurrentRoundGuess(
+      protocol,
       {
         charadeId: firstRound.id,
         answerIndex: wrongIndexes[1],
@@ -2725,19 +2835,23 @@ describe('live protocol', () => {
     expect(protocol.rounds.current?.guessed).not.toContain('carol')
 
     const wrongIndexes = wrongAnswerIndexes(state, served)
-    await protocol.handleRoundGuess(
+    await handleCurrentRoundGuess(
+      protocol,
       { charadeId: live.id, answerIndex: wrongIndexes[0], requestId: 'alice-first-wrong' },
       'alice'
     )
-    await protocol.handleRoundGuess(
+    await handleCurrentRoundGuess(
+      protocol,
       { charadeId: live.id, answerIndex: wrongIndexes[0], requestId: 'bob-first-wrong' },
       'bob'
     )
-    await protocol.handleRoundGuess(
+    await handleCurrentRoundGuess(
+      protocol,
       { charadeId: live.id, answerIndex: wrongIndexes[1], requestId: 'alice-second-wrong' },
       'alice'
     )
-    await protocol.handleRoundGuess(
+    await handleCurrentRoundGuess(
+      protocol,
       { charadeId: live.id, answerIndex: wrongIndexes[1], requestId: 'bob-second-wrong' },
       'bob'
     )
@@ -2780,20 +2894,24 @@ describe('live protocol', () => {
     expect(authorStats.pending.triedYou).toBe(triedYouBefore)
 
     const wrongIndexes = wrongAnswerIndexes(state, liveMessage)
-    await protocol.handleRoundGuess(
+    await handleCurrentRoundGuess(
+      protocol,
       { charadeId: live.id, answerIndex: wrongIndexes[0], requestId: 'alice-first-wrong' },
       'alice'
     )
     expect(protocol.rounds.isSettled).toBe(false)
-    await protocol.handleRoundGuess(
+    await handleCurrentRoundGuess(
+      protocol,
       { charadeId: live.id, answerIndex: wrongIndexes[0], requestId: 'bob-first-wrong' },
       'bob'
     )
-    await protocol.handleRoundGuess(
+    await handleCurrentRoundGuess(
+      protocol,
       { charadeId: live.id, answerIndex: wrongIndexes[1], requestId: 'alice-second-wrong' },
       'alice'
     )
-    await protocol.handleRoundGuess(
+    await handleCurrentRoundGuess(
+      protocol,
       { charadeId: live.id, answerIndex: wrongIndexes[1], requestId: 'bob-second-wrong' },
       'bob'
     )
@@ -2810,13 +2928,16 @@ describe('live protocol', () => {
     await negotiate(protocol, 'alice')
     await negotiate(protocol, 'bob')
     await protocol.handleNextCharade(nextCharadeRequest(), 'alice')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'bob')
     const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
     const phrase = DECK.find((candidate) => candidate.id === charade.phraseId)!
+    const roundId = protocol.rounds.current!.roundId
     await protocol.handleLeave('bob')
     sent.length = 0
 
     await protocol.handleRoundGuess(
       {
+        roundId,
         charadeId: charade.id,
         answerIndex: served.answers.indexOf(phrase.text),
         requestId: 'survivor-guess'

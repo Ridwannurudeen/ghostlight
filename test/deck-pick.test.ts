@@ -454,7 +454,7 @@ describe('installed protocol codec', () => {
     const daily = { day: '2026-08-23', decoded: 3, authored: 1, stamped: true }
     const nextUnlock = { nextTitle: 'Scene Stealer', requirement: '10 correct decodes or 5 posts', progress: 0.4 }
     const fixtures: Record<keyof typeof Messages, unknown> = {
-      hello: { displayName: 'Player', isGuest: false, protocolVersion: 2 },
+      hello: { displayName: 'Player', isGuest: false, protocolVersion: 3 },
       ready: { instanceId: 'instance', serverTime: 1_777_000_000_000, theme: 'food', themeLabel: 'Kitchen Capers' },
       ping: { seq: 1 },
       pong: { seq: 1 },
@@ -569,7 +569,7 @@ describe('installed protocol codec', () => {
         createdAt: 1_777_000_000_000
       },
       roundStart: { roundId: '1', charadeId: 'ghost-1' },
-      roundGuess: { charadeId: 'ghost-1', answerIndex: 1, requestId: 'round-1', spotlight: true },
+      roundGuess: { roundId: '1', charadeId: 'ghost-1', answerIndex: 1, requestId: 'round-1', spotlight: true },
       roundWinner: { roundId: '1', charadeId: 'ghost-1', address: maximalLook.address, name: maximalLook.name },
       react: { kind: 'genius' },
       error: { code: 'storage-unavailable' }
@@ -606,7 +606,7 @@ describe('installed protocol codec', () => {
       guess: 45,
       retry: 47,
       reveal: 237,
-      roundGuess: 50
+      roundGuess: 55
     })
 
     const saturatedReveal = {

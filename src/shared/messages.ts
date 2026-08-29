@@ -199,6 +199,7 @@ export const Messages = {
   }),
   roundStart: Schemas.Map({ roundId: Schemas.String, charadeId: Schemas.String }),
   roundGuess: Schemas.Map({
+    roundId: Schemas.String,
     charadeId: Schemas.String,
     answerIndex: Schemas.Int,
     requestId: Schemas.String,

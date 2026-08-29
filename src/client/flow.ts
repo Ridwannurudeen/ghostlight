@@ -703,9 +703,7 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
       return {
         ...state,
         roundWinner: { address: action.address, name: action.name },
-        toast: { winnerName: action.name, shownAt: action.now },
-        roundId: '',
-        roundCharadeId: ''
+        toast: { winnerName: action.name, shownAt: action.now }
       }
     case 'reaction':
       return {
@@ -777,7 +775,10 @@ export type OutboundMessage =
   | { type: 'ping'; data: { seq: number } }
   | { type: 'nextCharade'; data: { requestId: string; exclude: string[] } }
   | { type: 'guess'; data: { charadeId: string; answerIndex: number; requestId: string; spotlight?: boolean } }
-  | { type: 'roundGuess'; data: { charadeId: string; answerIndex: number; requestId: string; spotlight?: boolean } }
+  | {
+      type: 'roundGuess'
+      data: { roundId: string; charadeId: string; answerIndex: number; requestId: string; spotlight?: boolean }
+    }
   | {
       type: 'post'
       data: { phraseId: string; emotes: string[]; requestId: string; replyTo?: string; recipient?: string }
@@ -958,6 +959,7 @@ export function canSpectatorReact(state: ClientFlowState) {
     state.ready &&
     (state.screen === 'foyer' || (state.screen === 'reveal' && state.reveal?.correct === false)) &&
     state.roundCharadeId !== '' &&
+    state.roundWinner === null &&
     state.pending.length === 0
   )
 }
@@ -1559,21 +1561,19 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     }
     if (state.pending.some((request) => request.kind === 'guess' || request.kind === 'roundGuess')) return false
     const requestId = createRequestId()
-    const round = state.roundCharadeId === state.charade.id
-    const type = round ? 'roundGuess' : 'guess'
-    sendRequest(
-      type,
-      {
-        type,
-        data: {
-          charadeId: state.charade.id,
-          answerIndex,
-          requestId,
-          ...(!state.retry && state.spotlightEnabled ? { spotlight: true } : {})
-        }
-      },
-      requestId
-    )
+    const data = {
+      charadeId: state.charade.id,
+      answerIndex,
+      requestId,
+      ...(!state.retry && state.spotlightEnabled ? { spotlight: true } : {})
+    }
+    const roundId =
+      state.roundCharadeId === state.charade.id && roundSequence(state.roundId) !== null ? state.roundId : null
+    if (roundId) {
+      sendRequest('roundGuess', { type: 'roundGuess', data: { roundId, ...data } }, requestId)
+    } else {
+      sendRequest('guess', { type: 'guess', data }, requestId)
+    }
     const isFinale = state.charade.isFinale === true || revealOptions?.isFinale === true
     if (revealOptions || isFinale) {
       effects.beginReveal?.(

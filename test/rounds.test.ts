@@ -35,10 +35,11 @@ describe('live rounds', () => {
     rounds.enter({ address: 'bob', name: 'Bob' })
     rounds.start('active')
 
-    expect(rounds.guess('missing', 'active', true)).toEqual({ accepted: false, winner: null })
-    expect(rounds.guess('alice', 'stale', true)).toEqual({ accepted: false, winner: null })
-    expect(rounds.guess('ALICE', 'active', false)).toEqual({ accepted: true, winner: null })
-    expect(rounds.guess('alice', 'active', true)).toEqual({ accepted: false, winner: null })
+    expect(rounds.guess('missing', '1', 'active', true)).toEqual({ accepted: false, winner: null })
+    expect(rounds.guess('alice', '1', 'stale', true)).toEqual({ accepted: false, winner: null })
+    expect(rounds.guess('alice', 'stale', 'active', true)).toEqual({ accepted: false, winner: null })
+    expect(rounds.guess('ALICE', '1', 'active', false)).toEqual({ accepted: true, winner: null })
+    expect(rounds.guess('alice', '1', 'active', true)).toEqual({ accepted: false, winner: null })
     expect(rounds.current).toEqual({ roundId: '1', charadeId: 'active', guessed: ['alice'], winner: null })
   })
 
@@ -49,9 +50,9 @@ describe('live rounds', () => {
     rounds.start('active')
 
     expect(rounds.isSettled).toBe(false)
-    rounds.guess('alice', 'active', false)
+    rounds.guess('alice', '1', 'active', false)
     expect(rounds.isSettled).toBe(false)
-    rounds.guess('bob', 'active', false)
+    rounds.guess('bob', '1', 'active', false)
     expect(rounds.isSettled).toBe(true)
   })
 
@@ -60,8 +61,8 @@ describe('live rounds', () => {
     rounds.enter({ address: 'alice', name: 'Alice' })
     rounds.enter({ address: 'bob', name: 'Bob' })
     rounds.start('active')
-    rounds.guess('alice', 'active', false)
-    rounds.guess('bob', 'active', false)
+    rounds.guess('alice', '1', 'active', false)
+    rounds.guess('bob', '1', 'active', false)
 
     rounds.enter({ address: 'carol', name: 'Carol' })
 
@@ -78,12 +79,12 @@ describe('live rounds', () => {
     rounds.start('race')
     send.mockClear()
 
-    expect(rounds.guess('bob', 'race', true)).toEqual({
+    expect(rounds.guess('bob', '1', 'race', true)).toEqual({
       accepted: true,
       winner: { address: 'bob', name: 'Bob' }
     })
-    expect(rounds.guess('alice', 'race', true)).toEqual({ accepted: false, winner: null })
-    expect(rounds.guess('carol', 'race', true)).toEqual({ accepted: false, winner: null })
+    expect(rounds.guess('alice', '1', 'race', true)).toEqual({ accepted: false, winner: null })
+    expect(rounds.guess('carol', '1', 'race', true)).toEqual({ accepted: false, winner: null })
     expect(rounds.current?.winner).toEqual({ address: 'bob', name: 'Bob' })
     expect(rounds.isSettled).toBe(true)
     expect(send).toHaveBeenCalledOnce()
@@ -103,12 +104,12 @@ describe('live rounds', () => {
 
     expect(rounds.start('same')).toBe(true)
     expect(rounds.start('same')).toBe(false)
-    rounds.guess('alice', 'same', true)
+    rounds.guess('alice', '1', 'same', true)
     expect(rounds.start('same')).toBe(true)
     expect(rounds.current).toEqual({ roundId: '2', charadeId: 'same', guessed: [], winner: null })
 
-    rounds.guess('alice', 'same', false)
-    rounds.guess('bob', 'same', false)
+    rounds.guess('alice', '2', 'same', false)
+    rounds.guess('bob', '2', 'same', false)
     expect(rounds.start('same')).toBe(true)
     expect(rounds.current).toEqual({ roundId: '3', charadeId: 'same', guessed: [], winner: null })
   })
@@ -126,13 +127,39 @@ describe('live rounds', () => {
     expect(rounds.playerCount).toBe(1)
     expect(rounds.isLive).toBe(false)
     expect(rounds.current).toBeNull()
-    expect(rounds.guess('alice', 'charade', true)).toEqual({ accepted: false, winner: null })
+    expect(rounds.guess('alice', '1', 'charade', true)).toEqual({ accepted: false, winner: null })
     expect(send).toHaveBeenCalledOnce()
     expect(send).toHaveBeenCalledWith('roundStart', { roundId: '2', charadeId: '' })
 
     rounds.enter({ address: 'bob', name: 'Bob' })
     expect(rounds.start('next')).toBe(true)
     expect(send).toHaveBeenLastCalledWith('roundStart', { roundId: '3', charadeId: 'next' })
+  })
+
+  it('resets an active round without removing present players', () => {
+    const send = vi.fn()
+    const rounds = new LiveRounds(send)
+    rounds.enter({ address: 'alice', name: 'Alice' })
+    rounds.enter({ address: 'bob', name: 'Bob' })
+    rounds.start('same-show')
+    const staleRoundId = rounds.current!.roundId
+    send.mockClear()
+
+    expect(rounds.reset()).toBe(true)
+    expect(rounds.current).toBeNull()
+    expect(rounds.playerCount).toBe(2)
+    expect(rounds.guess('alice', staleRoundId, 'same-show', true)).toEqual({ accepted: false, winner: null })
+    expect(send).toHaveBeenCalledWith('roundStart', { roundId: '2', charadeId: '' })
+
+    expect(rounds.reset()).toBe(false)
+    expect(rounds.start('same-show')).toBe(true)
+    const currentRoundId = rounds.current!.roundId
+    expect(rounds.current).toMatchObject({ roundId: '3', charadeId: 'same-show' })
+    expect(rounds.guess('alice', staleRoundId, 'same-show', true)).toEqual({ accepted: false, winner: null })
+    expect(rounds.guess('alice', currentRoundId, 'same-show', true)).toEqual({
+      accepted: true,
+      winner: { address: 'alice', name: 'Alice' }
+    })
   })
 
   it('expires an abstained or idle participant without letting a late arrival extend the deadline', () => {
@@ -150,7 +177,7 @@ describe('live rounds', () => {
     now = 4_000
     rounds.enter({ address: 'carol', name: 'Carol' })
     expect(rounds.isParticipant('carol')).toBe(false)
-    expect(rounds.guess('carol', 'timed', true)).toEqual({ accepted: false, winner: null })
+    expect(rounds.guess('carol', roundId, 'timed', true)).toEqual({ accepted: false, winner: null })
     expect(rounds.abstain('alice', roundId)).toBe(true)
     expect(rounds.isSettled).toBe(false)
 

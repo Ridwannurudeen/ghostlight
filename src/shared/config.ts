@@ -8,7 +8,7 @@ export const HEARTBEAT_SECONDS = 2
 export const FLUSH_SECONDS = 30
 export const AUTHOR_COOLDOWN_SECONDS = 60
 export const HYDRATION_DAYS = 14
-export const PROTOCOL_VERSION = 2
+export const PROTOCOL_VERSION = 3
 export const WIRE_INT_MAX = 2_147_483_647
 export const DIAGNOSTICS_DEFAULT_ENABLED = false
 
