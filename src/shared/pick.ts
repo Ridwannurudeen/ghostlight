@@ -74,12 +74,24 @@ export function chooseCharadeFor(
   return eligible[0] ?? null
 }
 
-export function chooseHouseCharade(seed: Seed, preferredTheme?: ThemeId): Charade {
-  const eligible = preferredTheme
-    ? HOUSE_CHARADES.filter((charade) => phraseTheme(charade.phraseId) === preferredTheme)
+export function chooseHouseCharade(seed: Seed, preferredTheme?: ThemeId): Charade
+export function chooseHouseCharade(
+  seed: Seed,
+  preferredTheme: ThemeId | undefined,
+  allowedPhraseIds: ReadonlySet<string>
+): Charade | null
+export function chooseHouseCharade(
+  seed: Seed,
+  preferredTheme?: ThemeId,
+  allowedPhraseIds?: ReadonlySet<string>
+): Charade | null {
+  const allowed = allowedPhraseIds
+    ? HOUSE_CHARADES.filter((charade) => allowedPhraseIds.has(charade.phraseId))
     : HOUSE_CHARADES
+  const themed = preferredTheme ? allowed.filter((charade) => phraseTheme(charade.phraseId) === preferredTheme) : []
+  const eligible = themed.length > 0 ? themed : allowed
 
-  return shuffleSeeded(eligible, seed)[0] ?? HOUSE_CHARADE
+  return shuffleSeeded(eligible, seed)[0] ?? (allowedPhraseIds ? null : HOUSE_CHARADE)
 }
 
 export function phraseTheme(phraseId: string): ThemeId | null {

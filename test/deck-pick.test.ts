@@ -212,6 +212,31 @@ describe('chooseHouseCharade', () => {
       expect(selected, theme).toEqual(new Set(themed.map((charade) => charade.id)))
     }
   })
+
+  it('prefers an allowed fallback in the requested theme', () => {
+    const themed = HOUSE_CHARADES.find((charade) => phraseTheme(charade.phraseId) === 'food')!
+    const other = HOUSE_CHARADES.find((charade) => phraseTheme(charade.phraseId) !== 'food')!
+    const allowed = new Set([themed.phraseId, other.phraseId])
+
+    for (let seed = 0; seed < 100; seed += 1) {
+      expect(chooseHouseCharade(seed, 'food', allowed)).toBe(themed)
+    }
+  })
+
+  it('falls back only within the allow-set when its preferred theme is unavailable', () => {
+    const allowedCharades = HOUSE_CHARADES.filter((charade) => phraseTheme(charade.phraseId) !== 'food').slice(0, 2)
+    const allowed = new Set(allowedCharades.map((charade) => charade.phraseId))
+    const selected = Array.from({ length: 100 }, (_, seed) => chooseHouseCharade(seed, 'food', allowed))
+
+    expect(selected.every((charade) => charade !== null && allowed.has(charade.phraseId))).toBe(true)
+    expect(new Set(selected)).toEqual(new Set(allowedCharades))
+    expect(chooseHouseCharade('stable', 'food', allowed)).toBe(chooseHouseCharade('stable', 'food', allowed))
+  })
+
+  it('returns null instead of using a global fallback when no House phrase is allowed', () => {
+    expect(chooseHouseCharade('empty', undefined, new Set())).toBeNull()
+    expect(chooseHouseCharade('unknown', 'food', new Set(['not-a-house-phrase']))).toBeNull()
+  })
 })
 
 describe('pickDecoys', () => {
