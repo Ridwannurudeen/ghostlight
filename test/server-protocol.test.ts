@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { PROTOCOL_VERSION, themeForTimestamp } from '../src/shared/config'
 import { DECK, HOUSE_CHARADE, HOUSE_CHARADES } from '../src/shared/deck'
 import { pickDecoys, shuffleSeeded } from '../src/shared/pick'
+import { showPolicyForTimestamp } from '../src/shared/show-policy'
+import { SEASON_ZERO_WEEKS } from '../src/shared/seasons'
 import {
   createServerProtocol,
   runServerHandler,
@@ -621,6 +623,556 @@ describe('server readiness and welcome', () => {
   })
 })
 
+describe('active Season Zero show enforcement', () => {
+  it('rejects off-policy public, mail, and reply authoring without mutation while allowing an in-policy post', async () => {
+    const timestamp = SEASON_ZERO_WEEKS[0].eligibility.startsAt + 1_000
+    const policy = showPolicyForTimestamp(timestamp)
+    expect(policy?.kind).toBe('season-zero')
+    if (!policy || policy.kind !== 'season-zero') throw new Error('Expected an active Season Zero policy')
+    const allowedPhrase = DECK.find((phrase) => phrase.id === policy.primaryPhraseIds[0])!
+    const offPolicyPhrase = DECK.find((phrase) => !policy.primaryPhraseIds.includes(phrase.id))!
+    const sender = `0x${'1'.repeat(40)}`
+    const recipient = `0x${'2'.repeat(40)}`
+    const replier = `0x${'3'.repeat(40)}`
+    const priorAuthor = `0x${'4'.repeat(40)}`
+    const snapshotLook = vi.fn(async (address: string) => makeLook(address, address))
+    const {
+      repository,
+      state,
+      sent,
+      snapshotLook: snapshot,
+      checkpoint,
+      protocol
+    } = await createHarness({
+      now: () => timestamp,
+      snapshotLook
+    })
+    state.recentVisitors = [{ ...makeLook(recipient, 'Recipient'), lastSeenAt: timestamp }]
+    await negotiate(protocol, sender)
+    await negotiate(protocol, replier)
+    const target = makeCharade('off-policy-reply-target', {
+      phraseId: offPolicyPhrase.id,
+      author: { address: priorAuthor, name: 'Prior Author' },
+      createdAt: timestamp - 1
+    })
+    state.upsertCharade(target)
+    state.playerStats.get(replier)!.seen.push(target.id)
+    const senderBefore = structuredClone(state.playerStats.get(sender))
+    const replierBefore = structuredClone(state.playerStats.get(replier))
+    const charadesBefore = structuredClone(state.getPlayerCharades())
+    const dirtyBefore = repository.getDirtyKeys()
+    sent.length = 0
+    snapshot.mockClear()
+    checkpoint.mockClear()
+
+    await protocol.handlePost(
+      {
+        requestId: 'off-policy-public',
+        phraseId: offPolicyPhrase.id,
+        emotes: [...offPolicyPhrase.suggested]
+      },
+      sender
+    )
+    await protocol.handlePost(
+      {
+        requestId: 'off-policy-mail',
+        phraseId: offPolicyPhrase.id,
+        emotes: [...offPolicyPhrase.suggested],
+        recipient
+      },
+      sender
+    )
+    await protocol.handlePost(
+      {
+        requestId: 'off-policy-reply',
+        phraseId: offPolicyPhrase.id,
+        emotes: [...offPolicyPhrase.suggested],
+        replyTo: target.id
+      },
+      replier
+    )
+
+    expect(messagesOfType(sent, 'error').map((message) => dataOf<ErrorMessage>(message).code)).toEqual([
+      'invalid-post',
+      'invalid-post',
+      'invalid-reply'
+    ])
+    expect(messagesOfType(sent, 'posted')).toEqual([])
+    expect(state.getPlayerCharades()).toEqual(charadesBefore)
+    expect(state.getCharade(target.id)?.reply).toBeUndefined()
+    expect(state.playerStats.get(sender)).toEqual(senderBefore)
+    expect(state.playerStats.get(replier)).toEqual(replierBefore)
+    expect(state.playerStats.has(recipient)).toBe(false)
+    expect(repository.getDirtyKeys()).toEqual(dirtyBefore)
+    expect(snapshot).not.toHaveBeenCalled()
+    expect(checkpoint).not.toHaveBeenCalled()
+
+    sent.length = 0
+    await protocol.handlePost(
+      { requestId: 'in-policy-public', phraseId: allowedPhrase.id, emotes: [...allowedPhrase.suggested] },
+      sender
+    )
+
+    expect(messagesOfType(sent, 'error')).toEqual([])
+    expect(messagesOfType(sent, 'posted')).toHaveLength(1)
+    const authored = state.getPool().filter((charade) => charade.id !== target.id)
+    expect(authored).toEqual([expect.objectContaining({ phraseId: allowedPhrase.id })])
+    expect(authored[0].recipient).toBeUndefined()
+    expect(state.playerStats.get(sender)).toMatchObject({ authoredCount: 1, revision: 1 })
+  })
+
+  it('does not persist an old-week phrase when its fresh-look snapshot crosses the show boundary', async () => {
+    const firstWeek = SEASON_ZERO_WEEKS[0]
+    const secondWeek = SEASON_ZERO_WEEKS[1]
+    let timestamp = firstWeek.eligibility.endsAt - 1
+    const firstPolicy = showPolicyForTimestamp(timestamp)
+    const secondPolicy = showPolicyForTimestamp(secondWeek.eligibility.startsAt)
+    expect(firstPolicy?.kind).toBe('season-zero')
+    expect(secondPolicy?.kind).toBe('season-zero')
+    if (!firstPolicy || firstPolicy.kind !== 'season-zero' || !secondPolicy || secondPolicy.kind !== 'season-zero') {
+      throw new Error('Expected adjacent active Season Zero policies')
+    }
+    const secondPhraseIds = new Set<string>(secondPolicy.primaryPhraseIds)
+    const oldWeekPhraseId = firstPolicy.primaryPhraseIds.find((phraseId) => !secondPhraseIds.has(phraseId))
+    if (!oldWeekPhraseId) throw new Error('Expected a first-week-only phrase')
+    const oldWeekPhrase = DECK.find((phrase) => phrase.id === oldWeekPhraseId)!
+    const lookGate = deferred<ReturnType<typeof makeLook> | null>()
+    const snapshotLook = vi
+      .fn<ServerProtocolOptions['snapshotLook']>()
+      .mockResolvedValueOnce(makeLook('player', 'Player'))
+      .mockReturnValueOnce(lookGate.promise)
+    const { state, sent, checkpoint, protocol } = await createHarness({ now: () => timestamp, snapshotLook })
+    await negotiate(protocol, 'player')
+    const statsBefore = structuredClone(state.playerStats.get('player'))
+    sent.length = 0
+    checkpoint.mockClear()
+
+    const posting = protocol.handlePost(
+      { requestId: 'cross-week-post', phraseId: oldWeekPhrase.id, emotes: [...oldWeekPhrase.suggested] },
+      'player'
+    )
+    await vi.waitFor(() => expect(snapshotLook).toHaveBeenCalledTimes(2))
+    timestamp = secondWeek.eligibility.startsAt
+    lookGate.resolve(makeLook('player', 'Boundary Player'))
+    await posting
+
+    expect(messagesOfType(sent, 'posted')).toEqual([])
+    expect(messagesOfType(sent, 'error').map((message) => dataOf<ErrorMessage>(message).code)).toEqual(['invalid-post'])
+    expect(state.getPlayerCharades()).toEqual([])
+    expect(state.playerStats.get('player')).toMatchObject({
+      authored: statsBefore!.authored,
+      authoredCount: statsBefore!.authoredCount,
+      revision: statsBefore!.revision,
+      daily: {
+        decoded: statsBefore!.daily.decoded,
+        authored: statsBefore!.daily.authored,
+        stamped: statsBefore!.daily.stamped
+      }
+    })
+    expect(checkpoint).toHaveBeenCalledTimes(2)
+  })
+
+  it('counts and delivers only in-policy mail without deleting older off-policy mail', async () => {
+    const timestamp = SEASON_ZERO_WEEKS[0].eligibility.startsAt
+    const policy = showPolicyForTimestamp(timestamp)
+    expect(policy?.kind).toBe('season-zero')
+    if (!policy || policy.kind !== 'season-zero') throw new Error('Expected an active Season Zero policy')
+    const recipient = `0x${'2'.repeat(40)}`
+    const allowedPhraseId = policy.primaryPhraseIds[0]
+    const offPolicyPhraseId = DECK.find((phrase) => !policy.primaryPhraseIds.includes(phrase.id))!.id
+    const { state, sent, protocol } = await createHarness({ now: () => timestamp })
+    const offPolicyMail = makeCharade('older-off-policy-mail', {
+      phraseId: offPolicyPhraseId,
+      recipient,
+      createdAt: timestamp - 2
+    })
+    const allowedMail = makeCharade('active-policy-mail', {
+      phraseId: allowedPhraseId,
+      recipient,
+      createdAt: timestamp - 1
+    })
+    state.upsertCharade(offPolicyMail)
+    state.upsertCharade(allowedMail)
+
+    await negotiate(protocol, recipient)
+
+    expect(messagesOfType(sent, 'since').map((message) => message.data)).toEqual([expect.objectContaining({ mail: 1 })])
+    sent.length = 0
+    await protocol.handleNextCharade(nextCharadeRequest(), recipient)
+
+    expect(dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!).id).toBe(allowedMail.id)
+    expect(state.getCharade(offPolicyMail.id)).toEqual(offPolicyMail)
+  })
+
+  it('does not emit an old-show mail count when welcome persistence crosses a show boundary', async () => {
+    const firstWeek = SEASON_ZERO_WEEKS[0]
+    const secondWeek = SEASON_ZERO_WEEKS[1]
+    let timestamp = firstWeek.eligibility.endsAt - 1
+    const firstPolicy = showPolicyForTimestamp(timestamp)
+    const secondPolicy = showPolicyForTimestamp(secondWeek.eligibility.startsAt)
+    expect(firstPolicy?.kind).toBe('season-zero')
+    expect(secondPolicy?.kind).toBe('season-zero')
+    if (!firstPolicy || firstPolicy.kind !== 'season-zero' || !secondPolicy || secondPolicy.kind !== 'season-zero') {
+      throw new Error('Expected adjacent active Season Zero policies')
+    }
+    const secondPrimaryIds = new Set<string>(secondPolicy.primaryPhraseIds)
+    const firstOnlyPhraseId = firstPolicy.primaryPhraseIds.find((phraseId) => !secondPrimaryIds.has(phraseId))
+    if (!firstOnlyPhraseId) throw new Error('Expected a first-week-only phrase')
+    const recipient = `0x${'5'.repeat(40)}`
+    const welcomeCheckpointStarted = deferred<void>()
+    const welcomeCheckpointGate = deferred<void>()
+    let flushCalls = 0
+    const { state, sent, protocol } = await createHarness({
+      now: () => timestamp,
+      flush: async () => {
+        flushCalls += 1
+        if (flushCalls === 2) {
+          welcomeCheckpointStarted.resolve()
+          await welcomeCheckpointGate.promise
+        }
+      }
+    })
+    state.upsertCharade(
+      makeCharade('old-show-welcome-mail', {
+        phraseId: firstOnlyPhraseId,
+        recipient,
+        createdAt: timestamp
+      })
+    )
+    await negotiate(protocol, 'rollover-player')
+    sent.length = 0
+
+    const welcoming = negotiate(protocol, recipient)
+    await welcomeCheckpointStarted.promise
+    timestamp = secondWeek.eligibility.startsAt
+    await protocol.handlePing({ seq: 101 }, 'rollover-player')
+    welcomeCheckpointGate.resolve()
+    await welcoming
+
+    expect(messagesOfType(sent, 'since').filter((message) => message.to?.[0] === recipient)).toEqual([])
+    expect(state.playerStats.get(recipient)?.showSet?.showKey).toBe(`season-zero:${secondWeek.id}`)
+  })
+
+  it('does not emit an old-show mail count when the welcome progress send crosses a show boundary', async () => {
+    const firstWeek = SEASON_ZERO_WEEKS[0]
+    const secondWeek = SEASON_ZERO_WEEKS[1]
+    let timestamp = firstWeek.eligibility.endsAt - 1
+    const firstPolicy = showPolicyForTimestamp(timestamp)
+    const secondPolicy = showPolicyForTimestamp(secondWeek.eligibility.startsAt)
+    expect(firstPolicy?.kind).toBe('season-zero')
+    expect(secondPolicy?.kind).toBe('season-zero')
+    if (!firstPolicy || firstPolicy.kind !== 'season-zero' || !secondPolicy || secondPolicy.kind !== 'season-zero') {
+      throw new Error('Expected adjacent active Season Zero policies')
+    }
+    const secondPrimaryIds = new Set<string>(secondPolicy.primaryPhraseIds)
+    const firstOnlyPhraseId = firstPolicy.primaryPhraseIds.find((phraseId) => !secondPrimaryIds.has(phraseId))
+    if (!firstOnlyPhraseId) throw new Error('Expected a first-week-only phrase')
+    const recipient = `0x${'6'.repeat(40)}`
+    const progressSendStarted = deferred<void>()
+    const progressSendGate = deferred<void>()
+    let blockedProgress = false
+    const { state, sent, protocol } = await createHarness({
+      now: () => timestamp,
+      send: async (type, _data, to) => {
+        if (!blockedProgress && type === 'progress' && to?.[0] === recipient) {
+          blockedProgress = true
+          progressSendStarted.resolve()
+          await progressSendGate.promise
+        }
+      }
+    })
+    state.upsertCharade(
+      makeCharade('old-show-progress-mail', {
+        phraseId: firstOnlyPhraseId,
+        recipient,
+        createdAt: timestamp
+      })
+    )
+    await negotiate(protocol, 'rollover-player')
+    sent.length = 0
+
+    const welcoming = negotiate(protocol, recipient)
+    await progressSendStarted.promise
+    timestamp = secondWeek.eligibility.startsAt
+    await protocol.handlePing({ seq: 102 }, 'rollover-player')
+    progressSendGate.resolve()
+    await welcoming
+
+    expect(messagesOfType(sent, 'since').filter((message) => message.to?.[0] === recipient)).toEqual([])
+    expect(state.playerStats.get(recipient)?.showSet?.showKey).toBe(`season-zero:${secondWeek.id}`)
+  })
+
+  it('does not replay an unresolved retry after the active show changes', async () => {
+    const firstWeek = SEASON_ZERO_WEEKS[0]
+    const secondWeek = SEASON_ZERO_WEEKS[1]
+    let timestamp = firstWeek.eligibility.endsAt - 1
+    const firstPolicy = showPolicyForTimestamp(timestamp)!
+    const { state, sent, protocol } = await createHarness({ now: () => timestamp })
+    const charade = makeCharade('pre-boundary-retry', {
+      phraseId: firstPolicy.primaryPhraseIds[0],
+      author: { address: 'outside-author' },
+      createdAt: timestamp
+    })
+    state.upsertCharade(charade)
+    await negotiate(protocol, 'player')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'player')
+    const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+    const firstMiss = {
+      charadeId: served.id,
+      answerIndex: wrongAnswerIndexes(state, served)[0],
+      requestId: 'pre-boundary-first-miss'
+    }
+    sent.length = 0
+
+    await protocol.handleGuess(firstMiss, 'player')
+    expect(messagesOfType(sent, 'retry')).toHaveLength(1)
+
+    timestamp = secondWeek.eligibility.startsAt
+    sent.length = 0
+    await protocol.handleGuess(firstMiss, 'player')
+
+    expect(messagesOfType(sent, 'retry')).toEqual([])
+    expect(messagesOfType(sent, 'error').map((message) => dataOf<ErrorMessage>(message).code)).toEqual([
+      'charade-not-served'
+    ])
+    expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 0, correct: 0 })
+  })
+
+  it('does not finish an in-flight solo guess after another request rolls the show forward', async () => {
+    const firstWeek = SEASON_ZERO_WEEKS[0]
+    const secondWeek = SEASON_ZERO_WEEKS[1]
+    let timestamp = firstWeek.eligibility.endsAt - 1
+    const firstPolicy = showPolicyForTimestamp(timestamp)!
+    const { state, sent, protocol } = await createHarness({ now: () => timestamp })
+    const charade = makeCharade('pre-boundary-in-flight-guess', {
+      phraseId: firstPolicy.primaryPhraseIds[0],
+      author: { address: 'outside-author' },
+      createdAt: timestamp
+    })
+    state.upsertCharade(charade)
+    await negotiate(protocol, 'player')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'player')
+    const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+    const authorStarted = deferred<void>()
+    const authorGate = deferred<void>()
+    const getOrCreateStats = state.getOrCreateStats.bind(state)
+    vi.spyOn(state, 'getOrCreateStats').mockImplementation(async (address, name, persistent) => {
+      if (address === 'outside-author') {
+        authorStarted.resolve()
+        await authorGate.promise
+      }
+      return getOrCreateStats(address, name, persistent)
+    })
+    sent.length = 0
+
+    const guessing = protocol.handleGuess(
+      {
+        charadeId: served.id,
+        answerIndex: correctAnswerIndex(state, served),
+        requestId: 'pre-boundary-in-flight-guess'
+      },
+      'player'
+    )
+    await authorStarted.promise
+    timestamp = secondWeek.eligibility.startsAt
+    await protocol.handlePing({ seq: 99 }, 'player')
+    authorGate.resolve()
+    await guessing
+
+    expect(messagesOfType(sent, 'reveal')).toEqual([])
+    expect(messagesOfType(sent, 'error').map((message) => dataOf<ErrorMessage>(message).code)).toEqual([
+      'invalid-guess'
+    ])
+    expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 0, correct: 0 })
+    expect(state.playerStats.get('player')).toMatchObject({
+      decoded: 0,
+      correct: 0,
+      showSet: { showKey: `season-zero:${secondWeek.id}`, round: 0 }
+    })
+  })
+
+  it("serves every active week primary with only that week's reviewed answers", async () => {
+    const primaryViolations: string[] = []
+    const decoyViolations: string[] = []
+
+    for (const week of SEASON_ZERO_WEEKS) {
+      let timestamp = week.eligibility.startsAt + 1_000
+      const policy = showPolicyForTimestamp(timestamp)
+      expect(policy?.kind).toBe('season-zero')
+      if (!policy || policy.kind !== 'season-zero') throw new Error(`Expected an active policy for ${week.id}`)
+      const allowedPrimaries = new Set<string>(policy.primaryPhraseIds)
+      const allowedDecoys = new Set<string>(policy.decoyPhraseIds)
+      const primaryHarness = await createHarness({ now: () => timestamp })
+      const offPolicyPhrase =
+        DECK.find((phrase) => !allowedPrimaries.has(phrase.id) && phrase.theme === themeForTimestamp(timestamp).id) ??
+        DECK.find((phrase) => !allowedPrimaries.has(phrase.id))!
+
+      primaryHarness.state.upsertCharade(
+        makeCharade(`${week.id}-off-policy-primary`, {
+          phraseId: offPolicyPhrase.id,
+          author: { address: `${week.id}-off-policy-author` },
+          createdAt: timestamp - 1
+        })
+      )
+
+      policy.primaryPhraseIds.forEach((phraseId, index) => {
+        primaryHarness.state.upsertCharade(
+          makeCharade(`${week.id}-primary-${index}`, {
+            phraseId,
+            author: { address: `${week.id}-author-${index}` },
+            createdAt: timestamp + index
+          })
+        )
+      })
+      await negotiate(primaryHarness.protocol, `${week.id}-decoder`)
+      primaryHarness.sent.length = 0
+
+      const servedPrimaries = new Set<string>()
+      for (let index = 0; index < policy.primaryPhraseIds.length; index += 1) {
+        timestamp += 250
+        await primaryHarness.protocol.handleNextCharade(
+          { requestId: `${week.id}-primary-next-${index}`, exclude: [] },
+          `${week.id}-decoder`
+        )
+        const served = dataOf<CharadeMessage>(messagesOfType(primaryHarness.sent, 'charade').at(-1)!)
+        const phraseId = servedPhraseId(primaryHarness.state, served)
+        if (!phraseId || !allowedPrimaries.has(phraseId)) primaryViolations.push(`${week.id}:${phraseId ?? 'unknown'}`)
+        for (const answerId of served.answerIds) {
+          if (!allowedDecoys.has(answerId)) decoyViolations.push(`${week.id}:${answerId}`)
+        }
+        if (phraseId) servedPrimaries.add(phraseId)
+        await primaryHarness.protocol.handleGuess(
+          {
+            charadeId: served.id,
+            answerIndex: correctAnswerIndex(primaryHarness.state, served),
+            requestId: `${week.id}-primary-guess-${index}`
+          },
+          `${week.id}-decoder`
+        )
+      }
+
+      expect.soft([...servedPrimaries].sort()).toEqual([...policy.primaryPhraseIds].sort())
+    }
+
+    expect.soft(primaryViolations).toEqual([])
+    expect.soft(decoyViolations).toEqual([])
+  })
+
+  it("serves only each active week's reviewed House fallbacks and answers", async () => {
+    const houseViolations: string[] = []
+    const decoyViolations: string[] = []
+
+    for (const week of SEASON_ZERO_WEEKS) {
+      const timestamp = week.eligibility.startsAt + 1_000
+      const policy = showPolicyForTimestamp(timestamp)
+      expect(policy?.kind).toBe('season-zero')
+      if (!policy || policy.kind !== 'season-zero') throw new Error(`Expected an active policy for ${week.id}`)
+      const allowedDecoys = new Set<string>(policy.decoyPhraseIds)
+      const allowedHouse = new Set<string>(policy.housePhraseIds)
+      const houseHarness = await createHarness({ now: () => timestamp })
+      for (let index = 0; index < HOUSE_CHARADES.length * 2; index += 1) {
+        const address = `${week.id}-house-decoder-${index}`
+        await negotiate(houseHarness.protocol, address)
+        houseHarness.sent.length = 0
+        await houseHarness.protocol.handleNextCharade(
+          { requestId: `${week.id}-house-next-${index}`, exclude: [] },
+          address
+        )
+        const served = dataOf<CharadeMessage>(messagesOfType(houseHarness.sent, 'charade').at(-1)!)
+        const phraseId = servedPhraseId(houseHarness.state, served)
+        if (!phraseId || !allowedHouse.has(phraseId)) houseViolations.push(`${week.id}:${phraseId ?? 'unknown'}`)
+        for (const answerId of served.answerIds) {
+          if (!allowedDecoys.has(answerId)) decoyViolations.push(`${week.id}:${answerId}`)
+        }
+        await houseHarness.protocol.handleLeave(address)
+      }
+    }
+
+    expect.soft(houseViolations).toEqual([])
+    expect.soft(decoyViolations).toEqual([])
+  })
+
+  it('invalidates volatile serving and round state at a show boundary but keeps completed replay', async () => {
+    const firstWeek = SEASON_ZERO_WEEKS[0]
+    const secondWeek = SEASON_ZERO_WEEKS[1]
+    let timestamp = firstWeek.eligibility.endsAt - 1
+    const firstPolicy = showPolicyForTimestamp(timestamp)
+    const secondPolicy = showPolicyForTimestamp(secondWeek.eligibility.startsAt)
+    expect(firstPolicy?.kind).toBe('season-zero')
+    expect(secondPolicy?.kind).toBe('season-zero')
+    if (!firstPolicy || firstPolicy.kind !== 'season-zero' || !secondPolicy || secondPolicy.kind !== 'season-zero') {
+      throw new Error('Expected adjacent active Season Zero policies')
+    }
+    const secondPrimaryIds = new Set<string>(secondPolicy.primaryPhraseIds)
+    const firstPhraseId = firstPolicy.primaryPhraseIds.find((phraseId) => !secondPrimaryIds.has(phraseId))!
+    const firstPrimaryIds = new Set<string>(firstPolicy.primaryPhraseIds)
+    const secondPhraseId = secondPolicy.primaryPhraseIds.find((phraseId) => !firstPrimaryIds.has(phraseId))!
+    const snapshotLook = async (address: string) => makeLook(address, address)
+    const { state, sent, protocol } = await createHarness({ snapshotLook, now: () => timestamp })
+    const firstCharade = makeCharade('pre-boundary-charade', {
+      phraseId: firstPhraseId,
+      author: { address: 'outside-first' },
+      createdAt: timestamp - 1
+    })
+    state.upsertCharade(firstCharade)
+    await negotiate(protocol, 'alice')
+    await negotiate(protocol, 'bob')
+    sent.length = 0
+    const aliceNext = { requestId: 'alice-pre-boundary-next', exclude: [] as string[] }
+    const bobNext = { requestId: 'bob-pre-boundary-next', exclude: [] as string[] }
+    await protocol.handleNextCharade(aliceNext, 'alice')
+    await protocol.handleNextCharade(bobNext, 'bob')
+    const aliceServed = dataOf<CharadeMessage>(
+      messagesOfType(sent, 'charade').find((message) => message.to?.[0] === 'alice')!
+    )
+    const oldRoundId = protocol.rounds.current!.roundId
+    const completedGuess = {
+      roundId: oldRoundId,
+      charadeId: aliceServed.id,
+      answerIndex: correctAnswerIndex(state, aliceServed),
+      requestId: 'alice-pre-boundary-guess'
+    }
+    await protocol.handleRoundGuess(completedGuess, 'alice')
+    const completedReveal = dataOf<Record<string, unknown>>(messagesOfType(sent, 'reveal').at(-1)!)
+    const guessesAfterCompletion = { ...state.getCharade(firstCharade.id)!.guesses }
+    const secondCharade = makeCharade('post-boundary-charade', {
+      phraseId: secondPhraseId,
+      author: { address: 'outside-second' },
+      createdAt: timestamp
+    })
+    state.upsertCharade(secondCharade)
+
+    timestamp = secondWeek.eligibility.startsAt
+    sent.length = 0
+    await protocol.handleRoundGuess(completedGuess, 'alice')
+    expect(messagesOfType(sent, 'reveal').map((message) => message.data)).toEqual([completedReveal])
+    expect(state.getCharade(firstCharade.id)?.guesses).toEqual(guessesAfterCompletion)
+
+    sent.length = 0
+    await protocol.handleNextCharade(bobNext, 'bob')
+    const afterBoundary = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+    expect(afterBoundary.id).toBe(secondCharade.id)
+    expect(servedPhraseId(state, afterBoundary)).toBe(secondPhraseId)
+    expect(protocol.rounds.current?.charadeId).toBe(secondCharade.id)
+
+    sent.length = 0
+    await protocol.handleRoundGuess(
+      {
+        roundId: oldRoundId,
+        charadeId: firstCharade.id,
+        answerIndex: correctAnswerIndex(state, aliceServed),
+        requestId: 'bob-stale-boundary-guess'
+      },
+      'bob'
+    )
+    expect(messagesOfType(sent, 'reveal')).toEqual([])
+    expect(messagesOfType(sent, 'error').map((message) => dataOf<ErrorMessage>(message).code)).toEqual([
+      'invalid-guess'
+    ])
+    expect(state.getCharade(firstCharade.id)?.guesses).toEqual(guessesAfterCompletion)
+  })
+})
+
 describe('charade serving and guesses', () => {
   it('rejects oversized identifiers and exclusion sets before constructing request state', async () => {
     const { sent, protocol } = await createHarness()
@@ -916,7 +1468,14 @@ describe('charade serving and guesses', () => {
     await negotiate(protocol, 'player')
     const stats = state.playerStats.get('player')!
     stats.daily = { day: '2026-08-23', decoded: 2, authored: 1, stamped: false }
-    stats.showSet = { round: 4, score: 600, streak: 2, bestStreak: 3, understood: 1 }
+    stats.showSet = {
+      showKey: 'daily:2026-08-23',
+      round: 4,
+      score: 600,
+      streak: 2,
+      bestStreak: 3,
+      understood: 1
+    }
     state.saveStats('player')
     await protocol.handleNextCharade(nextCharadeRequest(), 'player')
     const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
@@ -983,7 +1542,14 @@ describe('charade serving and guesses', () => {
     state.upsertCharade(charade)
     await negotiate(protocol, 'player')
     const stats = state.playerStats.get('player')!
-    stats.showSet = { round: 0, score: 50, streak: 2, bestStreak: 2, understood: 1 }
+    stats.showSet = {
+      showKey: 'daily:2026-08-23',
+      round: 0,
+      score: 50,
+      streak: 2,
+      bestStreak: 2,
+      understood: 1
+    }
     state.saveStats('player')
     await protocol.handleNextCharade(nextCharadeRequest(), 'player')
     const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
@@ -1237,6 +1803,7 @@ describe('charade serving and guesses', () => {
     await protocol.handleGuess({ ...first.guess, spotlight: true }, 'player')
     expect(dataOf<Record<string, unknown>>(messagesOfType(sent, 'reveal').at(-1)!)).toEqual(first.reveal)
     expect(state.playerStats.get('player')?.showSet).toEqual({
+      showKey: 'daily:2026-08-23',
       round: 1,
       score: 100,
       streak: 1,
@@ -1317,7 +1884,14 @@ describe('charade serving and guesses', () => {
     const { state, sent, protocol } = await createHarness()
     await negotiate(protocol, 'player')
     const stats = state.playerStats.get('player')!
-    stats.showSet = { round: 0, score: 200, streak: 2, bestStreak: 2, understood: 1 }
+    stats.showSet = {
+      showKey: 'daily:2026-08-23',
+      round: 0,
+      score: 200,
+      streak: 2,
+      bestStreak: 2,
+      understood: 1
+    }
     state.saveStats('player')
     await protocol.handleNextCharade(nextCharadeRequest(), 'player')
     const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
@@ -2597,7 +3171,9 @@ describe('live protocol', () => {
       { roundId: '01', charadeId: charade.id, answerIndex: correctIndex, requestId: 'malformed-round-guess' },
       'alice'
     )
-    expect(messagesOfType(sent, 'error')).toEqual([{ type: 'error', data: { code: 'invalid-guess' }, to: ['alice'] }])
+    expect(messagesOfType(sent, 'error')).toEqual([
+      { type: 'error', data: { code: 'invalid-guess' }, to: ['alice'] }
+    ])
     expect(messagesOfType(sent, 'reveal')).toEqual([])
     sent.length = 0
 
@@ -2616,9 +3192,7 @@ describe('live protocol', () => {
       { roundId: staleRoundId, charadeId: charade.id, answerIndex: correctIndex, requestId: 'stale-round-guess' },
       'alice'
     )
-    expect(messagesOfType(sent, 'error')).toEqual([
-      { type: 'error', data: { code: 'invalid-guess' }, to: ['alice'] }
-    ])
+    expect(messagesOfType(sent, 'error')).toEqual([{ type: 'error', data: { code: 'invalid-guess' }, to: ['alice'] }])
     expect(messagesOfType(sent, 'reveal')).toEqual([])
     expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 0, correct: 0 })
     expect(state.playerStats.get('alice')?.decoded).toBe(0)

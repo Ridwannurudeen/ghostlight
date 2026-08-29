@@ -5,6 +5,7 @@ import { DECK, EMOTE_VOCABULARY } from '../shared/deck'
 import { normalizePlayerName } from '../shared/i18n'
 import { Messages, SPECTATOR_REACTION_KINDS, room } from '../shared/messages'
 import { chooseCharadeFor, chooseHouseCharade, chooseRetryBeat, pickDecoys, shuffleSeeded } from '../shared/pick'
+import { showPolicyForTimestamp } from '../shared/show-policy'
 import type { Charade, Look, PlayerProgress, PlayerStats, ShowSet } from '../shared/types'
 import { SHOW_SET_SIZE, STORAGE_SCHEMA_VERSION } from '../shared/types'
 import { LiveRounds } from './rounds'
@@ -68,6 +69,7 @@ type PostedPayload = {
 
 type PreparedCharade = {
   charade: Charade
+  showKey: string
   publicId: string
   answers: string[]
   answerIds: string[]
@@ -131,15 +133,32 @@ const REQUEST_TOKENS_PER_SECOND = 8
 const DEFAULT_BODY_SHAPE = 'urn:decentraland:off-chain:base-avatars:BaseMale'
 const STABLE_ADDRESS = /^0x[a-f0-9]{40}$/iu
 const ROUND_ID = /^[1-9][0-9]*$/u
+const NO_PHRASE_IDS: ReadonlySet<string> = new Set()
 
-function emptyShowSet(): ShowSet {
-  return { round: 0, score: 0, streak: 0, bestStreak: 0, understood: 0 }
+function emptyShowSet(showKey: string): ShowSet {
+  return { showKey, round: 0, score: 0, streak: 0, bestStreak: 0, understood: 0 }
 }
 
-function showSetFor(stats: PlayerStats) {
-  if (!stats.showSet) stats.showSet = emptyShowSet()
+function showSetFor(stats: PlayerStats, showKey: string) {
+  if (stats.showSet?.showKey !== showKey) stats.showSet = emptyShowSet(showKey)
   return stats.showSet
 }
+
+function activeShowForTimestamp(timestamp: number) {
+  const policy = showPolicyForTimestamp(timestamp)
+  if (!policy) return null
+  const primaryPhraseIds: ReadonlySet<string> = new Set(policy.primaryPhraseIds)
+  const decoyPhraseIds: ReadonlySet<string> = new Set(policy.decoyPhraseIds)
+  const housePhraseIds: ReadonlySet<string> = new Set(policy.housePhraseIds)
+  return {
+    policy,
+    primaryPhraseIds,
+    housePhraseIds,
+    decoyDeck: DECK.filter((phrase) => decoyPhraseIds.has(phrase.id))
+  }
+}
+
+type ActiveShow = NonNullable<ReturnType<typeof activeShowForTimestamp>>
 
 function canonicalAddress(address: string) {
   return address.toLowerCase()
@@ -246,7 +265,8 @@ export function createServerProtocol(options: ServerProtocolOptions) {
   const random = options.random ?? Math.random
   const ready = options.ready ?? Promise.resolve()
   const checkpoint = options.flush ?? (async () => {})
-  const instanceId = options.instanceId ?? String(now())
+  const initialTimestamp = now()
+  const instanceId = options.instanceId ?? String(initialTimestamp)
   const looks = new Map<string, Look>()
   const present = new Set<string>()
   const sessionGenerations = new Map<string, number>()
@@ -268,16 +288,17 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       durable: boolean
     }>
   >()
-  const nextRequests = new Map<string, CachedRequest<Promise<PreparedCharade>>>()
+  const nextRequests = new Map<string, CachedRequest<Promise<PreparedCharade | null>>>()
   const activeRequestHandlers = new Map<string, Promise<void>>()
   const outstandingRequests = new Map<string, number>()
   const requestBuckets = new Map<string, RateBucket>()
   const rounds = new LiveRounds((type, data) => options.send(type, data), now, options.roundDurationMilliseconds)
-  let currentDay = dayKey(now())
+  let currentDay = dayKey(initialTimestamp)
+  let currentShow = activeShowForTimestamp(initialTimestamp)
   let rolloverPromise: Promise<void> | null = null
   let houseSequence = 0
   let answerSequence = 0
-  const serverSecret = `${now()}:${random()}:${random()}`
+  const serverSecret = `${initialTimestamp}:${random()}:${random()}`
   let activeRoundCharade: PreparedCharade | null = null
 
   function sessionGeneration(address: string) {
@@ -494,17 +515,46 @@ export function createServerProtocol(options: ServerProtocolOptions) {
   }
 
   async function rolloverIfNeeded() {
-    const nextDay = dayKey(now())
+    const timestamp = now()
+    const nextDay = dayKey(timestamp)
     if (nextDay === currentDay) return
+    const nextShow = activeShowForTimestamp(timestamp)
+    const showChanged = nextShow?.policy.showKey !== currentShow?.policy.showKey
     if (rolloverPromise) return rolloverPromise
     rolloverPromise = (async () => {
-      options.state.rollover(now())
+      if (nextDay !== currentDay) options.state.rollover(timestamp)
+      if (showChanged) {
+        servedAnswers.clear()
+        nextRequests.clear()
+        activeDecoders.clear()
+        activeRoundCharade = null
+        rounds.reset()
+        for (const [requestKey, entry] of completedRequests) {
+          if (entry.value.type === 'retry') completedRequests.delete(requestKey)
+        }
+      }
       await checkpoint()
-      currentDay = nextDay
       const sessions = [...looks].map(([address, look]) => ({ address, look, generation: sessionGeneration(address) }))
+      const refreshed: Array<{
+        address: string
+        look: Look
+        generation: number
+        stats: Awaited<ReturnType<GhostlightState['getOrCreateStats']>>
+      }> = []
       for (const { address, look, generation } of sessions) {
         if (generation === null) continue
         const stats = await options.state.getOrCreateStats(address, look.name, !look.isGuest)
+        if (nextShow) {
+          const previousShowSet = stats.showSet
+          showSetFor(stats, nextShow.policy.showKey)
+          if (stats.showSet !== previousShowSet) options.state.saveStats(address, !look.isGuest)
+        }
+        refreshed.push({ address, look, generation, stats })
+      }
+      if (showChanged) await checkpoint()
+      currentDay = nextDay
+      currentShow = nextShow
+      for (const { address, look, generation, stats } of refreshed) {
         if (!isCurrentSession(address, generation)) continue
         const daily = { ...options.state.getDaily(stats) }
         await sendTo(look.address, 'ready', readyPayload())
@@ -532,6 +582,22 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       if (isCurrentSession(address, generation)) await sendError(address, 'storage-unavailable')
       return false
     }
+  }
+
+  async function requireCurrentPrimary(
+    address: string,
+    generation: number,
+    showKey: string,
+    phraseId: string,
+    errorCode: string
+  ) {
+    if (!(await rolloverOrError(address, generation))) return false
+    if (!isCurrentSession(address, generation)) return false
+    if (currentShow?.policy.showKey !== showKey || !currentShow.primaryPhraseIds.has(phraseId)) {
+      await sendError(address, errorCode)
+      return false
+    }
+    return true
   }
 
   function progressFor(stats: Awaited<ReturnType<GhostlightState['getOrCreateStats']>>) {
@@ -570,18 +636,18 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     return { instanceId, serverTime: timestamp, theme: theme.id, themeLabel: theme.label }
   }
 
-  function selectRoundCharade() {
+  function selectRoundCharade(show: ActiveShow) {
     const presentAddresses = new Set([...looks.keys()])
     const seen = new Set<string>()
     for (const address of presentAddresses) {
       for (const charadeId of options.state.playerStats.get(address)?.seen ?? []) seen.add(charadeId)
     }
     const previous = activeRoundCharade?.charade.id
-    const theme = themeForTimestamp(now()).id
+    const theme = show.policy.legacyTheme.id
     let selected: Charade | null = null
     for (const charade of options.state.getPool()) {
       if (
-        !DECK.some((phrase) => phrase.id === charade.phraseId) ||
+        !show.primaryPhraseIds.has(charade.phraseId) ||
         presentAddresses.has(canonicalAddress(charade.author.address)) ||
         charade.id === previous ||
         seen.has(charade.id)
@@ -608,13 +674,27 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         if (order < 0) selected = charade
       }
     }
-    return selected ?? chooseHouseCharade(`round:${currentDay}:${previous ?? ''}:${houseSequence++}`, theme)
+    return (
+      selected ??
+      chooseHouseCharade(
+        `round:${show.policy.showKey}:${previous ?? ''}:${houseSequence++}`,
+        theme,
+        show.housePhraseIds
+      )
+    )
   }
 
-  function ensureRound() {
+  function ensureRound(show: ActiveShow) {
     if (!rounds.isLive) return null
     const current = rounds.current
-    if (current && !rounds.isSettled && activeRoundCharade?.publicId === current.charadeId) return activeRoundCharade
+    if (
+      current &&
+      !rounds.isSettled &&
+      activeRoundCharade?.publicId === current.charadeId &&
+      activeRoundCharade.showKey === show.policy.showKey
+    ) {
+      return activeRoundCharade
+    }
     if (!current && activeRoundCharade) {
       if (
         activeRoundCharade.charade.recipient !== undefined ||
@@ -632,10 +712,17 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       rounds.start(activeRoundCharade.publicId)
       return activeRoundCharade
     }
-    const selected = selectRoundCharade()
+    const selected = selectRoundCharade(show)
     activeRoundCharade =
-      prepareCharade(selected) ??
-      prepareCharade(chooseHouseCharade(`invalid-round:${houseSequence++}`, themeForTimestamp(now()).id))
+      prepareCharade(selected, show) ??
+      prepareCharade(
+        chooseHouseCharade(
+          `invalid-round:${show.policy.showKey}:${houseSequence++}`,
+          show.policy.legacyTheme.id,
+          show.housePhraseIds
+        ),
+        show
+      )
     if (!activeRoundCharade) return null
     rounds.start(activeRoundCharade.publicId)
     return activeRoundCharade
@@ -652,20 +739,27 @@ export function createServerProtocol(options: ServerProtocolOptions) {
 
     const previousVisitors = [...options.state.recentVisitors]
     const stats = await options.state.getOrCreateStats(key, look.name, !look.isGuest)
+    await rolloverIfNeeded()
     if (welcomePromises.get(key) !== owner || !isCurrentSession(key, generation)) return false
+    if (currentShow && stats.showSet?.showKey !== currentShow.policy.showKey) {
+      showSetFor(stats, currentShow.policy.showKey)
+      options.state.saveStats(key, !look.isGuest)
+    }
     looks.set(key, look)
     options.state.touchVisitor(look)
     const rankIndex = options.state.boards.decoders.findIndex((row) => canonicalAddress(row.address) === key)
     const pending = { ...stats.pending }
+    const canReceiveMail = !look.isGuest && STABLE_ADDRESS.test(look.address)
     pending.mail =
-      !look.isGuest && STABLE_ADDRESS.test(look.address)
-        ? options.state.countMailForRecipient(look.address, stats.seen)
+      canReceiveMail
+        ? options.state.countMailForRecipient(look.address, stats.seen, currentShow?.primaryPhraseIds ?? NO_PHRASE_IDS)
         : 0
     const progress = progressFor(stats)
 
     options.state.consumePending(key, !look.isGuest)
     try {
       await checkpoint()
+      await rolloverIfNeeded()
     } catch (error) {
       if (welcomePromises.get(key) === owner && isCurrentSession(key, generation)) {
         stats.pending = pending
@@ -681,6 +775,20 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       ...progress
     })
     if (welcomePromises.get(key) !== owner || !isCurrentSession(key, generation)) return false
+    try {
+      await rolloverIfNeeded()
+    } catch (error) {
+      if (welcomePromises.get(key) === owner && isCurrentSession(key, generation)) {
+        stats.pending = pending
+        options.state.saveStats(key, !look.isGuest)
+      }
+      throw error
+    }
+    if (welcomePromises.get(key) !== owner || !isCurrentSession(key, generation)) return false
+    pending.mail =
+      canReceiveMail
+        ? options.state.countMailForRecipient(look.address, stats.seen, currentShow?.primaryPhraseIds ?? NO_PHRASE_IDS)
+        : 0
     if (pending.triedYou > 0 || pending.replies > 0 || pending.mail > 0) {
       await sendTo(address, 'since', {
         triedYou: pending.triedYou,
@@ -835,15 +943,17 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     }
   }
 
-  function prepareCharade(charade: Charade): PreparedCharade | null {
+  function prepareCharade(charade: Charade | null, show: ActiveShow): PreparedCharade | null {
+    if (!charade || !show.primaryPhraseIds.has(charade.phraseId)) return null
     const phrase = DECK.find((candidate) => candidate.id === charade.phraseId)
     if (!phrase) return null
     const privateSeed = `${serverSecret}:${++answerSequence}:${random()}`
-    const decoys = pickDecoys(phrase.id, charade.emotes, DECK, privateSeed)
+    const decoys = pickDecoys(phrase.id, charade.emotes, show.decoyDeck, privateSeed)
     if (decoys.length !== 2) return null
     const shuffled = shuffleSeeded([phrase, decoys[0], decoys[1]], `${privateSeed}:answers`)
     return {
       charade,
+      showKey: show.policy.showKey,
       publicId: charade.isHouse ? `house-${hashText(privateSeed, 0)}${hashText(privateSeed, 0x9e3779b9)}` : charade.id,
       answers: shuffled.map((answer) => answer.text),
       answerIds: shuffled.map((answer) => answer.id),
@@ -864,7 +974,8 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     const { charade } = presentation
     const cachedAuthorStats = options.state.playerStats.get(canonicalAddress(charade.author.address))
     const authorTitle = charade.isHouse || !cachedAuthorStats ? '' : progressFor(cachedAuthorStats).title
-    const showSet = options.state.playerStats.get(addressKey)?.showSet ?? emptyShowSet()
+    const cachedStats = options.state.playerStats.get(addressKey)
+    const showSet = cachedStats ? showSetFor(cachedStats, prepared.showKey) : emptyShowSet(prepared.showKey)
     const setRound = Math.min(showSet.round + 1, SHOW_SET_SIZE)
     activeDecoders.add(addressKey)
     lastAuthors.set(addressKey, charade.author.address)
@@ -903,7 +1014,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     return true
   }
 
-  async function handleNextCharade(data: NextCharadePayload, address: string) {
+  async function handleNextCharade(data: NextCharadePayload, address: string, transitionRetry = 0) {
     await ready
     if (
       !validWireString(data.requestId) ||
@@ -921,8 +1032,13 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     if (!(await ensureWelcome(address, generation))) return
     if (!(await rolloverOrError(address, generation))) return
     if (!isCurrentSession(address, generation)) return
+    const show = currentShow
+    if (!show) {
+      await sendError(address, 'invalid-next-charade')
+      return
+    }
     const key = canonicalAddress(address)
-    const selectionKey = `${key}:${data.requestId}`
+    const selectionKey = `${key}:${show.policy.showKey}:${data.requestId}`
     let selection = cacheGet(nextRequests, selectionKey)
     const activeRetry = [...servedAnswers.entries()].find(
       ([servedKey, served]) => servedKey.startsWith(`${key}:`) && served.retry !== null
@@ -935,19 +1051,28 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       selection = (async () => {
         const look = looks.get(key)
         const stats = await options.state.getOrCreateStats(key, playerName(key), !(look?.isGuest ?? true))
-        if (!stats.showSet || stats.showSet.round >= SHOW_SET_SIZE) {
-          stats.showSet = emptyShowSet()
+        const previousShowSet = stats.showSet
+        const showSet = showSetFor(stats, show.policy.showKey)
+        if (showSet !== previousShowSet || showSet.round >= SHOW_SET_SIZE) {
+          if (showSet.round >= SHOW_SET_SIZE) stats.showSet = emptyShowSet(show.policy.showKey)
           options.state.saveStats(key, !(look?.isGuest ?? true))
         }
         if (!isCurrentSession(address, generation)) {
-          return prepareCharade(chooseHouseCharade(`${key}:stale:${houseSequence++}`, themeForTimestamp(now()).id))!
+          return prepareCharade(
+            chooseHouseCharade(
+              `${key}:stale:${show.policy.showKey}:${houseSequence++}`,
+              show.policy.legacyTheme.id,
+              show.housePhraseIds
+            ),
+            show
+          )
         }
         const mail =
           look && !look.isGuest && STABLE_ADDRESS.test(look.address)
-            ? options.state.getMailForRecipient(look.address, stats.seen, data.exclude)
+            ? options.state.getMailForRecipient(look.address, stats.seen, data.exclude, show.primaryPhraseIds)
             : null
         if (mail) {
-          const preparedMail = prepareCharade(mail)
+          const preparedMail = prepareCharade(mail, show)
           if (preparedMail) return preparedMail
         }
         const currentRound = rounds.current
@@ -962,7 +1087,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         }
         if (currentRound && data.exclude.includes(currentRound.charadeId)) rounds.abstain(key, currentRound.roundId)
 
-        const liveCharade = ensureRound()
+        const liveCharade = ensureRound(show)
         const requesterGuessed = rounds.current?.guessed.includes(key) ?? false
         const selected =
           (rounds.isParticipant(key) && !requesterGuessed ? liveCharade : null) ??
@@ -970,14 +1095,27 @@ export function createServerProtocol(options: ServerProtocolOptions) {
             chooseCharadeFor(
               key,
               [...stats.seen, ...data.exclude],
-              options.state.getPool().filter((charade) => DECK.some((phrase) => phrase.id === charade.phraseId)),
+              options.state.getPool().filter((charade) => show.primaryPhraseIds.has(charade.phraseId)),
               lastAuthors.get(key),
-              themeForTimestamp(now()).id
-            ) ?? chooseHouseCharade(`${key}:${data.requestId}:${houseSequence++}`, themeForTimestamp(now()).id)
+              show.policy.legacyTheme.id
+            ) ??
+              chooseHouseCharade(
+                `${key}:${show.policy.showKey}:${data.requestId}:${houseSequence++}`,
+                show.policy.legacyTheme.id,
+                show.housePhraseIds
+              ),
+            show
           )
         return (
           selected ??
-          prepareCharade(chooseHouseCharade(`${key}:invalid:${houseSequence++}`, themeForTimestamp(now()).id))!
+          prepareCharade(
+            chooseHouseCharade(
+              `${key}:invalid:${show.policy.showKey}:${houseSequence++}`,
+              show.policy.legacyTheme.id,
+              show.housePhraseIds
+            ),
+            show
+          )
         )
       })()
       cacheSet(nextRequests, selectionKey, key, selection)
@@ -987,6 +1125,17 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     }
     const prepared = await selection
     if (!isCurrentSession(address, generation)) return
+    if (!(await rolloverOrError(address, generation))) return
+    if (!isCurrentSession(address, generation)) return
+    if (!prepared || prepared.showKey !== currentShow?.policy.showKey) {
+      nextRequests.delete(selectionKey)
+      if (transitionRetry === 0 && currentShow) {
+        await handleNextCharade(data, address, 1)
+        return
+      }
+      await sendError(address, 'invalid-next-charade')
+      return
+    }
     if (activeRetry && prepared.publicId !== activeRetry.prepared.publicId) {
       await sendError(address, 'invalid-next-charade')
       return
@@ -1008,6 +1157,10 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     return current.roundId === roundId && current.charadeId === charadeId && rounds.isParticipant(address)
   }
 
+  function isCurrentServed(showKey: string, servedKey: string, servedState: ServedCharade) {
+    return currentShow?.policy.showKey === showKey && servedAnswers.get(servedKey) === servedState
+  }
+
   async function handleGuess(data: GuessPayload, address: string, roundId: string | null) {
     await ready
     const generation = sessionGeneration(address)
@@ -1016,6 +1169,8 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       return
     }
     if (!(await ensureWelcome(address, generation))) return
+    if (!(await rolloverOrError(address, generation))) return
+    if (!isCurrentSession(address, generation)) return
     const key = canonicalAddress(address)
     if (
       !validWireString(data.requestId) ||
@@ -1044,14 +1199,14 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       await sendTo(address, completed.type, completed.data)
       return
     }
+    if (!isCurrentRoundGuess(key, roundId, data.charadeId)) {
+      await sendError(address, 'invalid-guess')
+      return
+    }
     const servedKey = `${key}:${data.charadeId}`
     const servedState = servedAnswers.get(servedKey)
     if (!servedState) {
       await sendError(address, 'charade-not-served')
-      return
-    }
-    if (!isCurrentRoundGuess(key, roundId, data.charadeId)) {
-      await sendError(address, 'invalid-guess')
       return
     }
     const served = servedState.prepared
@@ -1075,7 +1230,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       return
     }
     if (!isCurrentSession(address, generation)) return
-    if (!isCurrentRoundGuess(key, roundId, data.charadeId)) {
+    if (!isCurrentServed(served.showKey, servedKey, servedState) || !isCurrentRoundGuess(key, roundId, data.charadeId)) {
       await sendError(address, 'invalid-guess')
       return
     }
@@ -1130,7 +1285,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       return
     }
     if (!isCurrentSession(address, generation)) return
-    if (!isCurrentRoundGuess(key, roundId, data.charadeId)) {
+    if (!isCurrentServed(served.showKey, servedKey, servedState) || !isCurrentRoundGuess(key, roundId, data.charadeId)) {
       await sendError(address, 'invalid-guess')
       return
     }
@@ -1148,7 +1303,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     if (roundId !== null) rounds.guess(key, roundId, data.charadeId, !charade.isHouse && correct)
 
     let stampAwarded = false
-    const showSet = showSetFor(stats)
+    const showSet = showSetFor(stats, served.showKey)
     const scoreDelta = recovered ? 50 : correct ? (spotlight ? 200 : 100) : spotlight ? -100 : 0
     showSet.round = Math.min(showSet.round + 1, SHOW_SET_SIZE)
     showSet.score = Math.max(0, Math.min(showSet.score + scoreDelta, SHOW_SET_SIZE * 200))
@@ -1223,6 +1378,8 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       return
     }
     if (!(await ensureWelcome(address, generation))) return
+    if (!(await rolloverOrError(address, generation))) return
+    if (!isCurrentSession(address, generation)) return
     if (options.state.isReadOnly) {
       await sendError(address, 'server-busy')
       return
@@ -1299,6 +1456,11 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         await sendTo(address, 'posted', posted)
         return
       }
+      const replyShow = currentShow
+      if (!replyShow || !replyShow.primaryPhraseIds.has(target.phraseId)) {
+        await sendError(address, 'invalid-reply')
+        return
+      }
       const replyLook = await waitForLook(address)
       if (!replyLook) {
         if (isCurrentSession(address, generation)) await sendError(address, 'look-not-ready')
@@ -1317,7 +1479,9 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         if (isCurrentSession(address, generation)) await sendError(address, 'storage-unavailable')
         return
       }
-      if (!isCurrentSession(address, generation)) return
+      if (!(await requireCurrentPrimary(address, generation, replyShow.policy.showKey, target.phraseId, 'invalid-reply'))) {
+        return
+      }
       let attached: boolean
       try {
         attached = options.state.attachReply(target.id, {
@@ -1393,6 +1557,11 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       request.durable = true
       if (!isCurrentSession(address, generation)) return
       await sendTo(address, 'posted', posted)
+      return
+    }
+    const postShow = currentShow
+    if (!postShow || !postShow.primaryPhraseIds.has(phrase.id)) {
+      await sendError(address, 'invalid-post')
       return
     }
 
@@ -1510,7 +1679,9 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       if (isCurrentSession(address, generation)) await sendError(address, 'storage-unavailable')
       return
     }
-    if (!isCurrentSession(address, generation)) return
+    if (!(await requireCurrentPrimary(address, generation, postShow.policy.showKey, phrase.id, 'invalid-post'))) {
+      return
+    }
 
     const previousTitle = progressFor(stats).title
     try {
@@ -1569,6 +1740,8 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       return
     }
     if (!(await ensureWelcome(address, generation))) return
+    if (!(await rolloverOrError(address, generation))) return
+    if (!isCurrentSession(address, generation)) return
     if (!VALID_REACTION_KINDS.has(data.kind)) {
       await sendError(address, 'invalid-reaction')
       return
