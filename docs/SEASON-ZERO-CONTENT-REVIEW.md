@@ -8,6 +8,7 @@
 - Ledger timestamp: `2026-08-29T00:00:00.000Z`
 - Schedule: four weeks, 30 references per week
 - Final decisions: 120 approved, 0 quarantined, 0 pending
+- Decoy-only approvals: 2
 
 The checked-in ledger is an explicit 120-entry record. It is not generated from the season schedule. Module loading
 parses the record through the strict schema and evaluates moderation, per-week prompt counts, the aggregate quarantine
@@ -31,6 +32,17 @@ One pass applied the criteria to all 120 scheduled references and approved the o
 pass identified 22 references for replacement. Two replacement maps were then checked against the canonical deck,
 weekly uniqueness, theme fit, and House coverage; the cross-check changed five proposed mappings before the final map
 was accepted.
+
+## Decoy-only approvals
+
+`food-burn-the-toast` and `food-order-a-pizza` are approved only as answer choices. They are not scheduled
+primaries and do not change any weekly prompt count. Both are canonical, PG, localized in English, Spanish, and
+Portuguese, and have distinct first words and suggested-emote triplets.
+
+Two supplemental approvals are the minimum needed for the Final Encore food primaries. Before they were added, the
+reviewed union contained only `food-flip-a-pancake` and `food-juggle-three-oranges`; each therefore had only one possible
+same-category alternative while the answer contract requires two. The selected pair produced two valid decoys for both
+primaries across 4,284 real `pickDecoys` calls covering 21 performed triplets and 102 deterministic seeds per primary.
 
 ## Accepted replacements
 
@@ -62,9 +74,9 @@ was accepted.
 ## Final evidence
 
 Automated checks compare the ledger's keys with the current scheduled references and require exactly 120 unique matches.
-They also require all 120 decisions to be `approved`, 30 approved references in each week, a complete review with a 0%
-quarantine rate, and approved House fallback coverage in all four weeks. The parsed record and its evaluation are deeply
-immutable.
+They also require all 120 primary decisions to be `approved`, 30 approved references in each week, a complete review
+with a 0% quarantine rate, approved House fallback coverage in all four weeks, and the exact two immutable decoy-only
+approvals. The parsed records and moderation evaluation are deeply immutable.
 
 The ledger is snapshot evidence, not an automatic approval policy. A reference added to or substituted in a schedule
 copy has no decision and remains ineligible. Any production schedule change therefore requires an explicit decision,

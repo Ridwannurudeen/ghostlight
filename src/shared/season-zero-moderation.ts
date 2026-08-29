@@ -1,3 +1,4 @@
+import { DECK, type PhraseId } from './deck'
 import { evaluateSeasonModerationRecord, parseSeasonModerationRecord } from './seasons'
 
 const CHECKED_IN_SEASON_ZERO_MODERATION = {
@@ -129,6 +130,23 @@ const CHECKED_IN_SEASON_ZERO_MODERATION = {
   }
 } as const
 
+const CHECKED_IN_SEASON_ZERO_DECOY_APPROVAL = {
+  v: 1,
+  seasonId: 'season-zero',
+  revision: 1,
+  updatedAt: 1_787_961_600_000,
+  phraseIds: ['food-burn-the-toast', 'food-order-a-pizza'] satisfies readonly PhraseId[]
+} as const
+
+const canonicalPhraseIds = new Set(DECK.map((phrase) => phrase.id))
+if (
+  new Set<string>(CHECKED_IN_SEASON_ZERO_DECOY_APPROVAL.phraseIds).size !==
+    CHECKED_IN_SEASON_ZERO_DECOY_APPROVAL.phraseIds.length ||
+  CHECKED_IN_SEASON_ZERO_DECOY_APPROVAL.phraseIds.some((phraseId) => !canonicalPhraseIds.has(phraseId))
+) {
+  throw new Error('Invalid checked-in Season Zero decoy approval record')
+}
+
 const parsedRecord = parseSeasonModerationRecord(CHECKED_IN_SEASON_ZERO_MODERATION)
 if (!parsedRecord) throw new Error('Invalid checked-in Season Zero moderation record')
 
@@ -137,3 +155,7 @@ if (!evaluatedRecord.launchReady) throw new Error('Season Zero moderation record
 
 export const SEASON_ZERO_MODERATION_RECORD = parsedRecord
 export const SEASON_ZERO_MODERATION_EVALUATION = evaluatedRecord
+export const SEASON_ZERO_DECOY_APPROVAL_RECORD = Object.freeze({
+  ...CHECKED_IN_SEASON_ZERO_DECOY_APPROVAL,
+  phraseIds: Object.freeze([...CHECKED_IN_SEASON_ZERO_DECOY_APPROVAL.phraseIds])
+})
