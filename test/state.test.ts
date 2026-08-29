@@ -70,11 +70,7 @@ describe('state migrations', () => {
     expect(migrateCharade(v1)?.reply).toBeUndefined()
     expect(migrateCharade({ ...legacy, v: 99 })).toBeNull()
     expect(migrateCharade({ ...legacy, emotes: ['wave', 'clap'] })).toBeNull()
-    expect(migrateCharade({ ...legacy, emotes: ['wave', 'wave', 'wave'] })?.emotes).toEqual([
-      'wave',
-      'wave',
-      'wave'
-    ])
+    expect(migrateCharade({ ...legacy, emotes: ['wave', 'wave', 'wave'] })?.emotes).toEqual(['wave', 'wave', 'wave'])
     expect(migrateCharade({ ...legacy, emotes: ['wave', 'clap', 'not-an-emote'] })).toBeNull()
     expect(migrateCharade('{bad json')).toBeNull()
   })
@@ -694,6 +690,58 @@ describe('state mutations', () => {
     expect(state.boards.hardest.map((row) => row.charadeId)).toEqual([publicCharade.id])
     expect((await state.getRecentPerformers()).map((performer) => performer.address)).toEqual([recipient])
     expect(state.getKnownRecipient(recipient)).toMatchObject({ address: recipient, isGuest: false })
+  })
+
+  it('keeps off-policy mail stored and private until its phrase becomes allowed across a restart', async () => {
+    const storage = new FakeStorage()
+    const firstRepository = createStorageRepository(storage)
+    const firstState = new GhostlightState(firstRepository, () => FIXED_NOW)
+    const recipient = `0x${'a'.repeat(40)}`
+    const offPolicy = makeCharade('off-policy-mail', {
+      phraseId: 'food-burn-the-toast',
+      recipient,
+      createdAt: FIXED_NOW - 2
+    })
+    const allowed = makeCharade('allowed-mail', {
+      phraseId: 'everyday-wake-up-late',
+      recipient,
+      createdAt: FIXED_NOW - 1
+    })
+    const seen = ['already-seen']
+    const exclude = ['excluded']
+    const currentPolicy = new Set<string>([allowed.phraseId])
+
+    firstState.upsertCharade(offPolicy)
+    firstState.upsertCharade(allowed)
+
+    expect(firstState.countMailForRecipient(recipient, seen, currentPolicy)).toBe(1)
+    expect(firstState.getMailForRecipient(recipient, seen, exclude, currentPolicy)?.id).toBe(allowed.id)
+    expect(firstState.countMailForRecipient(recipient, seen, new Set())).toBe(0)
+    expect(firstState.getMailForRecipient(recipient, seen, exclude, new Set())).toBeNull()
+    expect(firstState.getCharade(offPolicy.id)).toEqual(offPolicy)
+    expect(firstState.getPlayerCharades().map((charade) => charade.id)).toEqual([offPolicy.id, allowed.id])
+    expect(firstState.getPool()).toEqual([])
+    expect(firstState.boards.hardest).toEqual([])
+    await expect(firstState.getRecentPerformers()).resolves.toEqual([])
+    expect(seen).toEqual(['already-seen'])
+    expect(exclude).toEqual(['excluded'])
+    await firstRepository.flushNow()
+
+    const secondState = new GhostlightState(createStorageRepository(storage), () => FIXED_NOW)
+    await secondState.hydrate()
+    const expandedPolicy = new Set<string>([allowed.phraseId, offPolicy.phraseId])
+
+    expect(secondState.countMailForRecipient(recipient, seen, currentPolicy)).toBe(1)
+    expect(secondState.getMailForRecipient(recipient, seen, exclude, currentPolicy)?.id).toBe(allowed.id)
+    expect(secondState.countMailForRecipient(recipient, seen, expandedPolicy)).toBe(2)
+    expect(secondState.getMailForRecipient(recipient, seen, exclude, expandedPolicy)?.id).toBe(offPolicy.id)
+    expect(secondState.getMailForRecipient(recipient, [offPolicy.id], exclude, expandedPolicy)?.id).toBe(allowed.id)
+    expect(secondState.getMailForRecipient(recipient, seen, [offPolicy.id], expandedPolicy)?.id).toBe(allowed.id)
+    expect(secondState.getPool()).toEqual([])
+    expect(secondState.boards.hardest).toEqual([])
+    await expect(secondState.getRecentPerformers()).resolves.toEqual([])
+    expect(seen).toEqual(['already-seen'])
+    expect(exclude).toEqual(['excluded'])
   })
 })
 

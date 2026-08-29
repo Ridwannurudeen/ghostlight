@@ -648,21 +648,32 @@ export class GhostlightState {
       .sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id))
   }
 
-  getMailForRecipient(address: string, seen: readonly string[], exclude: readonly string[] = []) {
+  getMailForRecipient(
+    address: string,
+    seen: readonly string[],
+    exclude: readonly string[] = [],
+    allowedPrimaryPhraseIds?: ReadonlySet<string>
+  ) {
     const wanted = address.toLowerCase()
     const skipped = new Set([...seen, ...exclude])
     return (
       this.getPlayerCharades().find(
-        (charade) => charade.recipient?.toLowerCase() === wanted && !skipped.has(charade.id)
+        (charade) =>
+          charade.recipient?.toLowerCase() === wanted &&
+          !skipped.has(charade.id) &&
+          (allowedPrimaryPhraseIds === undefined || allowedPrimaryPhraseIds.has(charade.phraseId))
       ) ?? null
     )
   }
 
-  countMailForRecipient(address: string, seen: readonly string[]) {
+  countMailForRecipient(address: string, seen: readonly string[], allowedPrimaryPhraseIds?: ReadonlySet<string>) {
     const wanted = address.toLowerCase()
     const seenIds = new Set(seen)
     return this.getPlayerCharades().filter(
-      (charade) => charade.recipient?.toLowerCase() === wanted && !seenIds.has(charade.id)
+      (charade) =>
+        charade.recipient?.toLowerCase() === wanted &&
+        !seenIds.has(charade.id) &&
+        (allowedPrimaryPhraseIds === undefined || allowedPrimaryPhraseIds.has(charade.phraseId))
     ).length
   }
 
