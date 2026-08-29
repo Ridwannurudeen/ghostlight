@@ -172,13 +172,21 @@ function migrateShowSet(value: unknown): ShowSet | undefined {
   }
   const round = Math.min(stored.round as number, SHOW_SET_SIZE)
   const streak = Math.min(stored.streak as number, round)
-  return {
+  const migrated: ShowSet = {
     round,
     score: Math.min(stored.score as number, SHOW_SET_SIZE * 200),
     streak,
     bestStreak: Math.max(streak, Math.min(stored.bestStreak as number, round)),
     understood: Math.min(stored.understood as number, round)
   }
+  if (
+    typeof stored.showKey === 'string' &&
+    stored.showKey.length > 0 &&
+    utf8Bytes(stored.showKey) <= MAX_STORED_ID_BYTES
+  ) {
+    migrated.showKey = stored.showKey
+  }
+  return migrated
 }
 
 function clampProgress(value: number) {

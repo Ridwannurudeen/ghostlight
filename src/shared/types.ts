@@ -53,6 +53,7 @@ export type DailyProgress = {
 }
 
 export type ShowSet = {
+  showKey?: string
   /** Number of ghosts already resolved in the current set. */
   round: number
   score: number

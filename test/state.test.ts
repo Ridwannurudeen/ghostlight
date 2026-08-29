@@ -127,7 +127,18 @@ describe('state migrations', () => {
   })
 
   it('restores a valid optional Show Set while leaving old and malformed records safe', () => {
+    const showKey = 'é'.repeat(64)
     expect(migratePlayerStats(makeStats(), 'Player', FIXED_NOW).showSet).toBeUndefined()
+    expect(
+      migratePlayerStats(
+        {
+          ...makeStats(),
+          showSet: { showKey, round: 4, score: 600, streak: 2, bestStreak: 3, understood: 3 }
+        },
+        'Player',
+        FIXED_NOW
+      ).showSet
+    ).toEqual({ showKey, round: 4, score: 600, streak: 2, bestStreak: 3, understood: 3 })
     expect(
       migratePlayerStats(
         {
@@ -138,6 +149,18 @@ describe('state migrations', () => {
         FIXED_NOW
       ).showSet
     ).toEqual({ round: 4, score: 600, streak: 2, bestStreak: 3, understood: 3 })
+    for (const invalidKey of ['', 7, 'é'.repeat(65)]) {
+      expect(
+        migratePlayerStats(
+          {
+            ...makeStats(),
+            showSet: { showKey: invalidKey, round: 4, score: 600, streak: 2, bestStreak: 3, understood: 3 }
+          },
+          'Player',
+          FIXED_NOW
+        ).showSet
+      ).toEqual({ round: 4, score: 600, streak: 2, bestStreak: 3, understood: 3 })
+    }
     expect(
       migratePlayerStats(
         {
@@ -824,6 +847,43 @@ describe('player stats', () => {
 
     expect(restored.daily).toEqual({ day: '2026-08-23', decoded: 4, authored: 1, stamped: true })
     expect(restored.stampedDays).toEqual(['2026-08-23'])
+  })
+
+  it('preserves an exact Show Set key across a server restart without adding one to a legacy set', async () => {
+    const storage = new FakeStorage()
+    const firstRepository = createStorageRepository(storage)
+    const firstState = new GhostlightState(firstRepository, () => FIXED_NOW)
+    const keyed = await firstState.getOrCreateStats('keyed-player', 'Keyed Player')
+    const legacy = await firstState.getOrCreateStats('legacy-player', 'Legacy Player')
+    keyed.showSet = {
+      showKey: 'season-zero:first-impressions',
+      round: 3,
+      score: 400,
+      streak: 2,
+      bestStreak: 2,
+      understood: 2
+    }
+    legacy.showSet = { round: 2, score: 150, streak: 1, bestStreak: 1, understood: 1 }
+    firstState.saveStats('keyed-player')
+    firstState.saveStats('legacy-player')
+    await firstRepository.flushNow()
+
+    const secondState = new GhostlightState(createStorageRepository(storage), () => FIXED_NOW)
+
+    await expect(secondState.getOrCreateStats('keyed-player', 'Keyed Player')).resolves.toMatchObject({
+      showSet: {
+        showKey: 'season-zero:first-impressions',
+        round: 3,
+        score: 400,
+        streak: 2,
+        bestStreak: 2,
+        understood: 2
+      }
+    })
+    await expect(secondState.getOrCreateStats('legacy-player', 'Legacy Player')).resolves.toMatchObject({
+      showSet: { round: 2, score: 150, streak: 1, bestStreak: 1, understood: 1 }
+    })
+    expect((await secondState.getOrCreateStats('legacy-player', 'Legacy Player')).showSet?.showKey).toBeUndefined()
   })
 
   it('returns empty pending counts for an unknown player', () => {
