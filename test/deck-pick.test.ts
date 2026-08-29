@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { decodeEvent, encodeEvent } from '@dcl/sdk/network/events/protocol'
-import { THEMES, themeForTimestamp } from '../src/shared/config'
+import { PROTOCOL_VERSION, THEMES, themeForTimestamp } from '../src/shared/config'
 import {
   CATEGORIES,
   DECK,
@@ -479,8 +479,26 @@ describe('installed protocol codec', () => {
     const daily = { day: '2026-08-23', decoded: 3, authored: 1, stamped: true }
     const nextUnlock = { nextTitle: 'Scene Stealer', requirement: '10 correct decodes or 5 posts', progress: 0.4 }
     const fixtures: Record<keyof typeof Messages, unknown> = {
-      hello: { displayName: 'Player', isGuest: false, protocolVersion: 3 },
+      hello: { displayName: 'Player', isGuest: false, protocolVersion: PROTOCOL_VERSION },
       ready: { instanceId: 'instance', serverTime: 1_777_000_000_000, theme: 'food', themeLabel: 'Kitchen Capers' },
+      showSchedule: {
+        instanceId: 'instance',
+        serverTime: 1_789_257_600_000,
+        showKey: 'season-zero:first-impressions',
+        season: {
+          id: 'season-zero',
+          weekId: 'first-impressions',
+          startsAt: 1_789_257_600_000,
+          endsAt: 1_789_862_400_000,
+          titleId: 'fresh-face',
+          propId: 'calling-card',
+          finale: {
+            id: 'opening-call',
+            startsAt: 1_789_257_600_000,
+            endsAt: 1_789_344_000_000
+          }
+        }
+      },
       ping: { seq: 1 },
       pong: { seq: 1 },
       progress: { daily, revision: 2, title: 'Understudy', nextUnlock },
@@ -593,13 +611,23 @@ describe('installed protocol codec', () => {
         emotes: ['wave', 'clap', 'kiss'],
         createdAt: 1_777_000_000_000
       },
-      roundStart: { roundId: '1', charadeId: 'ghost-1' },
+      roundStart: { instanceId: 'server', roundId: '1', charadeId: 'ghost-1', showKey: 'season-zero:week-1' },
       roundGuess: { roundId: '1', charadeId: 'ghost-1', answerIndex: 1, requestId: 'round-1', spotlight: true },
-      roundWinner: { roundId: '1', charadeId: 'ghost-1', address: maximalLook.address, name: maximalLook.name },
+      roundWinner: {
+        instanceId: 'server',
+        roundId: '1',
+        charadeId: 'ghost-1',
+        showKey: 'season-zero:week-1',
+        address: maximalLook.address,
+        name: maximalLook.name
+      },
       react: { kind: 'genius' },
+      requestError: { code: 'invalid-guess', requestId: 'guess-1' },
       error: { code: 'storage-unavailable' }
     }
     const encodedSizes = new Map<keyof typeof Messages, number>()
+
+    expect(Object.keys(Messages)).toContain('showSchedule')
 
     for (const type of Object.keys(Messages) as Array<keyof typeof Messages>) {
       const encoded = encodeEvent(type, fixtures[type] as never, Messages)
@@ -610,6 +638,9 @@ describe('installed protocol codec', () => {
       expect(encoded.byteLength, type).toBeLessThan(4_000)
       if (type === 'ready') {
         expect((decoded.payload as { serverTime: number }).serverTime).toBe(1_777_000_000_000)
+      }
+      if (type === 'showSchedule') {
+        expect(decoded.payload).toEqual(fixtures.showSchedule)
       }
       if (type === 'charade' || type === 'charadeReply') {
         expect((decoded.payload as { createdAt: number }).createdAt).toBe(1_777_000_000_000)
@@ -633,6 +664,18 @@ describe('installed protocol codec', () => {
       reveal: 237,
       roundGuess: 55
     })
+
+    const dailySchedule = {
+      instanceId: 'instance',
+      serverTime: 1_777_000_000_000,
+      showKey: 'daily:2026-04-24'
+    }
+    const decodedDailySchedule = decodeEvent(
+      encodeEvent('showSchedule', dailySchedule as never, Messages),
+      Messages
+    )
+    expect(decodedDailySchedule.payload).toEqual(dailySchedule)
+    expect(decodedDailySchedule.eventType).toBe('showSchedule')
 
     const saturatedReveal = {
       ...(fixtures.reveal as Record<string, unknown>),

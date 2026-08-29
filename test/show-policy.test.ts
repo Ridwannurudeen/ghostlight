@@ -11,7 +11,7 @@ import {
   seasonReferenceKey,
   type SeasonModerationRecord
 } from '../src/shared/seasons'
-import { showPolicyForTimestamp } from '../src/shared/show-policy'
+import { acceptedShowPolicy, showPolicyForTimestamp } from '../src/shared/show-policy'
 
 const DAY_MILLISECONDS = 24 * 60 * 60 * 1_000
 const ALL_PHRASE_IDS = DECK.map((phrase) => phrase.id).sort()
@@ -53,6 +53,32 @@ describe('show policy timestamp boundaries', () => {
 
     const after = showPolicyForTimestamp(SEASON_ZERO_END_AT)!
     expect(after).toMatchObject({ kind: 'daily', showKey: `daily:${expectedDayKey(SEASON_ZERO_END_AT)}` })
+  })
+
+  it('reuses the checked-in policy within the same UTC day', () => {
+    const timestamp = SEASON_ZERO_WEEKS[0].eligibility.startsAt
+    expect(showPolicyForTimestamp(timestamp + 1)).toBe(showPolicyForTimestamp(timestamp + DAY_MILLISECONDS - 1))
+  })
+})
+
+describe('accepted show policy', () => {
+  it('accepts only an exact canonical key and season projection', () => {
+    const daily = showPolicyForTimestamp(SEASON_ZERO_START_AT - 1)!
+    expect(acceptedShowPolicy(daily, daily.showKey, undefined)).toBe(daily)
+    expect(acceptedShowPolicy(daily, daily.showKey, null)).toBe(daily)
+    expect(acceptedShowPolicy(daily, `${daily.showKey}:stale`, null)).toBeNull()
+
+    const weekly = showPolicyForTimestamp(SEASON_ZERO_START_AT)!
+    if (weekly.kind !== 'season-zero') throw new Error('Expected season policy')
+    expect(acceptedShowPolicy(weekly, weekly.showKey, weekly.season)).toBe(weekly)
+    expect(acceptedShowPolicy(weekly, weekly.showKey, null)).toBeNull()
+    expect(acceptedShowPolicy(weekly, weekly.showKey, { ...weekly.season, endsAt: weekly.season.endsAt + 1 })).toBeNull()
+    expect(
+      acceptedShowPolicy(weekly, weekly.showKey, {
+        ...weekly.season,
+        finale: { ...weekly.season.finale, endsAt: weekly.season.finale.endsAt + 1 }
+      })
+    ).toBeNull()
   })
 })
 

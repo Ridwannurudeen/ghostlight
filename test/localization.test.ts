@@ -15,11 +15,17 @@ import {
   phraseById,
   phraseText,
   requirementLabel,
+  seasonZeroFinaleLabel,
+  seasonZeroPropLabel,
+  seasonZeroShowLabel,
+  seasonZeroTitleLabel,
+  seasonZeroWeekLabel,
   themeLabel,
   titleLabel,
   translate
 } from '../src/shared/i18n'
 import { pickDecoys, shuffleSeeded } from '../src/shared/pick'
+import { SEASON_ZERO_WEEKS } from '../src/shared/seasons'
 
 const REQUIREMENTS = [
   'Post your first charade',
@@ -241,6 +247,87 @@ describe('localization copy', () => {
       expect(translate('invite.message', language, { url: 'https://example.test' })).toContain('https://example.test')
       expect(errorLabel('not-a-real-code', language)).toBe(translate('error.unknown', language))
     }
+  })
+
+  it('resolves every Season Zero week, planned title, planned prop, and finale from canonical local ids', () => {
+    for (const week of SEASON_ZERO_WEEKS) {
+      for (const language of LANGUAGES) {
+        const labels = {
+          week: seasonZeroWeekLabel(week.id, language),
+          title: seasonZeroTitleLabel(week.id, week.title.id, language),
+          prop: seasonZeroPropLabel(week.id, week.prop.id, language),
+          finale: seasonZeroFinaleLabel(week.id, week.finale.id, language)
+        }
+        expect(labels, `${language}:${week.id}`).toEqual({
+          week: week.name[language],
+          title: week.title.label[language],
+          prop: week.prop.label[language],
+          finale: week.finale.label[language]
+        })
+        for (const [kind, label] of Object.entries(labels)) {
+          expect(label?.trim().length, `${language}:${week.id}:${kind}`).toBeGreaterThan(0)
+        }
+      }
+    }
+  })
+
+  it('rejects unknown and cross-week Season Zero ids instead of returning plausible labels', () => {
+    const first = SEASON_ZERO_WEEKS[0]
+    const second = SEASON_ZERO_WEEKS[1]
+
+    expect(seasonZeroWeekLabel('not-a-week', 'en')).toBeNull()
+    expect(seasonZeroTitleLabel(first.id, 'not-a-title', 'en')).toBeNull()
+    expect(seasonZeroPropLabel(first.id, 'not-a-prop', 'en')).toBeNull()
+    expect(seasonZeroFinaleLabel(first.id, 'not-a-finale', 'en')).toBeNull()
+    expect(seasonZeroTitleLabel(first.id, second.title.id, 'en')).toBeNull()
+    expect(seasonZeroPropLabel(first.id, second.prop.id, 'en')).toBeNull()
+    expect(seasonZeroFinaleLabel(first.id, second.finale.id, 'en')).toBeNull()
+    expect(seasonZeroTitleLabel('not-a-week', first.title.id, 'en')).toBeNull()
+    expect(seasonZeroPropLabel('not-a-week', first.prop.id, 'en')).toBeNull()
+    expect(seasonZeroFinaleLabel('not-a-week', first.finale.id, 'en')).toBeNull()
+  })
+
+  it('resolves a weekly show label only from an exact canonical Season Zero metadata record', () => {
+    const week = SEASON_ZERO_WEEKS[0]
+    const season = {
+      id: 'season-zero' as const,
+      weekId: week.id,
+      startsAt: week.eligibility.startsAt,
+      endsAt: week.eligibility.endsAt,
+      titleId: week.title.id,
+      propId: week.prop.id,
+      finale: {
+        id: week.finale.id,
+        startsAt: week.finale.window.startsAt,
+        endsAt: week.finale.window.endsAt
+      }
+    }
+
+    for (const language of LANGUAGES) {
+      expect(seasonZeroShowLabel(season, language), language).toBe(week.name[language])
+    }
+
+    expect(seasonZeroShowLabel({ ...season, id: 'season-one' } as never, 'en')).toBeNull()
+    expect(seasonZeroShowLabel({ ...season, startsAt: season.startsAt + 1 } as never, 'en')).toBeNull()
+    expect(seasonZeroShowLabel({ ...season, endsAt: season.endsAt + 1 } as never, 'en')).toBeNull()
+    expect(seasonZeroShowLabel({ ...season, titleId: SEASON_ZERO_WEEKS[1].title.id } as never, 'en')).toBeNull()
+    expect(seasonZeroShowLabel({ ...season, propId: SEASON_ZERO_WEEKS[1].prop.id } as never, 'en')).toBeNull()
+    expect(
+      seasonZeroShowLabel(
+        { ...season, finale: { ...season.finale, id: SEASON_ZERO_WEEKS[1].finale.id } } as never,
+        'en'
+      )
+    ).toBeNull()
+    expect(
+      seasonZeroShowLabel(
+        { ...season, finale: { ...season.finale, startsAt: season.finale.startsAt + 1 } } as never,
+        'en'
+      )
+    ).toBeNull()
+    expect(
+      seasonZeroShowLabel({ ...season, finale: { ...season.finale, endsAt: season.finale.endsAt + 1 } } as never, 'en')
+    ).toBeNull()
+    expect(seasonZeroShowLabel(null, 'en')).toBeNull()
   })
 
   it('normalizes supported locale forms and defaults unknown or absent locales to English', () => {

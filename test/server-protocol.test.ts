@@ -97,7 +97,9 @@ type CharadeReplyMessage = ReturnType<typeof makeReply> & {
 }
 
 function messagesOfType(sent: SentMessage[], type: string) {
-  return sent.filter((message) => message.type === type)
+  return sent.filter((message) =>
+    type === 'error' ? message.type === 'error' || message.type === 'requestError' : message.type === type
+  )
 }
 
 function dataOf<T>(message: SentMessage): T {
@@ -331,17 +333,18 @@ describe('server readiness and welcome', () => {
     expect(checkpoint).toHaveBeenCalledOnce()
   })
 
-  it('rejects an incompatible protocol version without reading a look', async () => {
+  it('rejects the previous protocol version without reading a look', async () => {
     const snapshotLook = vi.fn(async () => makeLook('player'))
     const { sent, protocol } = await createHarness({ snapshotLook })
 
     await protocol.handleEnter('player')
-    await protocol.handleHello({ displayName: 'Player', isGuest: false, protocolVersion: 999 }, 'player')
+    await protocol.handleHello({ displayName: 'Player', isGuest: false, protocolVersion: 3 }, 'player')
 
     expect(snapshotLook).not.toHaveBeenCalled()
     expect(messagesOfType(sent, 'error')).toEqual([
       { type: 'error', data: { code: 'protocol-version' }, to: ['player'] }
     ])
+    expect(messagesOfType(sent, 'showSchedule')).toEqual([])
   })
 
   it('sends only readiness on enter and gates every stateful action until a valid hello', async () => {
@@ -357,6 +360,7 @@ describe('server readiness and welcome', () => {
     await protocol.handleReact({ kind: 'genius' }, 'player')
 
     expect(messagesOfType(sent, 'ready')).toHaveLength(1)
+    expect(messagesOfType(sent, 'showSchedule')).toEqual([])
     expect(messagesOfType(sent, 'progress')).toEqual([])
     expect(messagesOfType(sent, 'error').map((message) => dataOf<ErrorMessage>(message).code)).toEqual([
       'protocol-required',
@@ -365,6 +369,228 @@ describe('server readiness and welcome', () => {
     ])
     expect(snapshotLook).not.toHaveBeenCalled()
     expect(state.getPool()).toEqual([])
+  })
+
+  it('announces exact canonical Season Zero metadata at every half-open week boundary', async () => {
+    for (const week of SEASON_ZERO_WEEKS) {
+      for (const timestamp of [week.eligibility.startsAt, week.eligibility.endsAt - 1]) {
+        const { sent, protocol } = await createHarness({ now: () => timestamp })
+
+        await protocol.handleEnter('player')
+        expect(messagesOfType(sent, 'showSchedule')).toEqual([])
+        await protocol.handleHello(
+          { displayName: 'Player', isGuest: false, protocolVersion: PROTOCOL_VERSION },
+          'player'
+        )
+
+        expect(messagesOfType(sent, 'showSchedule').map((message) => message.data)).toEqual([
+          {
+            instanceId: 'test-instance',
+            serverTime: timestamp,
+            showKey: `season-zero:${week.id}`,
+            season: {
+              id: 'season-zero',
+              weekId: week.id,
+              startsAt: week.eligibility.startsAt,
+              endsAt: week.eligibility.endsAt,
+              titleId: week.title.id,
+              propId: week.prop.id,
+              finale: {
+                id: week.finale.id,
+                startsAt: week.finale.window.startsAt,
+                endsAt: week.finale.window.endsAt
+              }
+            }
+          }
+        ])
+      }
+    }
+
+    const timestamp = SEASON_ZERO_WEEKS.at(-1)!.eligibility.endsAt
+    const { sent, protocol } = await createHarness({ now: () => timestamp })
+    await negotiate(protocol, 'player')
+
+    expect(messagesOfType(sent, 'showSchedule').map((message) => message.data)).toEqual([
+      {
+        instanceId: 'test-instance',
+        serverTime: timestamp,
+        showKey: `daily:${new Date(timestamp).toISOString().slice(0, 10)}`
+      }
+    ])
+  })
+
+  it('pairs ready and show schedule with one timestamp after hello and UTC rollover', async () => {
+    let timestamp = SEASON_ZERO_WEEKS[0].eligibility.startsAt
+    let advanceOnReady = false
+    const { sent, protocol } = await createHarness({
+      now: () => timestamp,
+      send: async (type) => {
+        if (advanceOnReady && type === 'ready') timestamp += 1
+      }
+    })
+
+    await protocol.handleEnter('player')
+    expect(messagesOfType(sent, 'showSchedule')).toEqual([])
+    advanceOnReady = true
+    await protocol.handleHello({ displayName: 'Player', isGuest: false, protocolVersion: PROTOCOL_VERSION }, 'player')
+
+    const helloReadyIndex = sent.findIndex((message, index) => index > 0 && message.type === 'ready')
+    expect(sent[helloReadyIndex + 1].type).toBe('showSchedule')
+    expect(dataOf<{ serverTime: number }>(sent[helloReadyIndex]).serverTime).toBe(
+      dataOf<{ serverTime: number }>(sent[helloReadyIndex + 1]).serverTime
+    )
+
+    advanceOnReady = false
+    timestamp = SEASON_ZERO_WEEKS[1].eligibility.startsAt
+    sent.length = 0
+    advanceOnReady = true
+    await protocol.handlePing({ seq: 77 }, 'player')
+
+    const rolloverReadyIndex = sent.findIndex((message) => message.type === 'ready')
+    expect(sent[rolloverReadyIndex + 1].type).toBe('showSchedule')
+    expect(dataOf<{ serverTime: number }>(sent[rolloverReadyIndex]).serverTime).toBe(
+      dataOf<{ serverTime: number }>(sent[rolloverReadyIndex + 1]).serverTime
+    )
+  })
+
+  it('sends one schedule pair when the negotiating hello itself triggers rollover', async () => {
+    let timestamp = SEASON_ZERO_WEEKS[0].eligibility.endsAt - 1
+    const { sent, protocol } = await createHarness({ now: () => timestamp })
+    await protocol.handleEnter('player')
+    sent.length = 0
+    timestamp = SEASON_ZERO_WEEKS[1].eligibility.startsAt
+
+    await protocol.handleHello({ displayName: 'Player', isGuest: false, protocolVersion: PROTOCOL_VERSION }, 'player')
+
+    expect(messagesOfType(sent, 'ready')).toHaveLength(1)
+    expect(messagesOfType(sent, 'showSchedule')).toHaveLength(1)
+    expect(messagesOfType(sent, 'showSchedule')[0].data).toMatchObject({
+      serverTime: timestamp,
+      showKey: `season-zero:${SEASON_ZERO_WEEKS[1].id}`
+    })
+  })
+
+  it('replays the canonical schedule on a negotiated heartbeat so a dropped announcement recovers', async () => {
+    let timestamp = SEASON_ZERO_WEEKS[0].eligibility.startsAt + 1_000
+    const { sent, protocol } = await createHarness({ now: () => timestamp })
+    await negotiate(protocol, 'player')
+    sent.length = 0
+    timestamp += 10_000
+
+    await protocol.handlePing({ seq: 79 }, 'player')
+
+    expect(sent.map((message) => message.type)).toEqual(['pong', 'showSchedule'])
+    expect(messagesOfType(sent, 'showSchedule').map((message) => message.data)).toEqual([
+      expect.objectContaining({
+        serverTime: timestamp,
+        showKey: `season-zero:${SEASON_ZERO_WEEKS[0].id}`,
+        season: expect.objectContaining({ weekId: SEASON_ZERO_WEEKS[0].id })
+      })
+    ])
+  })
+
+  it('replays a participant round after the heartbeat schedule so a dropped rollover schedule recovers', async () => {
+    const snapshotLook = async (address: string) => makeLook(address, address)
+    const { state, sent, protocol } = await createHarness({ snapshotLook })
+    const charade = makeCharade('heartbeat-round', { author: { address: 'outside', name: 'Outside' } })
+    state.upsertCharade(charade)
+    await negotiate(protocol, 'alice')
+    await negotiate(protocol, 'bob')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'alice')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'bob')
+    sent.length = 0
+
+    await protocol.handlePing({ seq: 80 }, 'alice')
+
+    expect(sent.map((message) => message.type)).toEqual(['pong', 'showSchedule', 'roundStart'])
+    expect(messagesOfType(sent, 'roundStart')).toEqual([
+      {
+        type: 'roundStart',
+        data: {
+          instanceId: 'test-instance',
+          roundId: '1',
+          charadeId: charade.id,
+          showKey: 'daily:2026-08-23'
+        },
+        to: ['alice']
+      }
+    ])
+  })
+
+  it('drains a later rollover request after an in-flight rollover before pairing its schedule', async () => {
+    let timestamp = SEASON_ZERO_WEEKS[0].eligibility.endsAt - 1
+    let blockRollover = false
+    let blocked = false
+    const rolloverStarted = deferred<void>()
+    const releaseRollover = deferred<void>()
+    const { sent, state, protocol } = await createHarness({
+      now: () => timestamp,
+      flush: async () => {
+        if (!blockRollover || blocked) return
+        blocked = true
+        rolloverStarted.resolve()
+        await releaseRollover.promise
+      }
+    })
+    await negotiate(protocol, 'first')
+    await negotiate(protocol, 'second')
+    sent.length = 0
+
+    blockRollover = true
+    timestamp = SEASON_ZERO_WEEKS[1].eligibility.startsAt
+    const firstRollover = protocol.handlePing({ seq: 80 }, 'first')
+    await rolloverStarted.promise
+    timestamp = SEASON_ZERO_WEEKS[2].eligibility.startsAt
+    const laterRollover = protocol.handlePing({ seq: 81 }, 'second')
+    releaseRollover.resolve()
+    await Promise.all([firstRollover, laterRollover])
+
+    const secondSchedule = messagesOfType(sent, 'showSchedule').findLast((message) => message.to?.[0] === 'second')
+    expect(secondSchedule?.data).toMatchObject({
+      serverTime: timestamp,
+      showKey: `season-zero:${SEASON_ZERO_WEEKS[2].id}`,
+      season: expect.objectContaining({ weekId: SEASON_ZERO_WEEKS[2].id })
+    })
+    expect(state.playerStats.get('second')?.showSet?.showKey).toBe(`season-zero:${SEASON_ZERO_WEEKS[2].id}`)
+  })
+
+  it('updates a negotiated session whose authoritative look is still pending at rollover', async () => {
+    let timestamp = SEASON_ZERO_WEEKS[0].eligibility.endsAt - 1
+    const pendingLook = deferred<ReturnType<typeof makeLook> | null>()
+    const snapshotLook = vi.fn((address: string) =>
+      address === 'pending' ? pendingLook.promise : Promise.resolve(makeLook(address, address))
+    )
+    const { sent, protocol } = await createHarness({ now: () => timestamp, snapshotLook })
+    await negotiate(protocol, 'trigger')
+    sent.length = 0
+
+    const pendingNegotiation = negotiate(protocol, 'pending')
+    await vi.waitFor(() => expect(snapshotLook).toHaveBeenCalledWith('pending'))
+    sent.length = 0
+    timestamp = SEASON_ZERO_WEEKS[1].eligibility.startsAt
+    await protocol.handlePing({ seq: 78 }, 'trigger')
+    const pendingSchedules = messagesOfType(sent, 'showSchedule').filter((message) => message.to?.[0] === 'pending')
+    pendingLook.resolve(makeLook('pending', 'Pending'))
+    await pendingNegotiation
+
+    expect(pendingSchedules.map((message) => message.data)).toEqual([
+      expect.objectContaining({
+        serverTime: timestamp,
+        showKey: `season-zero:${SEASON_ZERO_WEEKS[1].id}`,
+        season: expect.objectContaining({ weekId: SEASON_ZERO_WEEKS[1].id })
+      })
+    ])
+  })
+
+  it('announces an empty fail-closed schedule when no active show policy is valid', async () => {
+    const timestamp = -1
+    const { sent, protocol } = await createHarness({ now: () => timestamp })
+
+    await negotiate(protocol, 'player')
+
+    expect(messagesOfType(sent, 'showSchedule').map((message) => message.data)).toEqual([
+      { instanceId: 'test-instance', serverTime: timestamp, showKey: '' }
+    ])
   })
 
   it('waits for an in-flight welcome before serving and preserves stored player stats', async () => {
@@ -991,6 +1217,68 @@ describe('active Season Zero show enforcement', () => {
     })
   })
 
+  it('rolls the show when a guess prerequisite crosses the week boundary without another handler', async () => {
+    const firstWeek = SEASON_ZERO_WEEKS[0]
+    const secondWeek = SEASON_ZERO_WEEKS[1]
+    let timestamp = firstWeek.eligibility.endsAt - 1
+    const firstPolicy = showPolicyForTimestamp(timestamp)!
+    const { state, sent, protocol } = await createHarness({ now: () => timestamp })
+    const charade = makeCharade('pre-boundary-player-prerequisite', {
+      phraseId: firstPolicy.primaryPhraseIds[0],
+      author: { address: 'outside-author' },
+      createdAt: timestamp
+    })
+    state.upsertCharade(charade)
+    await negotiate(protocol, 'player')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'player')
+    const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+    const guess = {
+      charadeId: served.id,
+      answerIndex: wrongAnswerIndexes(state, served)[0],
+      requestId: 'pre-boundary-player-prerequisite'
+    }
+    const playerStatsStarted = deferred<void>()
+    const playerStatsGate = deferred<void>()
+    const getOrCreateStats = state.getOrCreateStats.bind(state)
+    let blockedPlayerStats = false
+    vi.spyOn(state, 'getOrCreateStats').mockImplementation(async (address, name, persistent) => {
+      if (!blockedPlayerStats && address.toLowerCase() === 'player') {
+        blockedPlayerStats = true
+        playerStatsStarted.resolve()
+        await playerStatsGate.promise
+      }
+      return getOrCreateStats(address, name, persistent)
+    })
+    sent.length = 0
+
+    const guessing = protocol.handleGuess(guess, 'player')
+    await playerStatsStarted.promise
+    timestamp = secondWeek.eligibility.startsAt
+    playerStatsGate.resolve()
+    await guessing
+
+    expect(messagesOfType(sent, 'retry')).toEqual([])
+    expect(messagesOfType(sent, 'reveal')).toEqual([])
+    const requestErrors = messagesOfType(sent, 'requestError')
+    expect(requestErrors).toHaveLength(1)
+    expect(dataOf<{ code: string; requestId: string }>(requestErrors[0])).toMatchObject({
+      requestId: guess.requestId
+    })
+    expect(['invalid-guess', 'charade-not-served']).toContain(dataOf<{ code: string }>(requestErrors[0]).code)
+    expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 0, correct: 0 })
+    expect(state.playerStats.get('player')).toMatchObject({
+      decoded: 0,
+      correct: 0,
+      showSet: { showKey: `season-zero:${secondWeek.id}`, round: 0 }
+    })
+    expect(protocol.resourceCounts()).toMatchObject({
+      servedAnswers: 0,
+      retryStates: 0,
+      activeDecoders: 0,
+      nextRequests: 0
+    })
+  })
+
   it("serves every active week primary with only that week's reviewed answers", async () => {
     const primaryViolations: string[] = []
     const decoyViolations: string[] = []
@@ -1254,7 +1542,7 @@ describe('charade serving and guesses', () => {
 
     expect(messagesOfType(sent, 'reveal')).toEqual([])
     expect(messagesOfType(sent, 'error')).toEqual([
-      { type: 'error', data: { code: 'charade-not-served' }, to: ['player'] }
+      { type: 'requestError', data: { code: 'charade-not-served', requestId: 'oldest-guess' }, to: ['player'] }
     ])
   })
 
@@ -2025,7 +2313,11 @@ describe('charade serving and guesses', () => {
       'player'
     )
     expect(messagesOfType(second.sent, 'error')).toEqual([
-      { type: 'error', data: { code: 'charade-not-served' }, to: ['player'] }
+      {
+        type: 'requestError',
+        data: { code: 'charade-not-served', requestId: 'stale-second-attempt' },
+        to: ['player']
+      }
     ])
 
     const replacementRequest = nextCharadeRequest([served.id])
@@ -2071,7 +2363,7 @@ describe('charade serving and guesses', () => {
 
     expect(messagesOfType(sent, 'reveal')).toEqual([])
     expect(messagesOfType(sent, 'error')).toEqual([
-      { type: 'error', data: { code: 'charade-not-served' }, to: ['player'] }
+      { type: 'requestError', data: { code: 'charade-not-served', requestId: 'cleanup-request' }, to: ['player'] }
     ])
   })
 
@@ -2095,9 +2387,14 @@ describe('charade serving and guesses', () => {
     expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 1, retryStates: 1, activeDecoders: 1 })
 
     sent.length = 0
-    await protocol.handleNextCharade(nextCharadeRequest([served.id]), 'player')
+    const blockedNext = nextCharadeRequest([served.id])
+    await protocol.handleNextCharade(blockedNext, 'player')
     expect(messagesOfType(sent, 'error')).toEqual([
-      { type: 'error', data: { code: 'invalid-next-charade' }, to: ['player'] }
+      {
+        type: 'requestError',
+        data: { code: 'invalid-next-charade', requestId: blockedNext.requestId },
+        to: ['player']
+      }
     ])
     expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 1, retryStates: 1, activeDecoders: 1 })
 
@@ -2124,7 +2421,11 @@ describe('charade serving and guesses', () => {
       'player'
     )
     expect(messagesOfType(sent, 'error')).toEqual([
-      { type: 'error', data: { code: 'charade-not-served' }, to: ['player'] }
+      {
+        type: 'requestError',
+        data: { code: 'charade-not-served', requestId: 'cleanup-old-final' },
+        to: ['player']
+      }
     ])
 
     await protocol.handleLeave('player')
@@ -2150,7 +2451,7 @@ describe('charade serving and guesses', () => {
     sent.length = 0
     await protocol.handleNextCharade({ requestId: 'skip-retry', exclude: [served.id] }, 'player')
     expect(messagesOfType(sent, 'error')).toEqual([
-      { type: 'error', data: { code: 'invalid-next-charade' }, to: ['player'] }
+      { type: 'requestError', data: { code: 'invalid-next-charade', requestId: 'skip-retry' }, to: ['player'] }
     ])
     expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 1, retryStates: 1 })
     sent.length = 0
@@ -2183,7 +2484,11 @@ describe('charade serving and guesses', () => {
       'player'
     )
     expect(messagesOfType(sent, 'error')).toEqual([
-      { type: 'error', data: { code: 'charade-not-served' }, to: ['player'] }
+      {
+        type: 'requestError',
+        data: { code: 'charade-not-served', requestId: 'cached-house-third' },
+        to: ['player']
+      }
     ])
   })
 })
@@ -2283,7 +2588,9 @@ describe('authoring protocol', () => {
     )
 
     expect(messagesOfType(sent, 'posted')).toEqual([])
-    expect(messagesOfType(sent, 'error')).toEqual([{ type: 'error', data: { code: 'server-busy' }, to: ['player'] }])
+    expect(messagesOfType(sent, 'error')).toEqual([
+      { type: 'requestError', data: { code: 'server-busy', requestId: 'over-capacity' }, to: ['player'] }
+    ])
     expect(state.playerStats.get('player')).toMatchObject({ authored: [], authoredCount: 0, revision: 0 })
   })
 
@@ -2501,7 +2808,11 @@ describe('Ghost Mail protocol', () => {
     expect(harness.state.playerStats.get(senderAddress)).toMatchObject({ authoredCount: 0, revision: 0 })
     expect(messagesOfType(harness.sent, 'posted')).toEqual([])
     expect(messagesOfType(harness.sent, 'error')).toEqual([
-      { type: 'error', data: { code: 'storage-unavailable' }, to: [senderAddress] }
+      {
+        type: 'requestError',
+        data: { code: 'storage-unavailable', requestId: 'staged-mail' },
+        to: [senderAddress]
+      }
     ])
 
     storage.putPlayerJSON(recipientAddress, PLAYER_STATS_KEY, makeStats({ name: 'Recipient' }))
@@ -3011,7 +3322,14 @@ describe('live protocol', () => {
     expect(messagesOfType(sent, 'roundWinner')).toEqual([
       {
         type: 'roundWinner',
-        data: { roundId: '1', charadeId: charade.id, address: 'alice', name: 'Alice' },
+        data: {
+          instanceId: 'test-instance',
+          roundId: '1',
+          charadeId: charade.id,
+          showKey: 'daily:2026-08-23',
+          address: 'alice',
+          name: 'Alice'
+        },
         to: undefined
       }
     ])
@@ -3084,7 +3402,14 @@ describe('live protocol', () => {
     expect(messagesOfType(sent, 'roundWinner')).toEqual([
       {
         type: 'roundWinner',
-        data: { roundId: '1', charadeId: charade.id, address: 'bob', name: 'Bob' },
+        data: {
+          instanceId: 'test-instance',
+          roundId: '1',
+          charadeId: charade.id,
+          showKey: 'daily:2026-08-23',
+          address: 'bob',
+          name: 'Bob'
+        },
         to: undefined
       }
     ])
@@ -3105,7 +3430,16 @@ describe('live protocol', () => {
     await protocol.handleNextCharade(nextCharadeRequest(), 'alice')
     await protocol.handleNextCharade(nextCharadeRequest(), 'bob')
     expect(messagesOfType(sent, 'roundStart')).toEqual([
-      { type: 'roundStart', data: { roundId: '1', charadeId: charade.id }, to: undefined }
+      {
+        type: 'roundStart',
+        data: {
+          instanceId: 'test-instance',
+          roundId: '1',
+          charadeId: charade.id,
+          showKey: 'daily:2026-08-23'
+        },
+        to: undefined
+      }
     ])
     const served = messagesOfType(sent, 'charade').map((message) => dataOf<CharadeMessage>(message))
     expect(served.map((message) => message.id)).toEqual([charade.id, charade.id])
@@ -3128,7 +3462,14 @@ describe('live protocol', () => {
     expect(messagesOfType(sent, 'roundWinner')).toEqual([
       {
         type: 'roundWinner',
-        data: { roundId: '1', charadeId: charade.id, address: 'alice', name: 'Alice' },
+        data: {
+          instanceId: 'test-instance',
+          roundId: '1',
+          charadeId: charade.id,
+          showKey: 'daily:2026-08-23',
+          address: 'alice',
+          name: 'Alice'
+        },
         to: undefined
       }
     ])
@@ -3157,7 +3498,11 @@ describe('live protocol', () => {
       'alice'
     )
     expect(messagesOfType(sent, 'error')).toEqual([
-      { type: 'error', data: { code: 'invalid-guess' }, to: ['alice'] }
+      {
+        type: 'requestError',
+        data: { code: 'invalid-guess', requestId: 'plain-reset-gap-guess' },
+        to: ['alice']
+      }
     ])
     expect(messagesOfType(sent, 'reveal')).toEqual([])
     expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 0, correct: 0 })
@@ -3172,7 +3517,11 @@ describe('live protocol', () => {
       'alice'
     )
     expect(messagesOfType(sent, 'error')).toEqual([
-      { type: 'error', data: { code: 'invalid-guess' }, to: ['alice'] }
+      {
+        type: 'requestError',
+        data: { code: 'invalid-guess', requestId: 'malformed-round-guess' },
+        to: ['alice']
+      }
     ])
     expect(messagesOfType(sent, 'reveal')).toEqual([])
     sent.length = 0
@@ -3182,7 +3531,11 @@ describe('live protocol', () => {
       'alice'
     )
     expect(messagesOfType(sent, 'error')).toEqual([
-      { type: 'error', data: { code: 'invalid-guess' }, to: ['alice'] }
+      {
+        type: 'requestError',
+        data: { code: 'invalid-guess', requestId: 'plain-round-guess' },
+        to: ['alice']
+      }
     ])
     expect(messagesOfType(sent, 'reveal')).toEqual([])
     expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 0, correct: 0 })
@@ -3192,7 +3545,13 @@ describe('live protocol', () => {
       { roundId: staleRoundId, charadeId: charade.id, answerIndex: correctIndex, requestId: 'stale-round-guess' },
       'alice'
     )
-    expect(messagesOfType(sent, 'error')).toEqual([{ type: 'error', data: { code: 'invalid-guess' }, to: ['alice'] }])
+    expect(messagesOfType(sent, 'error')).toEqual([
+      {
+        type: 'requestError',
+        data: { code: 'invalid-guess', requestId: 'stale-round-guess' },
+        to: ['alice']
+      }
+    ])
     expect(messagesOfType(sent, 'reveal')).toEqual([])
     expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 0, correct: 0 })
     expect(state.playerStats.get('alice')?.decoded).toBe(0)
@@ -3206,7 +3565,14 @@ describe('live protocol', () => {
     expect(messagesOfType(sent, 'roundWinner')).toEqual([
       {
         type: 'roundWinner',
-        data: { roundId: currentRoundId, charadeId: charade.id, address: 'bob', name: 'Bob' },
+        data: {
+          instanceId: 'test-instance',
+          roundId: currentRoundId,
+          charadeId: charade.id,
+          showKey: 'daily:2026-08-23',
+          address: 'bob',
+          name: 'Bob'
+        },
         to: undefined
       }
     ])
@@ -3336,7 +3702,16 @@ describe('live protocol', () => {
     expect(dataOf<CharadeMessage>(messagesOfType(sent, 'charade')[0]).id).toBe(second.id)
     expect(protocol.rounds.current?.charadeId).toBe(second.id)
     expect(messagesOfType(sent, 'roundStart')).toEqual([
-      { type: 'roundStart', data: { roundId: '1', charadeId: second.id }, to: undefined }
+      {
+        type: 'roundStart',
+        data: {
+          instanceId: 'test-instance',
+          roundId: '1',
+          charadeId: second.id,
+          showKey: 'daily:2026-08-23'
+        },
+        to: undefined
+      }
     ])
   })
 

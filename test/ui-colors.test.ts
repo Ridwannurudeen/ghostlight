@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const uiTest = vi.hoisted(() => ({
   region: 'house',
@@ -77,6 +77,7 @@ vi.mock('../src/client/flow', () => ({
   mailRecipients: () => uiTest.mailRecipients,
   clientFlow: {
     getState: () => uiTest.state,
+    canAnswerBack: () => uiTest.canReply,
     guess: vi.fn(),
     toggleSpotlight: uiActions.toggleSpotlight,
     replay: vi.fn(),
@@ -117,7 +118,12 @@ import {
   uiComponent
 } from '../src/client/ui'
 import { DEFAULT_CLIENT_SETTINGS, getClientSettings, updateClientSettings } from '../src/client/settings'
-import { COPY, LANGUAGES } from '../src/shared/i18n'
+import { COPY, LANGUAGES, t, themeLabel } from '../src/shared/i18n'
+import { SEASON_ZERO_WEEKS, type SeasonWeek } from '../src/shared/seasons'
+import { showPolicyForTimestamp } from '../src/shared/show-policy'
+
+const TEST_NOW = Date.UTC(2026, 7, 23, 12)
+const TEST_SHOW_KEY = showPolicyForTimestamp(TEST_NOW)!.showKey
 
 type ElementNode = {
   type: string | ((props: Record<string, unknown>) => unknown)
@@ -231,6 +237,9 @@ function stateFor(screen: 'decode' | 'reveal' | 'posted') {
   }
   return {
     ready: true,
+    serverClockOffset: 0,
+    showKey: TEST_SHOW_KEY,
+    season: null,
     screen,
     charade,
     reveal:
@@ -261,6 +270,22 @@ function foyerState() {
     progress: { daily: { stamped: false } },
     playerIsGuest: false,
     boards: { topDecoders: [], hardestGhosts: [], playbill: [], ghostOfNightId: '' }
+  }
+}
+
+function seasonMetadata(week: SeasonWeek) {
+  return {
+    id: 'season-zero',
+    weekId: week.id,
+    startsAt: week.eligibility.startsAt,
+    endsAt: week.eligibility.endsAt,
+    titleId: week.title.id,
+    propId: week.prop.id,
+    finale: {
+      id: week.finale.id,
+      startsAt: week.finale.window.startsAt,
+      endsAt: week.finale.window.endsAt
+    }
   }
 }
 
@@ -299,6 +324,7 @@ function hintText(node: unknown) {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.spyOn(Date, 'now').mockReturnValue(TEST_NOW)
   uiTest.region = 'house'
   uiTest.canReply = false
   uiTest.opening = { active: false, instruction: '' }
@@ -316,6 +342,10 @@ beforeEach(() => {
   uiTest.performerBeat = null
   uiTest.state = stateFor('decode')
   updateClientSettings(DEFAULT_CLIENT_SETTINGS)
+})
+
+afterEach(() => {
+  vi.restoreAllMocks()
 })
 
 describe('UI colors', () => {
@@ -705,6 +735,175 @@ describe('mobile control budget', () => {
     expect(howToPlay?.uiTransform).not.toHaveProperty('position.bottom')
     ;(howToPlay?.onMouseDown as (() => void) | undefined)?.()
     expect(uiActions.showHowToPlay).toHaveBeenCalledTimes(1)
+  })
+
+  it('disables every show-dependent control while the canonical schedule is missing or stale', () => {
+    const recipient = {
+      address: `0x${'1'.repeat(40)}`,
+      name: 'ALICE',
+      isGuest: false,
+      title: '' as const,
+      performedAt: TEST_NOW
+    }
+    uiTest.region = 'stage'
+    uiTest.mailRecipients = [recipient]
+
+    uiTest.state = {
+      ...foyerState(),
+      showKey: '',
+      playerAddress: `0x${'2'.repeat(40)}`
+    }
+    let component = uiComponent()
+    for (const value of ['DECODE A GHOST', 'MAKE YOUR OWN', 'GHOST MAIL']) {
+      expect(findButton(component, value), `foyer:${value}`).toMatchObject({ disabled: true })
+    }
+    uiTest.state = { ...uiTest.state, reactionMenuOpen: true }
+    expect(findButton(uiComponent(), 'LAUGH')).toBeNull()
+
+    uiTest.state = { ...stateFor('decode'), showKey: '', pending: [] }
+    component = uiComponent()
+    for (const value of ['SPOTLIGHT ×2', 'REPLAY', 'ONE', 'TWO', 'THREE']) {
+      expect(findButton(component, value), `decode:${value}`).toMatchObject({ disabled: true })
+    }
+
+    uiTest.canReply = true
+    uiTest.revealPresentation = { ...uiTest.revealPresentation, answerRevealed: true }
+    uiTest.state = { ...stateFor('reveal'), showKey: '', playerIsGuest: false, reactionMenuOpen: true }
+    component = uiComponent()
+    expect(findButton(component, 'LAUGH')).toBeNull()
+    expect(findButton(component, 'ANSWER BACK')).toBeNull()
+    expect(findButton(component, 'NEXT GHOST')).toMatchObject({ disabled: true })
+    expect(findButton(component, 'MAKE YOUR OWN')).toMatchObject({ disabled: true })
+
+    uiTest.revealPresentation = { ...uiTest.revealPresentation, complete: true }
+    uiTest.state = {
+      ...stateFor('reveal'),
+      showKey: '',
+      playerIsGuest: false,
+      reveal: {
+        charadeId: 'charade-1',
+        correct: true,
+        phrase: 'One',
+        stats: { total: 1, correct: 1 },
+        yourScore: 1,
+        setRound: 5,
+        setSize: 5,
+        setScore: 600,
+        setStreak: 2,
+        setBestStreak: 3,
+        setUnderstood: 4,
+        setComplete: true,
+        isFinale: true
+      }
+    }
+    component = uiComponent()
+    expect(findButton(component, 'PLAY ANOTHER SET')).toMatchObject({ disabled: true })
+    expect(findButton(component, 'LEAVE A GHOST')).toMatchObject({ disabled: true })
+
+    uiTest.revealPresentation = { ...uiTest.revealPresentation, complete: false }
+    uiTest.state = { ...stateFor('posted'), showKey: '' }
+    expect(findButton(uiComponent(), 'DECODE ANOTHER')).toMatchObject({ disabled: true })
+
+    uiTest.state = {
+      ...authorState([]),
+      showKey: '',
+      author: { ...(authorState([]).author as Record<string, unknown>), phase: 'phrase' }
+    }
+    component = uiComponent()
+    expect(findButton(component, 'CHOOSE EMOTES')).toMatchObject({ disabled: true })
+    expect(findButton(component, 'SHUFFLE PHRASE · 2')).toMatchObject({ disabled: true })
+
+    uiTest.state = { ...authorState([]), showKey: '' }
+    component = uiComponent()
+    for (const value of ['WAVE', 'CLAP', 'DAB', 'DISCO', 'MORE']) {
+      expect(findButton(component, value), `author-emotes:${value}`).toMatchObject({ disabled: true })
+    }
+
+    uiTest.state = { ...authorState(['wave', 'clap', 'dab']), showKey: '' }
+    component = uiComponent()
+    for (const value of ['PREVIEW', 'POST', 'CHANGE EMOTES']) {
+      expect(findButton(component, value), `author-confirm:${value}`).toMatchObject({ disabled: true })
+    }
+
+    uiTest.state = {
+      ...stateFor('decode'),
+      screen: 'mail',
+      showKey: '',
+      mailRecipient: { address: recipient.address, name: recipient.name }
+    }
+    expect(findButton(uiComponent(), 'CONFIRM RECIPIENT')).toMatchObject({ disabled: true })
+
+    const first = SEASON_ZERO_WEEKS[0]
+    vi.spyOn(Date, 'now').mockReturnValue(first.eligibility.endsAt)
+    uiTest.state = {
+      ...foyerState(),
+      showKey: `season-zero:${first.id}`,
+      season: seasonMetadata(first)
+    }
+    component = uiComponent()
+    expect(findButton(component, 'DECODE A GHOST')).toMatchObject({ disabled: true })
+    expect(findButton(component, 'MAKE YOUR OWN')).toMatchObject({ disabled: true })
+    const currentPolicy = showPolicyForTimestamp(first.eligibility.endsAt)!
+    const staleFoyerText = collectStaticText(component)
+    expect(staleFoyerText).not.toContain(t('foyer.show', 'en', { theme: first.name.en.toUpperCase() }))
+    expect(staleFoyerText).toContain(
+      t('foyer.show', 'en', { theme: themeLabel(currentPolicy.legacyTheme.id, 'en').toUpperCase() })
+    )
+    uiTest.state = {
+      ...stateFor('decode'),
+      showKey: `season-zero:${first.id}`,
+      season: seasonMetadata(first),
+      pending: []
+    }
+    component = uiComponent()
+    for (const value of ['ONE', 'TWO', 'THREE']) {
+      expect(findButton(component, value), `stale-decode:${value}`).toMatchObject({ disabled: true })
+    }
+  })
+
+  it('renders a valid weekly show name locally without presenting planned title, prop, or finale rewards', () => {
+    const week = SEASON_ZERO_WEEKS[0]
+    vi.spyOn(Date, 'now').mockReturnValue(week.eligibility.startsAt)
+    uiTest.state = {
+      ...foyerState(),
+      showKey: `season-zero:${week.id}`,
+      season: seasonMetadata(week),
+      themeLabel: 'UNTRUSTED SERVER SHOW'
+    }
+
+    for (const language of LANGUAGES) {
+      updateClientSettings({ language })
+      const text = collectStaticText(uiComponent())
+      expect(text, language).toContain(t('foyer.show', language, { theme: week.name[language].toUpperCase() }))
+      expect(
+        text.some((value) => value.includes('UNTRUSTED SERVER SHOW')),
+        language
+      ).toBe(false)
+      expect(text, `${language}:planned-title`).not.toContain(week.title.label[language])
+      expect(text, `${language}:planned-prop`).not.toContain(week.prop.label[language])
+      expect(text, `${language}:planned-finale`).not.toContain(week.finale.label[language])
+    }
+  })
+
+  it('falls back to the localized legacy theme when Season Zero metadata is mismatched', () => {
+    const week = SEASON_ZERO_WEEKS[0]
+    vi.spyOn(Date, 'now').mockReturnValue(week.eligibility.startsAt)
+    const policy = showPolicyForTimestamp(week.eligibility.startsAt)!
+    uiTest.state = {
+      ...foyerState(),
+      showKey: `season-zero:${week.id}`,
+      season: { ...seasonMetadata(week), titleId: SEASON_ZERO_WEEKS[1].title.id },
+      themeLabel: 'UNTRUSTED SERVER SHOW'
+    }
+
+    for (const language of LANGUAGES) {
+      updateClientSettings({ language })
+      const text = collectStaticText(uiComponent())
+      expect(text, language).toContain(
+        t('foyer.show', language, { theme: themeLabel(policy.legacyTheme.id, language).toUpperCase() })
+      )
+      expect(text, language).not.toContain(t('foyer.show', language, { theme: week.name[language].toUpperCase() }))
+    }
   })
 
   it('renders every localized how-to line with two 96px navigation controls', () => {

@@ -2,8 +2,9 @@ import { engine } from '@dcl/sdk/ecs'
 import { isServer } from '@dcl/sdk/network'
 import { onLeaveScene } from '@dcl/sdk/src/players'
 import { THEMES } from './shared/config'
-import { t, themeLabel } from './shared/i18n'
-import { clientFlow, startClientFlow } from './client/flow'
+import { seasonZeroShowLabel, t, themeLabel } from './shared/i18n'
+import { clientFlow, startClientFlow, type ClientFlowState } from './client/flow'
+import { acceptedShowPolicy, showPolicyForTimestamp } from './shared/show-policy'
 import {
   clearPerformer,
   clearGhostOfNight,
@@ -32,6 +33,26 @@ import { lights, marquee } from './client/theater'
 import { uiComponent } from './client/ui'
 import { startServer } from './server/server'
 
+function currentShowPolicy(state: ClientFlowState) {
+  return showPolicyForTimestamp(Date.now() + state.serverClockOffset)
+}
+
+function hasCurrentShowSchedule(
+  state: ClientFlowState,
+  policy: ReturnType<typeof showPolicyForTimestamp> = currentShowPolicy(state)
+) {
+  return state.ready && acceptedShowPolicy(policy, state.showKey, state.season) !== null
+}
+
+function currentShowLabel(
+  state: ClientFlowState,
+  language: Parameters<typeof themeLabel>[1],
+  policy: ReturnType<typeof showPolicyForTimestamp> = currentShowPolicy(state)
+) {
+  const weeklyLabel = hasCurrentShowSchedule(state, policy) ? seasonZeroShowLabel(state.season, language) : null
+  return weeklyLabel ?? themeLabel(policy?.legacyTheme.id ?? state.theme, language)
+}
+
 export function main() {
   if (isServer()) {
     startServer()
@@ -56,7 +77,11 @@ export function main() {
     },
     () => {
       const state = clientFlow.getState()
-      if (!state.charade && !state.pending.some((request) => request.kind === 'nextCharade')) {
+      if (
+        hasCurrentShowSchedule(state) &&
+        !state.charade &&
+        !state.pending.some((request) => request.kind === 'nextCharade')
+      ) {
         clientFlow.requestNextCharade()
       }
     }
@@ -117,20 +142,25 @@ export function main() {
   let screen = clientFlow.getState().screen
   let theme = ''
   let language = getClientSettings().language
+  let marqueeText = ''
   const playedNotices = new Set<string>()
 
   function syncMarquee() {
     const state = clientFlow.getState()
-    marquee.setText(t('marquee.tonightShow', language, { theme: themeLabel(state.theme, language) }))
+    const text = t('marquee.tonightShow', language, { theme: currentShowLabel(state, language) })
+    if (text === marqueeText) return
+    marqueeText = text
+    marquee.setText(text)
   }
 
   clientFlow.subscribe((state) => {
-    if (state.theme !== theme) {
+    const themeChanged = state.theme !== theme
+    if (themeChanged) {
       theme = state.theme
       const accent = THEMES.find((candidate) => candidate.id === theme)?.accent
       if (accent) lights.setThemeAccent(accent)
-      syncMarquee()
     }
+    syncMarquee()
 
     for (const notice of state.notices) {
       if (playedNotices.has(notice.id)) continue
@@ -175,11 +205,13 @@ export function main() {
         refreshRewardProps()
       }
       const state = clientFlow.getState()
+      const policy = currentShowPolicy(state)
+      syncMarquee()
       if (
-        state.ready &&
+        hasCurrentShowSchedule(state, policy) &&
         state.screen === 'foyer' &&
         !opening.hasPlayed() &&
-        opening.start(themeLabel(state.theme, language), language)
+        opening.start(currentShowLabel(state, language, policy), language)
       ) {
         clientFlow.requestNextCharade()
       }

@@ -87,6 +87,14 @@ export class LiveRounds {
     }
   }
 
+  announcementFor(address: string): RoundSnapshot | null {
+    if (this.sequence === 0) return null
+    if (!this.active || !this.active.participants.has(address.toLowerCase())) {
+      return { roundId: String(this.sequence), charadeId: '', guessed: [], winner: null }
+    }
+    return this.current
+  }
+
   start(charadeId: string) {
     if (!this.isLive) return false
     if (this.active?.charadeId === charadeId && !this.isSettled) return false

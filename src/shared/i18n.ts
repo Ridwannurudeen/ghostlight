@@ -1,5 +1,7 @@
 import type { PlayerTitle, ThemeId } from './config'
 import { DECK, type Emote, type Phrase, type PhraseId } from './deck'
+import { SEASON_ZERO_WEEKS } from './seasons'
+import type { SeasonMetadata } from './show-policy'
 
 export const LANGUAGES = ['en', 'es', 'pt'] as const
 
@@ -1006,6 +1008,43 @@ const REQUIREMENT_KEYS: Record<string, CopyKey> = {
 
 export function themeLabel(theme: ThemeId, language: Language): string {
   return translate(THEME_KEYS[theme], language)
+}
+
+function seasonZeroWeek(weekId: string) {
+  return SEASON_ZERO_WEEKS.find((week) => week.id === weekId) ?? null
+}
+
+export function seasonZeroWeekLabel(weekId: string, language: Language): string | null {
+  return seasonZeroWeek(weekId)?.name[language] ?? null
+}
+
+export function seasonZeroTitleLabel(weekId: string, titleId: string, language: Language): string | null {
+  const week = seasonZeroWeek(weekId)
+  return week?.title.id === titleId ? week.title.label[language] : null
+}
+
+export function seasonZeroPropLabel(weekId: string, propId: string, language: Language): string | null {
+  const week = seasonZeroWeek(weekId)
+  return week?.prop.id === propId ? week.prop.label[language] : null
+}
+
+export function seasonZeroFinaleLabel(weekId: string, finaleId: string, language: Language): string | null {
+  const week = seasonZeroWeek(weekId)
+  return week?.finale.id === finaleId ? week.finale.label[language] : null
+}
+
+export function seasonZeroShowLabel(season: SeasonMetadata | null | undefined, language: Language): string | null {
+  if (!season || season.id !== 'season-zero') return null
+  const week = seasonZeroWeek(season.weekId)
+  if (!week) return null
+  if (season.startsAt !== week.eligibility.startsAt || season.endsAt !== week.eligibility.endsAt) return null
+  if (!seasonZeroTitleLabel(week.id, season.titleId, language)) return null
+  if (!seasonZeroPropLabel(week.id, season.propId, language)) return null
+  if (!seasonZeroFinaleLabel(week.id, season.finale.id, language)) return null
+  if (season.finale.startsAt !== week.finale.window.startsAt || season.finale.endsAt !== week.finale.window.endsAt) {
+    return null
+  }
+  return week.name[language]
 }
 
 export function titleLabel(title: string, language: Language): string {

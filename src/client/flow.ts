@@ -13,6 +13,7 @@ import {
 import { SPECTATOR_REACTION_KINDS, room } from '../shared/messages'
 import { isPhraseId, normalizePlayerName } from '../shared/i18n'
 import { dealPhrase } from '../shared/pick'
+import { acceptedShowPolicy, showPolicyForTimestamp, type SeasonMetadata } from '../shared/show-policy'
 import type { DailyProgress, Look, NextUnlock, PlaybillPerformer } from '../shared/types'
 import {
   recordDiagnosticsCharade,
@@ -250,6 +251,9 @@ export type ClientFlowState = {
   instanceId: string
   lastHeartbeatAt: number
   serverClockOffset: number
+  acceptedServerTime: number
+  showKey: string
+  season: SeasonMetadata | null
   theme: ThemeId
   themeLabel: string
   playerAddress: string
@@ -313,6 +317,17 @@ export type FlowAction =
       playerName: string
       playerIsGuest?: boolean
     }
+  | {
+      type: 'showSchedule'
+      instanceId: string
+      serverTime: number
+      now: number
+      showKey: string
+      season: SeasonMetadata | null
+      theme: ThemeId
+      themeLabel: string
+      dailyDay?: string
+    }
   | { type: 'pong'; now: number }
   | { type: 'heartbeatTimeout' }
   | { type: 'charade'; charade: DecodeCharade }
@@ -353,7 +368,7 @@ export type FlowAction =
   | { type: 'inviteStatus'; status: ClientFlowState['inviteStatus'] }
   | { type: 'clearToast' }
   | { type: 'dismissNotice'; id: string }
-  | { type: 'error'; code: string }
+  | { type: 'error'; code: string; requestId?: string; clearPending?: boolean; clearRound?: boolean }
 
 export function createInitialFlowState(): ClientFlowState {
   const initialTheme = THEMES[0]
@@ -365,6 +380,9 @@ export function createInitialFlowState(): ClientFlowState {
     instanceId: '',
     lastHeartbeatAt: 0,
     serverClockOffset: 0,
+    acceptedServerTime: -1,
+    showKey: '',
+    season: null,
     theme: initialTheme.id,
     themeLabel: initialTheme.label,
     playerAddress: '',
@@ -446,6 +464,7 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
             screen: 'waking'
           }
     case 'ready': {
+      if (action.serverTime < state.acceptedServerTime) return state
       const newInstance = state.instanceId !== action.instanceId
       const screen = newInstance
         ? 'foyer'
@@ -459,6 +478,9 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
         instanceId: action.instanceId,
         lastHeartbeatAt: action.now,
         serverClockOffset: action.serverTime - action.now,
+        acceptedServerTime: action.serverTime,
+        showKey: newInstance ? '' : state.showKey,
+        season: newInstance ? null : state.season,
         theme: action.theme,
         themeLabel: action.themeLabel,
         playerAddress: action.playerAddress,
@@ -492,6 +514,47 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
         boards: newInstance ? { topDecoders: [], hardestGhosts: [], playbill: [], ghostOfNightId: '' } : state.boards,
         ghostOfNight: newInstance ? null : state.ghostOfNight,
         errorCode: ''
+      }
+    }
+    case 'showSchedule': {
+      if (state.instanceId !== action.instanceId || action.serverTime < state.acceptedServerTime) return state
+      const showChanged = state.showKey !== '' && state.showKey !== action.showKey
+      const progress =
+        action.dailyDay && action.dailyDay > state.progress.daily.day
+          ? { ...state.progress, daily: { day: action.dailyDay, decoded: 0, authored: 0, stamped: false } }
+          : state.progress
+      const volatileScreen =
+        state.screen === 'decode' ||
+        state.screen === 'reveal' ||
+        state.screen === 'author' ||
+        state.resumeScreen === 'decode' ||
+        state.resumeScreen === 'reveal' ||
+        state.resumeScreen === 'author'
+      return {
+        ...state,
+        serverClockOffset: action.serverTime - action.now,
+        acceptedServerTime: action.serverTime,
+        showKey: action.showKey,
+        season: action.season,
+        theme: action.theme,
+        themeLabel: action.themeLabel,
+        progress,
+        screen: showChanged && volatileScreen ? 'foyer' : state.screen,
+        resumeScreen: showChanged && volatileScreen ? null : state.resumeScreen,
+        charade: showChanged ? null : state.charade,
+        retry: showChanged ? null : state.retry,
+        reveal: showChanged ? null : state.reveal,
+        author: showChanged ? null : state.author,
+        authorReturnScreen: showChanged ? 'foyer' : state.authorReturnScreen,
+        dealtPhraseIds: showChanged ? [] : state.dealtPhraseIds,
+        reactionMenuOpen: showChanged ? false : state.reactionMenuOpen,
+        spotlightEnabled: showChanged ? false : state.spotlightEnabled,
+        roundId: showChanged ? '' : state.roundId,
+        latestRoundSequence: state.latestRoundSequence,
+        roundCharadeId: showChanged ? '' : state.roundCharadeId,
+        roundWinner: showChanged ? null : state.roundWinner,
+        toast: showChanged ? null : state.toast,
+        pending: showChanged ? [] : state.pending
       }
     }
     case 'pong':
@@ -556,21 +619,21 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
         ? { ...state, charade: { ...state.charade, reply: action.reply } }
         : state
     case 'reveal': {
-      const freshProgress = action.reveal.revision >= state.progressRevision
+      const progressIsFresh = freshProgress(state, action.reveal.revision, action.reveal.daily)
       return {
         ...state,
         screen: state.screen === 'author' ? 'author' : 'reveal',
         retry: null,
         reveal: action.reveal,
-        progress: freshProgress
+        progress: progressIsFresh
           ? {
               daily: action.reveal.daily,
               title: action.reveal.title,
               nextUnlock: action.reveal.nextUnlock
             }
           : state.progress,
-        progressRevision: freshProgress ? action.reveal.revision : state.progressRevision,
-        notices: freshProgress
+        progressRevision: progressIsFresh ? action.reveal.revision : state.progressRevision,
+        notices: progressIsFresh
           ? appendProgressNotices(state.notices, action.reveal.charadeId, action.reveal)
           : state.notices,
         errorCode: '',
@@ -632,26 +695,26 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
     case 'authorBack':
       return { ...state, screen: state.authorReturnScreen }
     case 'progress':
-      return action.revision < state.progressRevision
+      return !freshProgress(state, action.revision, action.progress.daily)
         ? state
         : { ...state, progress: action.progress, progressRevision: action.revision }
     case 'posted': {
-      const freshProgress = action.result.revision >= state.progressRevision
+      const progressIsFresh = freshProgress(state, action.result.revision, action.result.daily)
       return {
         ...state,
         screen: 'posted',
         postedCharadeId: action.result.charadeId,
         postedReplyTo: action.result.replyTo ?? '',
         postedRecipient: action.result.recipient ?? '',
-        progress: freshProgress
+        progress: progressIsFresh
           ? {
               daily: action.result.daily,
               title: action.result.title,
               nextUnlock: action.result.nextUnlock
             }
           : state.progress,
-        progressRevision: freshProgress ? action.result.revision : state.progressRevision,
-        notices: freshProgress
+        progressRevision: progressIsFresh ? action.result.revision : state.progressRevision,
+        notices: progressIsFresh
           ? appendProgressNotices(state.notices, action.result.charadeId, action.result)
           : state.notices,
         errorCode: '',
@@ -659,7 +722,7 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
       }
     }
     case 'since':
-      if (action.summary.revision < state.progressRevision) return state
+      if (!freshProgress(state, action.summary.revision, action.summary.daily)) return state
       return {
         ...state,
         since: action.summary,
@@ -761,11 +824,20 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
     case 'error':
       return {
         ...state,
-        roundId: state.screen === 'decode' && state.roundCharadeId === state.charade?.id ? '' : state.roundId,
+        roundId:
+          action.clearRound && state.screen === 'decode' && state.roundCharadeId === state.charade?.id
+            ? ''
+            : state.roundId,
         roundCharadeId:
-          state.screen === 'decode' && state.roundCharadeId === state.charade?.id ? '' : state.roundCharadeId,
+          action.clearRound && state.screen === 'decode' && state.roundCharadeId === state.charade?.id
+            ? ''
+            : state.roundCharadeId,
         errorCode: action.code,
-        pending: []
+        pending: action.requestId
+          ? state.pending.filter((request) => request.requestId !== action.requestId)
+          : action.clearPending
+            ? []
+            : state.pending
       }
   }
 }
@@ -801,10 +873,28 @@ type ServerPosted = { requestId: string; charadeId: string; replyTo?: string; re
 
 type ServerReply = Omit<DecodeReply, 'emotes'> & { charadeId: string; emotes: string[] }
 
+type ServerSeasonMetadata = {
+  id: string
+  weekId: string
+  startsAt: number
+  endsAt: number
+  titleId: string
+  propId: string
+  finale: {
+    id: string
+    startsAt: number
+    endsAt: number
+  }
+}
+
 export type ServerMessage =
   | {
       type: 'ready'
       data: { instanceId: string; serverTime: number; theme?: string; themeLabel?: string }
+    }
+  | {
+      type: 'showSchedule'
+      data: { instanceId: string; serverTime: number; showKey: string; season?: ServerSeasonMetadata }
     }
   | { type: 'pong'; data: { seq: number } }
   | { type: 'progress'; data: ProgressView & { revision: number } }
@@ -838,9 +928,13 @@ export type ServerMessage =
   | { type: 'audience'; data: { looks: Look[] } }
   | { type: 'boards'; data: BoardsView }
   | { type: 'ghostOfNight'; data: GhostOfNightView }
-  | { type: 'roundStart'; data: { roundId: string; charadeId: string } }
-  | { type: 'roundWinner'; data: { roundId: string; charadeId: string; address: string; name: string } }
+  | { type: 'roundStart'; data: { instanceId: string; roundId: string; charadeId: string; showKey: string } }
+  | {
+      type: 'roundWinner'
+      data: { instanceId: string; roundId: string; charadeId: string; showKey: string; address: string; name: string }
+    }
   | { type: 'react'; data: { kind: string }; from: string }
+  | { type: 'requestError'; data: { code: string; requestId: string } }
   | { type: 'error'; data: { code: string } }
 
 export type FlowEffects = {
@@ -895,6 +989,11 @@ function progressFrom(data: ServerProgress, fallback: ProgressView): ProgressVie
 
 function validRevision(revision: number) {
   return Number.isSafeInteger(revision) && revision >= 0
+}
+
+function freshProgress(state: ClientFlowState, revision: number, daily: DailyProgress | undefined) {
+  if (!validRevision(revision) || revision < state.progressRevision) return false
+  return !daily || daily.day >= state.progress.daily.day
 }
 
 function optionalNonNegativeInt(value: unknown) {
@@ -1011,6 +1110,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
   let lastHelloInstance = ''
   let roundMismatchRefetchAttempted = false
   let retryTransportDropped = false
+  let deferredAbandonedRetryCharadeId = ''
   const requests = new Map<string, StoredRequest>()
   const pendingReplies = new Map<string, DecodeReply>()
   const listeners = new Set<(nextState: ClientFlowState) => void>()
@@ -1078,6 +1178,22 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     return true
   }
 
+  function activePrimaryDeck() {
+    const policy = acceptedShowPolicy(
+      showPolicyForTimestamp(now() + state.serverClockOffset),
+      state.showKey,
+      state.season
+    )
+    if (!policy) return null
+    const allowedPhraseIds = new Set<string>(policy.primaryPhraseIds)
+    return DECK.filter((phrase) => allowedPhraseIds.has(phrase.id))
+  }
+
+  function canAnswerBackNow() {
+    const deck = activePrimaryDeck()
+    return !!deck && canAnswerBack(state) && deck.some((phrase) => phrase.id === state.reveal?.phraseId)
+  }
+
   function restoreCharadePresentation() {
     if (!state.charade) return
     if (state.charade.reply) {
@@ -1096,16 +1212,18 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     switch (message.type) {
       case 'ready': {
         const receivedAt = now()
+        const policy = showPolicyForTimestamp(message.data.serverTime)
+        if (!policy || message.data.serverTime < state.acceptedServerTime) {
+          break
+        }
         recordDiagnosticsServerReady(receivedAt)
         const instanceChanged = state.instanceId !== message.data.instanceId
+        const showChanged = !instanceChanged && state.showKey !== '' && state.showKey !== policy.showKey
         const abandonedRetryCharadeId =
-          state.retry && (instanceChanged || retryTransportDropped) ? state.retry.charadeId : ''
-        const theme =
-          THEMES.find((candidate) => candidate.id === message.data.theme) ??
-          THEMES.find((candidate) => candidate.id === state.theme)!
+          state.retry && !showChanged && (instanceChanged || retryTransportDropped) ? state.retry.charadeId : ''
         const candidateProfile = options.getProfile?.()
         const profile = isCompleteProfile(candidateProfile) ? candidateProfile : null
-        if (instanceChanged) {
+        if (instanceChanged || showChanged) {
           roundMismatchRefetchAttempted = false
           requests.clear()
           pendingReplies.clear()
@@ -1120,13 +1238,26 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           }
           cancelReveal()
         }
+        if (showChanged) {
+          deferredAbandonedRetryCharadeId = ''
+          dispatch({
+            type: 'showSchedule',
+            instanceId: message.data.instanceId,
+            serverTime: message.data.serverTime,
+            now: receivedAt,
+            showKey: '',
+            season: null,
+            theme: policy.legacyTheme.id,
+            themeLabel: policy.legacyTheme.label
+          })
+        }
         dispatch({
           type: 'ready',
           instanceId: message.data.instanceId,
           serverTime: message.data.serverTime,
           now: receivedAt,
-          theme: theme.id,
-          themeLabel: message.data.themeLabel || theme.label,
+          theme: policy.legacyTheme.id,
+          themeLabel: policy.legacyTheme.label,
           playerAddress: profile?.address ?? state.playerAddress,
           playerName: profile ? normalizePlayerName(profile.name) : state.playerName,
           playerIsGuest: profile?.isGuest ?? state.playerIsGuest
@@ -1134,13 +1265,63 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         retryTransportDropped = false
         if (abandonedRetryCharadeId) dispatch({ type: 'abandonRetry' })
         if (instanceChanged || lastHelloInstance !== message.data.instanceId) sendHello(true)
-        if (abandonedRetryCharadeId) requestNextCharadeExcluding(abandonedRetryCharadeId)
+        if (abandonedRetryCharadeId) {
+          if (!requestNextCharadeExcluding(abandonedRetryCharadeId)) {
+            deferredAbandonedRetryCharadeId = abandonedRetryCharadeId
+          }
+        }
         else requestRoundCharadeIfNeeded()
         break
       }
+      case 'showSchedule': {
+        const receivedAt = now()
+        if (
+          message.data.instanceId !== state.instanceId ||
+          message.data.serverTime < state.acceptedServerTime
+        ) {
+          break
+        }
+        const policy = acceptedShowPolicy(
+          showPolicyForTimestamp(message.data.serverTime),
+          message.data.showKey,
+          message.data.season
+        )
+        if (!policy) break
+        const season = policy.kind === 'season-zero' ? policy.season : null
+        const showChanged = state.showKey !== '' && state.showKey !== policy.showKey
+        if (showChanged) {
+          requests.clear()
+          pendingReplies.clear()
+          roundMismatchRefetchAttempted = false
+          retryTransportDropped = false
+          effects.cancelOpening?.()
+          cancelReveal()
+          effects.clearPreview?.()
+          effects.clearPerformer?.()
+          effects.clearStageReward?.()
+        }
+        dispatch({
+          type: 'showSchedule',
+          instanceId: message.data.instanceId,
+          serverTime: message.data.serverTime,
+          now: receivedAt,
+          showKey: policy.showKey,
+          season,
+          theme: policy.legacyTheme.id,
+          themeLabel: policy.legacyTheme.label,
+          dailyDay: new Date(message.data.serverTime).toISOString().slice(0, 10)
+        })
+        if (
+          deferredAbandonedRetryCharadeId &&
+          requestNextCharadeExcluding(deferredAbandonedRetryCharadeId)
+        ) {
+          deferredAbandonedRetryCharadeId = ''
+        }
+        break
+      }
       case 'progress': {
-        if (!validRevision(message.data.revision) || message.data.revision < state.progressRevision) break
         const progress = progressFrom(message.data, state.progress)
+        if (!freshProgress(state, message.data.revision, progress.daily)) break
         dispatch({ type: 'progress', progress, revision: message.data.revision })
         if (state.playerAddress) effects.showReward?.(state.playerAddress, progress.title)
         break
@@ -1291,8 +1472,9 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           break
         }
         const revealedCharade = state.charade
-        const freshProgress = validRevision(message.data.revision) && message.data.revision >= state.progressRevision
-        const revealProgress = freshProgress ? progressFrom(message.data, state.progress) : state.progress
+        const candidateProgress = progressFrom(message.data, state.progress)
+        const progressIsFresh = freshProgress(state, message.data.revision, candidateProgress.daily)
+        const revealProgress = progressIsFresh ? candidateProgress : state.progress
         const spotlight = optionalBoolean(rawSpotlight)
         const scoreDelta = optionalSafeInt(rawScoreDelta)
         const setRound = optionalPositiveInt(rawSetRound)
@@ -1307,7 +1489,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         const reveal: RevealResult = {
           ...revealData,
           ...revealProgress,
-          revision: freshProgress ? message.data.revision : state.progressRevision,
+          revision: progressIsFresh ? message.data.revision : state.progressRevision,
           phraseId: message.data.phraseId ?? '',
           stampAwarded: message.data.stampAwarded === true,
           titleUnlocked: message.data.titleUnlocked === true,
@@ -1332,14 +1514,15 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
       }
       case 'posted': {
         if (!resolveRequest(message.data.requestId, 'post')) break
-        const freshProgress = validRevision(message.data.revision) && message.data.revision >= state.progressRevision
-        const postedProgress = freshProgress ? progressFrom(message.data, state.progress) : state.progress
+        const candidateProgress = progressFrom(message.data, state.progress)
+        const progressIsFresh = freshProgress(state, message.data.revision, candidateProgress.daily)
+        const postedProgress = progressIsFresh ? candidateProgress : state.progress
         const result = {
           charadeId: message.data.charadeId,
           replyTo: message.data.replyTo,
           recipient: message.data.recipient,
           ...postedProgress,
-          revision: freshProgress ? message.data.revision : state.progressRevision,
+          revision: progressIsFresh ? message.data.revision : state.progressRevision,
           stampAwarded: message.data.stampAwarded === true,
           titleUnlocked: message.data.titleUnlocked === true
         }
@@ -1349,8 +1532,8 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         break
       }
       case 'since': {
-        if (!validRevision(message.data.revision) || message.data.revision < state.progressRevision) break
         const sinceProgress = progressFrom(message.data, state.progress)
+        if (!freshProgress(state, message.data.revision, sinceProgress.daily)) break
         dispatch({
           type: 'since',
           summary: {
@@ -1398,7 +1581,14 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         break
       case 'roundStart': {
         const sequence = roundSequence(message.data.roundId)
-        if (sequence === null || sequence <= state.latestRoundSequence) break
+        if (
+          message.data.instanceId !== state.instanceId ||
+          message.data.showKey !== state.showKey ||
+          sequence === null ||
+          sequence <= state.latestRoundSequence
+        ) {
+          break
+        }
         if (state.roundCharadeId !== message.data.charadeId) roundMismatchRefetchAttempted = false
         dispatch({
           type: 'roundStart',
@@ -1410,7 +1600,14 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         break
       }
       case 'roundWinner': {
-        if (message.data.roundId !== state.roundId || message.data.charadeId !== state.roundCharadeId) break
+        if (
+          message.data.instanceId !== state.instanceId ||
+          message.data.showKey !== state.showKey ||
+          message.data.roundId !== state.roundId ||
+          message.data.charadeId !== state.roundCharadeId
+        ) {
+          break
+        }
         roundMismatchRefetchAttempted = false
         const winnerName = normalizePlayerName(message.data.name)
         dispatch({
@@ -1432,18 +1629,24 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           dispatch({ type: 'reaction', kind: message.data.kind, from: message.from, now: now() })
         }
         break
-      case 'error':
-        const refetchUnservedCharade = message.data.code === 'charade-not-served' && state.screen === 'decode'
+      case 'requestError':
+      case 'error': {
+        const requestId = message.type === 'requestError' ? message.data.requestId : undefined
+        const stored = requestId ? requests.get(requestId) : undefined
+        if (requestId && !stored) break
+        const refetchUnservedCharade =
+          !!requestId && message.data.code === 'charade-not-served' && state.screen === 'decode'
         const abandonedUnservedRetryId = refetchUnservedCharade ? (state.retry?.charadeId ?? '') : ''
+        const erroredGuess = stored?.request.kind === 'guess' || stored?.request.kind === 'roundGuess'
         const resumeDeferredRound =
           state.screen === 'decode' &&
           !!state.roundCharadeId &&
           state.charade?.id !== state.roundCharadeId &&
-          state.pending.some((request) => request.kind === 'guess' || request.kind === 'roundGuess')
+          erroredGuess
         if (state.screen === 'decode') roundMismatchRefetchAttempted = false
-        cancelReveal()
-        requests.clear()
-        dispatch({ type: 'error', code: message.data.code })
+        if (erroredGuess) cancelReveal()
+        if (requestId) requests.delete(requestId)
+        dispatch({ type: 'error', code: message.data.code, requestId, clearRound: erroredGuess })
         if (message.data.code === 'protocol-required') {
           helloSent = false
           lastHelloInstance = ''
@@ -1455,6 +1658,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         } else if (refetchUnservedCharade) requestNextCharade()
         else if (resumeDeferredRound) requestRoundCharadeIfNeeded()
         break
+      }
     }
   }
 
@@ -1511,6 +1715,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
   function requestNextCharadeExcluding(excludedCharadeId = state.charade?.id ?? '') {
     if (
       !state.ready ||
+      !activePrimaryDeck() ||
       options.canDecode?.() === false ||
       state.pending.some((request) => request.kind === 'nextCharade')
     ) {
@@ -1599,10 +1804,12 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     ) {
       return false
     }
+    const deck = activePrimaryDeck()
+    if (!deck) return false
     if (!preserveCompletedReveal || state.reveal?.setComplete !== true) cancelReveal()
     effects.clearStageReward?.()
     const seed = createRequestId()
-    const phrase = dealPhrase(DECK, state.dealtPhraseIds, seed)
+    const phrase = dealPhrase(deck, state.dealtPhraseIds, seed)
     if (!phrase) {
       dispatch({ type: 'error', code: 'deck_exhausted' })
       return false
@@ -1623,9 +1830,17 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
   }
 
   function beginAnswerBack() {
-    if (!canAnswerBack(state) || effects.canAdvanceReveal?.() === false) return false
+    const deck = activePrimaryDeck()
+    if (
+      !deck ||
+      !canAnswerBack(state) ||
+      effects.canAdvanceReveal?.() === false ||
+      !deck.some((phrase) => phrase.id === state.reveal?.phraseId)
+    ) {
+      return false
+    }
     const charade = state.charade!
-    const phrase = DECK.find((candidate) => candidate.id === state.reveal!.phraseId)
+    const phrase = deck.find((candidate) => candidate.id === state.reveal!.phraseId)
     if (!phrase) {
       dispatch({ type: 'error', code: 'invalid_reply_phrase' })
       return false
@@ -1672,10 +1887,12 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
       (candidate) => canonicalAddress(candidate.address) === canonicalAddress(state.mailRecipient!.address)
     )
     if (!recipient) return false
+    const deck = activePrimaryDeck()
+    if (!deck) return false
     cancelReveal()
     effects.clearStageReward?.()
     const seed = createRequestId()
-    const phrase = dealPhrase(DECK, state.dealtPhraseIds, seed)
+    const phrase = dealPhrase(deck, state.dealtPhraseIds, seed)
     if (!phrase) {
       dispatch({ type: 'error', code: 'deck_exhausted' })
       return false
@@ -1698,8 +1915,10 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
 
   function shuffleAuthorPhrase() {
     if (!state.author || state.author.shufflesRemaining <= 0) return false
+    const deck = activePrimaryDeck()
+    if (!deck) return false
     const seed = createRequestId()
-    const phrase = dealPhrase(DECK, state.dealtPhraseIds, seed)
+    const phrase = dealPhrase(deck, state.dealtPhraseIds, seed)
     if (!phrase) return false
     dispatch({
       type: 'author',
@@ -1740,6 +1959,8 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
   function postAuthor() {
     if (!state.ready || !state.author || state.author.selectedEmotes.length !== 3) return false
     if (state.pending.some((request) => request.kind === 'post')) return false
+    const deck = activePrimaryDeck()
+    if (!deck?.some((phrase) => phrase.id === state.author!.phrase.id)) return false
     const requestId = createRequestId()
     sendRequest(
       'post',
@@ -1791,7 +2012,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     },
     beginGhostMail,
     canSendMail: () => canSendMail(state),
-    canAnswerBack: () => canAnswerBack(state),
+    canAnswerBack: canAnswerBackNow,
     shuffleAuthorPhrase,
     selectAuthorEmote,
     moreAuthorEmotes() {
@@ -1863,7 +2084,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     reportError(code: string, error?: unknown) {
       if (error !== undefined) console.error(`Ghostlight ${code}`, error)
       requests.clear()
-      dispatch({ type: 'error', code })
+      dispatch({ type: 'error', code, clearPending: true, clearRound: true })
     }
   }
 }
@@ -1925,6 +2146,7 @@ export function startClientFlow() {
 
   room.onReady((ready) => clientFlow.dispatch({ type: 'transport', ready }))
   room.onMessage('ready', (data) => clientFlow.receive({ type: 'ready', data }))
+  room.onMessage('showSchedule', (data) => clientFlow.receive({ type: 'showSchedule', data }))
   room.onMessage('pong', (data) => clientFlow.receive({ type: 'pong', data }))
   room.onMessage('progress', (data) =>
     clientFlow.receive({ type: 'progress', data: data as unknown as ProgressView & { revision: number } })
@@ -1954,6 +2176,7 @@ export function startClientFlow() {
   room.onMessage('roundStart', (data) => clientFlow.receive({ type: 'roundStart', data }))
   room.onMessage('roundWinner', (data) => clientFlow.receive({ type: 'roundWinner', data }))
   room.onMessage('react', (data, context) => clientFlow.receive({ type: 'react', data, from: context?.from ?? '' }))
+  room.onMessage('requestError', (data) => clientFlow.receive({ type: 'requestError', data }))
   room.onMessage('error', (data) => clientFlow.receive({ type: 'error', data }))
 
   engine.addSystem((deltaSeconds) => clientFlow.tick(deltaSeconds))

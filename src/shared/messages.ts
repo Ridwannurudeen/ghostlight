@@ -55,6 +55,20 @@ const performer = Schemas.Map({
   performedAt: Schemas.Int64
 })
 
+const seasonMetadata = Schemas.Map({
+  id: Schemas.String,
+  weekId: Schemas.String,
+  startsAt: Schemas.Int64,
+  endsAt: Schemas.Int64,
+  titleId: Schemas.String,
+  propId: Schemas.String,
+  finale: Schemas.Map({
+    id: Schemas.String,
+    startsAt: Schemas.Int64,
+    endsAt: Schemas.Int64
+  })
+})
+
 export const Messages = {
   hello: Schemas.Map({
     displayName: Schemas.String,
@@ -66,6 +80,12 @@ export const Messages = {
     serverTime: Schemas.Int64,
     theme: Schemas.String,
     themeLabel: Schemas.String
+  }),
+  showSchedule: Schemas.Map({
+    instanceId: Schemas.String,
+    serverTime: Schemas.Int64,
+    showKey: Schemas.String,
+    season: Schemas.Optional(seasonMetadata)
   }),
   ping: Schemas.Map({ seq: Schemas.Int }),
   pong: Schemas.Map({ seq: Schemas.Int }),
@@ -197,7 +217,12 @@ export const Messages = {
     emotes: Schemas.Array(Schemas.String),
     createdAt: Schemas.Int64
   }),
-  roundStart: Schemas.Map({ roundId: Schemas.String, charadeId: Schemas.String }),
+  roundStart: Schemas.Map({
+    roundId: Schemas.String,
+    charadeId: Schemas.String,
+    instanceId: Schemas.String,
+    showKey: Schemas.String
+  }),
   roundGuess: Schemas.Map({
     roundId: Schemas.String,
     charadeId: Schemas.String,
@@ -209,9 +234,12 @@ export const Messages = {
     roundId: Schemas.String,
     charadeId: Schemas.String,
     address: Schemas.String,
-    name: Schemas.String
+    name: Schemas.String,
+    instanceId: Schemas.String,
+    showKey: Schemas.String
   }),
   react: Schemas.Map({ kind: Schemas.String }),
+  requestError: Schemas.Map({ code: Schemas.String, requestId: Schemas.String }),
   error: Schemas.Map({ code: Schemas.String })
 }
 

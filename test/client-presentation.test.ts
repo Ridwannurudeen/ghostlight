@@ -1,4 +1,6 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+const TEST_NOW = Date.UTC(2026, 7, 23, 12)
 
 const harness = vi.hoisted(() => {
   const state = {
@@ -10,6 +12,9 @@ const harness = vi.hoisted(() => {
     reactionEvent: null,
     themeLabel: 'Kitchen Capers',
     theme: 'food',
+    showKey: 'daily:2026-08-23',
+    season: null as Record<string, unknown> | null,
+    serverClockOffset: 0,
     ghostOfNight: null,
     notices: []
   }
@@ -103,9 +108,10 @@ const rewards = vi.hoisted(() => ({
   setStageRewardProp: vi.fn()
 }))
 vi.mock('../src/client/rewards', () => rewards)
+const theater = vi.hoisted(() => ({ setThemeAccent: vi.fn(), setText: vi.fn() }))
 vi.mock('../src/client/theater', () => ({
-  lights: { setThemeAccent: vi.fn() },
-  marquee: { setText: vi.fn() }
+  lights: { setThemeAccent: theater.setThemeAccent },
+  marquee: { setText: theater.setText }
 }))
 vi.mock('../src/client/sound', () => sound)
 vi.mock('../src/client/ui', () => ({ uiComponent: vi.fn() }))
@@ -113,8 +119,36 @@ vi.mock('../src/server/server', () => ({ startServer: vi.fn() }))
 
 import { engine } from '@dcl/sdk/ecs'
 import { main } from '../src/index'
+import { updateClientSettings } from '../src/client/settings'
+import { t, themeLabel } from '../src/shared/i18n'
+import { SEASON_ZERO_WEEKS, type SeasonWeek } from '../src/shared/seasons'
+import { showPolicyForTimestamp } from '../src/shared/show-policy'
+
+function seasonMetadata(week: SeasonWeek) {
+  return {
+    id: 'season-zero',
+    weekId: week.id,
+    startsAt: week.eligibility.startsAt,
+    endsAt: week.eligibility.endsAt,
+    titleId: week.title.id,
+    propId: week.prop.id,
+    finale: {
+      id: week.finale.id,
+      startsAt: week.finale.window.startsAt,
+      endsAt: week.finale.window.endsAt
+    }
+  }
+}
 
 describe('client presentation integration', () => {
+  beforeEach(() => {
+    vi.spyOn(Date, 'now').mockReturnValue(TEST_NOW)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
   it('wires cold-open staging, reveal effects, setup, and the automatic first charade', () => {
     main()
 
@@ -147,7 +181,10 @@ describe('client presentation integration', () => {
     harness.listener!(harness.state)
     const openingSystem = vi.mocked(engine.addSystem).mock.calls[0][0]
     openingSystem(0)
-    expect(opening.start).toHaveBeenCalledWith('Kitchen Capers', 'en')
+    expect(opening.start).toHaveBeenCalledWith(
+      themeLabel(showPolicyForTimestamp(TEST_NOW)!.legacyTheme.id, 'en'),
+      'en'
+    )
     expect(flow.requestNextCharade).toHaveBeenCalledTimes(1)
 
     Object.assign(harness.state, { screen: 'posted', notices: [{ id: 'daily-1', kind: 'stamp' }] })
@@ -191,7 +228,104 @@ describe('client presentation integration', () => {
     expect(setup.isPlayerInDecodeArea()).toBe(false)
     openingSystem(0)
 
-    expect(opening.start).toHaveBeenCalledWith('Kitchen Capers', 'en')
+    expect(opening.start).toHaveBeenCalledWith(
+      themeLabel(showPolicyForTimestamp(TEST_NOW)!.legacyTheme.id, 'en'),
+      'en'
+    )
     expect(flow.requestNextCharade).toHaveBeenCalledTimes(1)
+  })
+
+  it('uses local weekly show names for the marquee and cold opening across language and same-theme week changes', () => {
+    const first = SEASON_ZERO_WEEKS[0]
+    const second = SEASON_ZERO_WEEKS[1]
+    vi.mocked(engine.addSystem).mockClear()
+    opening.start.mockClear()
+    flow.requestNextCharade.mockClear()
+    theater.setText.mockClear()
+    rewards.setRewardProp.mockClear()
+    rewards.setStageRewardProp.mockClear()
+    harness.openingPlayed = false
+    harness.openingRunning = true
+    updateClientSettings({ language: 'en' })
+    vi.mocked(Date.now).mockReturnValue(first.eligibility.startsAt + 1)
+    Object.assign(harness.state, {
+      ready: true,
+      screen: 'foyer',
+      charade: null,
+      pending: [],
+      theme: 'food',
+      themeLabel: 'UNTRUSTED SERVER SHOW',
+      showKey: '',
+      season: null
+    })
+
+    main()
+    harness.listener!(harness.state)
+    const openingSystem = vi.mocked(engine.addSystem).mock.calls[0][0]
+    openingSystem(0)
+    expect(opening.start).not.toHaveBeenCalled()
+    expect(flow.requestNextCharade).not.toHaveBeenCalled()
+
+    Object.assign(harness.state, {
+      showKey: `season-zero:${first.id}`,
+      season: seasonMetadata(first)
+    })
+    harness.listener!(harness.state)
+    expect(theater.setText).toHaveBeenLastCalledWith(t('marquee.tonightShow', 'en', { theme: first.name.en }))
+
+    openingSystem(0)
+    expect(opening.start).toHaveBeenCalledWith(first.name.en, 'en')
+
+    vi.mocked(Date.now).mockReturnValue(second.eligibility.startsAt + 1)
+    Object.assign(harness.state, {
+      showKey: `season-zero:${second.id}`,
+      season: seasonMetadata(second),
+      theme: 'food'
+    })
+    harness.listener!(harness.state)
+    expect(theater.setText).toHaveBeenLastCalledWith(t('marquee.tonightShow', 'en', { theme: second.name.en }))
+
+    updateClientSettings({ language: 'es' })
+    expect(theater.setText).toHaveBeenLastCalledWith(t('marquee.tonightShow', 'es', { theme: second.name.es }))
+    expect(theater.setText.mock.calls.some(([value]) => String(value).includes('UNTRUSTED SERVER SHOW'))).toBe(false)
+    expect(rewards.setRewardProp).not.toHaveBeenCalled()
+    expect(rewards.setStageRewardProp).not.toHaveBeenCalled()
+    updateClientSettings({ language: 'en' })
+  })
+
+  it('suppresses a stale weekly marquee and cold opening until the rollover schedule arrives', () => {
+    const previous = SEASON_ZERO_WEEKS[0]
+    const boundary = SEASON_ZERO_WEEKS[1].eligibility.startsAt
+    const currentPolicy = showPolicyForTimestamp(boundary)!
+    vi.mocked(Date.now).mockReturnValue(boundary)
+    vi.mocked(engine.addSystem).mockClear()
+    opening.start.mockClear()
+    flow.requestNextCharade.mockClear()
+    theater.setText.mockClear()
+    harness.openingPlayed = false
+    harness.openingRunning = true
+    updateClientSettings({ language: 'en' })
+    Object.assign(harness.state, {
+      ready: true,
+      screen: 'foyer',
+      charade: null,
+      pending: [],
+      theme: 'food',
+      showKey: `season-zero:${previous.id}`,
+      season: seasonMetadata(previous),
+      serverClockOffset: 0
+    })
+
+    main()
+    harness.listener!(harness.state)
+    const openingSystem = vi.mocked(engine.addSystem).mock.calls[0][0]
+    openingSystem(0)
+
+    expect(opening.start).not.toHaveBeenCalled()
+    expect(flow.requestNextCharade).not.toHaveBeenCalled()
+    expect(theater.setText).toHaveBeenLastCalledWith(
+      t('marquee.tonightShow', 'en', { theme: themeLabel(currentPolicy.legacyTheme.id, 'en') })
+    )
+    expect(theater.setText.mock.calls.some(([value]) => String(value).includes(previous.name.en))).toBe(false)
   })
 })

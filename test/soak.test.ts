@@ -194,6 +194,9 @@ class SoakRoom {
       case 'ready':
         runtime.receive({ type, data: data as ServerData<'ready'> })
         break
+      case 'showSchedule':
+        runtime.receive({ type, data: data as ServerData<'showSchedule'> })
+        break
       case 'pong':
         runtime.receive({ type, data: data as ServerData<'pong'> })
         break
@@ -235,6 +238,9 @@ class SoakRoom {
         break
       case 'roundWinner':
         runtime.receive({ type, data: data as ServerData<'roundWinner'> })
+        break
+      case 'requestError':
+        runtime.receive({ type, data: data as ServerData<'requestError'> })
         break
       case 'error':
         runtime.receive({ type, data: data as ServerData<'error'> })

@@ -292,10 +292,19 @@ export function createServerProtocol(options: ServerProtocolOptions) {
   const activeRequestHandlers = new Map<string, Promise<void>>()
   const outstandingRequests = new Map<string, number>()
   const requestBuckets = new Map<string, RateBucket>()
-  const rounds = new LiveRounds((type, data) => options.send(type, data), now, options.roundDurationMilliseconds)
   let currentDay = dayKey(initialTimestamp)
   let currentShow = activeShowForTimestamp(initialTimestamp)
-  let rolloverPromise: Promise<void> | null = null
+  const rounds = new LiveRounds(
+    (type, data) =>
+      options.send(type, {
+        ...(data as Record<string, unknown>),
+        instanceId,
+        showKey: currentShow?.policy.showKey ?? ''
+      }),
+    now,
+    options.roundDurationMilliseconds
+  )
+  let rolloverPromise: Promise<Set<string>> | null = null
   let houseSequence = 0
   let answerSequence = 0
   const serverSecret = `${initialTimestamp}:${random()}:${random()}`
@@ -360,18 +369,18 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     await options.send(type, data, [address])
   }
 
-  async function sendError(address: string, code: string) {
-    await sendTo(address, 'error', { code })
+  async function sendError(address: string, code: string, requestId?: string) {
+    await sendTo(address, requestId ? 'requestError' : 'error', requestId ? { code, requestId } : { code })
   }
 
-  async function checkpointOrError(address: string, generation: number) {
+  async function checkpointOrError(address: string, generation: number, requestId?: string) {
     try {
       await checkpoint()
       options.state.evictInactiveStats(new Set(looks.keys()))
       return true
     } catch (error) {
       if (!(error instanceof StorageUnavailableError)) console.error('[storage] checkpoint failed', error)
-      if (isCurrentSession(address, generation)) await sendError(address, 'storage-unavailable')
+      if (isCurrentSession(address, generation)) await sendError(address, 'storage-unavailable', requestId)
       return false
     }
   }
@@ -514,14 +523,19 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     if (messages.ghostOfNightPayload) await options.send('ghostOfNight', messages.ghostOfNightPayload, recipients)
   }
 
-  async function rolloverIfNeeded() {
-    const timestamp = now()
+  async function rolloverIfNeeded(timestamp = now()) {
+    if (rolloverPromise) {
+      const announced = new Set(await rolloverPromise)
+      const laterAnnouncements = await rolloverIfNeeded(timestamp)
+      for (const address of laterAnnouncements) announced.add(address)
+      return announced
+    }
     const nextDay = dayKey(timestamp)
-    if (nextDay === currentDay) return
+    if (nextDay <= currentDay) return new Set<string>()
     const nextShow = activeShowForTimestamp(timestamp)
     const showChanged = nextShow?.policy.showKey !== currentShow?.policy.showKey
-    if (rolloverPromise) return rolloverPromise
     rolloverPromise = (async () => {
+      const announced = new Set<string>()
       if (nextDay !== currentDay) options.state.rollover(timestamp)
       if (showChanged) {
         servedAnswers.clear()
@@ -535,6 +549,10 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       }
       await checkpoint()
       const sessions = [...looks].map(([address, look]) => ({ address, look, generation: sessionGeneration(address) }))
+      const scheduleSessions = [...negotiated].map((address) => ({
+        address: looks.get(address)?.address ?? address,
+        generation: sessionGeneration(address)
+      }))
       const refreshed: Array<{
         address: string
         look: Look
@@ -554,11 +572,18 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       if (showChanged) await checkpoint()
       currentDay = nextDay
       currentShow = nextShow
+      for (const { address, generation } of scheduleSessions) {
+        if (generation === null || !isCurrentSession(address, generation) || !negotiated.has(canonicalAddress(address))) {
+          continue
+        }
+        await sendTo(address, 'ready', readyPayload(timestamp))
+        if (!isCurrentSession(address, generation) || !negotiated.has(canonicalAddress(address))) continue
+        await sendTo(address, 'showSchedule', showSchedulePayload(timestamp))
+        announced.add(canonicalAddress(address))
+      }
       for (const { address, look, generation, stats } of refreshed) {
         if (!isCurrentSession(address, generation)) continue
         const daily = { ...options.state.getDaily(stats) }
-        await sendTo(look.address, 'ready', readyPayload())
-        if (!isCurrentSession(address, generation)) continue
         await sendTo(look.address, 'progress', {
           daily,
           revision: stats.revision,
@@ -567,20 +592,20 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         if (!isCurrentSession(address, generation)) continue
         await sendBoards(look.address, generation)
       }
+      return announced
     })().finally(() => {
       rolloverPromise = null
     })
     return rolloverPromise
   }
 
-  async function rolloverOrError(address: string, generation: number) {
+  async function rolloverOrError(address: string, generation: number, timestamp?: number, requestId?: string) {
     try {
-      await rolloverIfNeeded()
-      return true
+      return { announced: await rolloverIfNeeded(timestamp) }
     } catch (error) {
       if (!(error instanceof StorageUnavailableError)) console.error('[storage] rollover failed', error)
-      if (isCurrentSession(address, generation)) await sendError(address, 'storage-unavailable')
-      return false
+      if (isCurrentSession(address, generation)) await sendError(address, 'storage-unavailable', requestId)
+      return null
     }
   }
 
@@ -589,12 +614,13 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     generation: number,
     showKey: string,
     phraseId: string,
-    errorCode: string
+    errorCode: string,
+    requestId: string
   ) {
-    if (!(await rolloverOrError(address, generation))) return false
+    if (!(await rolloverOrError(address, generation, undefined, requestId))) return false
     if (!isCurrentSession(address, generation)) return false
     if (currentShow?.policy.showKey !== showKey || !currentShow.primaryPhraseIds.has(phraseId)) {
-      await sendError(address, errorCode)
+      await sendError(address, errorCode, requestId)
       return false
     }
     return true
@@ -630,10 +656,19 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     if (recipients.length > 0) await options.send('playerTitle', { address, title }, recipients)
   }
 
-  function readyPayload() {
-    const timestamp = now()
+  function readyPayload(timestamp = now()) {
     const theme = themeForTimestamp(timestamp)
     return { instanceId, serverTime: timestamp, theme: theme.id, themeLabel: theme.label }
+  }
+
+  function showSchedulePayload(timestamp: number) {
+    if (!currentShow) return { instanceId, serverTime: timestamp, showKey: '' }
+    return {
+      instanceId,
+      serverTime: timestamp,
+      showKey: currentShow.policy.showKey,
+      ...(currentShow.policy.kind === 'season-zero' ? { season: currentShow.policy.season } : {})
+    }
   }
 
   function selectRoundCharade(show: ActiveShow) {
@@ -826,18 +861,18 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     return pending
   }
 
-  async function ensureWelcome(address: string, generation: number) {
+  async function ensureWelcome(address: string, generation: number, requestId?: string) {
     const key = canonicalAddress(address)
     if (!isCurrentSession(key, generation)) return false
     if (!(await requireNegotiated(address))) return false
     if (welcomed.has(key)) return true
     try {
       const result = await welcome(address, generation)
-      if (!result && isCurrentSession(address, generation)) await sendError(address, 'look-not-ready')
+      if (!result && isCurrentSession(address, generation)) await sendError(address, 'look-not-ready', requestId)
       return result
     } catch (error) {
       if (!(error instanceof StorageUnavailableError)) console.error('[storage] welcome failed', error)
-      if (isCurrentSession(address, generation)) await sendError(address, 'storage-unavailable')
+      if (isCurrentSession(address, generation)) await sendError(address, 'storage-unavailable', requestId)
       return false
     }
   }
@@ -916,9 +951,15 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       return
     }
     negotiated.add(canonicalAddress(address))
-    if (!(await rolloverOrError(address, generation))) return
+    const timestamp = now()
+    const rollover = await rolloverOrError(address, generation, timestamp)
+    if (!rollover) return
     if (!isCurrentSession(address, generation)) return
-    await sendTo(address, 'ready', readyPayload())
+    if (!rollover.announced.has(canonicalAddress(address))) {
+      await sendTo(address, 'ready', readyPayload(timestamp))
+      if (!isCurrentSession(address, generation)) return
+      await sendTo(address, 'showSchedule', showSchedulePayload(timestamp))
+    }
     if (!isCurrentSession(address, generation)) return
     const pendingWelcome = welcome(address, generation)
     try {
@@ -935,9 +976,36 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     await ready
     const generation = sessionGeneration(address)
     if (generation === null) return
-    if (negotiated.has(canonicalAddress(address)) && !(await rolloverOrError(address, generation))) return
+    const timestamp = now()
+    if (negotiated.has(canonicalAddress(address)) && !(await rolloverOrError(address, generation, timestamp))) return
     if (!isCurrentSession(address, generation)) return
     await sendTo(address, 'pong', { seq: data.seq })
+    if (!isCurrentSession(address, generation)) return
+    if (negotiated.has(canonicalAddress(address))) {
+      await sendTo(address, 'showSchedule', showSchedulePayload(timestamp))
+      if (!isCurrentSession(address, generation)) return
+      const announcement = rounds.announcementFor(address)
+      if (announcement) {
+        const showKey = currentShow?.policy.showKey ?? ''
+        await sendTo(address, 'roundStart', {
+          instanceId,
+          roundId: announcement.roundId,
+          charadeId: announcement.charadeId,
+          showKey
+        })
+        if (!isCurrentSession(address, generation)) return
+        if (announcement.winner) {
+          await sendTo(address, 'roundWinner', {
+            instanceId,
+            roundId: announcement.roundId,
+            charadeId: announcement.charadeId,
+            address: announcement.winner.address,
+            name: announcement.winner.name,
+            showKey
+          })
+        }
+      }
+    }
     if (negotiated.has(canonicalAddress(address)) && !welcomed.has(canonicalAddress(address))) {
       await ensureWelcome(address, generation)
     }
@@ -1021,20 +1089,20 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       data.exclude.length > MAX_EXCLUDE_IDS ||
       data.exclude.some((id) => !validWireString(id))
     ) {
-      await sendError(address, 'invalid-next-charade')
+      await sendError(address, 'invalid-next-charade', validWireString(data.requestId) ? data.requestId : undefined)
       return
     }
     const generation = sessionGeneration(address)
     if (generation === null) {
-      await sendError(address, 'protocol-required')
+      await sendError(address, 'protocol-required', data.requestId)
       return
     }
-    if (!(await ensureWelcome(address, generation))) return
-    if (!(await rolloverOrError(address, generation))) return
+    if (!(await ensureWelcome(address, generation, data.requestId))) return
+    if (!(await rolloverOrError(address, generation, undefined, data.requestId))) return
     if (!isCurrentSession(address, generation)) return
     const show = currentShow
     if (!show) {
-      await sendError(address, 'invalid-next-charade')
+      await sendError(address, 'invalid-next-charade', data.requestId)
       return
     }
     const key = canonicalAddress(address)
@@ -1044,7 +1112,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       ([servedKey, served]) => servedKey.startsWith(`${key}:`) && served.retry !== null
     )?.[1]
     if (activeRetry && !selection) {
-      await sendError(address, 'invalid-next-charade')
+      await sendError(address, 'invalid-next-charade', data.requestId)
       return
     }
     if (!selection) {
@@ -1125,7 +1193,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     }
     const prepared = await selection
     if (!isCurrentSession(address, generation)) return
-    if (!(await rolloverOrError(address, generation))) return
+    if (!(await rolloverOrError(address, generation, undefined, data.requestId))) return
     if (!isCurrentSession(address, generation)) return
     if (!prepared || prepared.showKey !== currentShow?.policy.showKey) {
       nextRequests.delete(selectionKey)
@@ -1133,11 +1201,11 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         await handleNextCharade(data, address, 1)
         return
       }
-      await sendError(address, 'invalid-next-charade')
+      await sendError(address, 'invalid-next-charade', data.requestId)
       return
     }
     if (activeRetry && prepared.publicId !== activeRetry.prepared.publicId) {
-      await sendError(address, 'invalid-next-charade')
+      await sendError(address, 'invalid-next-charade', data.requestId)
       return
     }
     if (rounds.playerCount === 1 && !rounds.current && prepared.charade.recipient === undefined) {
@@ -1163,13 +1231,14 @@ export function createServerProtocol(options: ServerProtocolOptions) {
 
   async function handleGuess(data: GuessPayload, address: string, roundId: string | null) {
     await ready
+    const correlatedRequestId = validWireString(data.requestId) ? data.requestId : undefined
     const generation = sessionGeneration(address)
     if (generation === null) {
-      await sendError(address, 'protocol-required')
+      await sendError(address, 'protocol-required', correlatedRequestId)
       return
     }
-    if (!(await ensureWelcome(address, generation))) return
-    if (!(await rolloverOrError(address, generation))) return
+    if (!(await ensureWelcome(address, generation, correlatedRequestId))) return
+    if (!(await rolloverOrError(address, generation, undefined, correlatedRequestId))) return
     if (!isCurrentSession(address, generation)) return
     const key = canonicalAddress(address)
     if (
@@ -1185,14 +1254,14 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       data.answerIndex > 2 ||
       (data.spotlight !== undefined && typeof data.spotlight !== 'boolean')
     ) {
-      await sendError(address, 'invalid-guess')
+      await sendError(address, 'invalid-guess', validWireString(data.requestId) ? data.requestId : undefined)
       return
     }
     const idempotencyKey = requestKey(key, 'guess', data.requestId)
     const completed = cacheGet(completedRequests, idempotencyKey)
     if (completed) {
       if (!completed.durable) {
-        if (!(await checkpointOrError(address, generation))) return
+        if (!(await checkpointOrError(address, generation, data.requestId))) return
         completed.durable = true
       }
       if (!isCurrentSession(address, generation)) return
@@ -1200,13 +1269,13 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       return
     }
     if (!isCurrentRoundGuess(key, roundId, data.charadeId)) {
-      await sendError(address, 'invalid-guess')
+      await sendError(address, 'invalid-guess', data.requestId)
       return
     }
     const servedKey = `${key}:${data.charadeId}`
     const servedState = servedAnswers.get(servedKey)
     if (!servedState) {
-      await sendError(address, 'charade-not-served')
+      await sendError(address, 'charade-not-served', data.requestId)
       return
     }
     const served = servedState.prepared
@@ -1215,7 +1284,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     const phrase = DECK.find((candidate) => candidate.id === charade.phraseId)
     if (!phrase) {
       servedAnswers.delete(servedKey)
-      await sendError(address, 'invalid-charade')
+      await sendError(address, 'invalid-charade', data.requestId)
       return
     }
     const countable =
@@ -1226,16 +1295,17 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       stats = await options.state.getOrCreateStats(key, playerName(key), !(look?.isGuest ?? true))
     } catch (error) {
       if (!(error instanceof StorageUnavailableError)) console.error('[storage] guess prerequisites failed', error)
-      if (isCurrentSession(address, generation)) await sendError(address, 'storage-unavailable')
+      if (isCurrentSession(address, generation)) await sendError(address, 'storage-unavailable', data.requestId)
       return
     }
+    if (!(await rolloverOrError(address, generation, undefined, data.requestId))) return
     if (!isCurrentSession(address, generation)) return
     if (!isCurrentServed(served.showKey, servedKey, servedState) || !isCurrentRoundGuess(key, roundId, data.charadeId)) {
-      await sendError(address, 'invalid-guess')
+      await sendError(address, 'invalid-guess', data.requestId)
       return
     }
     if (!charade.isHouse && stats.seen.includes(charade.id)) {
-      await sendError(address, 'already-guessed')
+      await sendError(address, 'already-guessed', data.requestId)
       return
     }
     const correct = data.answerIndex === served.correctIndex
@@ -1270,7 +1340,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       return
     }
     if (storedRetry && data.answerIndex === storedRetry.removedAnswerIndex) {
-      await sendError(address, 'invalid-guess')
+      await sendError(address, 'invalid-guess', data.requestId)
       return
     }
 
@@ -1281,12 +1351,13 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         : null
     } catch (error) {
       if (!(error instanceof StorageUnavailableError)) console.error('[storage] guess prerequisites failed', error)
-      if (isCurrentSession(address, generation)) await sendError(address, 'storage-unavailable')
+      if (isCurrentSession(address, generation)) await sendError(address, 'storage-unavailable', data.requestId)
       return
     }
+    if (!(await rolloverOrError(address, generation, undefined, data.requestId))) return
     if (!isCurrentSession(address, generation)) return
     if (!isCurrentServed(served.showKey, servedKey, servedState) || !isCurrentRoundGuess(key, roundId, data.charadeId)) {
-      await sendError(address, 'invalid-guess')
+      await sendError(address, 'invalid-guess', data.requestId)
       return
     }
 
@@ -1362,7 +1433,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     }
     const request = { type: 'reveal' as const, data: reveal, durable: false }
     cacheSet(completedRequests, idempotencyKey, key, request)
-    if (!(await checkpointOrError(address, generation))) return
+    if (!(await checkpointOrError(address, generation, data.requestId))) return
     request.durable = true
     if (!isCurrentSession(address, generation)) return
     await sendTo(address, 'reveal', reveal)
@@ -1372,16 +1443,17 @@ export function createServerProtocol(options: ServerProtocolOptions) {
 
   async function handlePost(data: PostPayload, address: string) {
     await ready
+    const correlatedRequestId = validWireString(data.requestId) ? data.requestId : undefined
     const generation = sessionGeneration(address)
     if (generation === null) {
-      await sendError(address, 'protocol-required')
+      await sendError(address, 'protocol-required', correlatedRequestId)
       return
     }
-    if (!(await ensureWelcome(address, generation))) return
-    if (!(await rolloverOrError(address, generation))) return
+    if (!(await ensureWelcome(address, generation, correlatedRequestId))) return
+    if (!(await rolloverOrError(address, generation, undefined, correlatedRequestId))) return
     if (!isCurrentSession(address, generation)) return
     if (options.state.isReadOnly) {
-      await sendError(address, 'server-busy')
+      await sendError(address, 'server-busy', correlatedRequestId)
       return
     }
     const key = canonicalAddress(address)
@@ -1393,7 +1465,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     const completed = cacheGet(completedRequests, idempotencyKey)
     if (completed) {
       if (!completed.durable) {
-        if (!(await checkpointOrError(address, generation))) return
+        if (!(await checkpointOrError(address, generation, data.requestId))) return
         completed.durable = true
       }
       if (!isCurrentSession(address, generation)) return
@@ -1402,7 +1474,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     }
     const welcomedLook = looks.get(key)
     if (!welcomedLook || welcomedLook.isGuest) {
-      await sendError(address, data.recipient !== undefined ? 'mail-guest' : 'post-guest')
+      await sendError(address, data.recipient !== undefined ? 'mail-guest' : 'post-guest', data.requestId)
       return
     }
     if (data.replyTo !== undefined) {
@@ -1414,7 +1486,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         data.emotes.length !== 3 ||
         data.emotes.some((emote) => !EMOTES.has(emote))
       ) {
-        await sendError(address, 'invalid-reply')
+        await sendError(address, 'invalid-reply', data.requestId)
         return
       }
       const target = options.state.getCharade(data.replyTo)
@@ -1429,13 +1501,13 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         !stats.seen.includes(target.id) ||
         target.phraseId !== data.phraseId
       ) {
-        await sendError(address, 'reply-not-eligible')
+        await sendError(address, 'reply-not-eligible', data.requestId)
         return
       }
       const existingReply = target.reply
       if (existingReply) {
         if (canonicalAddress(existingReply.address) !== key) {
-          await sendError(address, 'reply-taken')
+          await sendError(address, 'reply-taken', data.requestId)
           return
         }
         const posted: PostedPayload = {
@@ -1450,7 +1522,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         }
         const request = { type: 'posted' as const, data: posted, durable: false }
         cacheSet(completedRequests, idempotencyKey, key, request)
-        if (!(await checkpointOrError(address, generation))) return
+        if (!(await checkpointOrError(address, generation, data.requestId))) return
         request.durable = true
         if (!isCurrentSession(address, generation)) return
         await sendTo(address, 'posted', posted)
@@ -1458,12 +1530,12 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       }
       const replyShow = currentShow
       if (!replyShow || !replyShow.primaryPhraseIds.has(target.phraseId)) {
-        await sendError(address, 'invalid-reply')
+        await sendError(address, 'invalid-reply', data.requestId)
         return
       }
       const replyLook = await waitForLook(address)
       if (!replyLook) {
-        if (isCurrentSession(address, generation)) await sendError(address, 'look-not-ready')
+        if (isCurrentSession(address, generation)) await sendError(address, 'look-not-ready', data.requestId)
         return
       }
       if (!isCurrentSession(address, generation)) return
@@ -1476,10 +1548,19 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         )
       } catch (error) {
         if (!(error instanceof StorageUnavailableError)) console.error('[storage] reply prerequisites failed', error)
-        if (isCurrentSession(address, generation)) await sendError(address, 'storage-unavailable')
+        if (isCurrentSession(address, generation)) await sendError(address, 'storage-unavailable', data.requestId)
         return
       }
-      if (!(await requireCurrentPrimary(address, generation, replyShow.policy.showKey, target.phraseId, 'invalid-reply'))) {
+      if (
+        !(await requireCurrentPrimary(
+          address,
+          generation,
+          replyShow.policy.showKey,
+          target.phraseId,
+          'invalid-reply',
+          data.requestId
+        ))
+      ) {
         return
       }
       let attached: boolean
@@ -1493,13 +1574,13 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         })
       } catch (error) {
         if (!(error instanceof StorageCapacityError)) throw error
-        await sendError(address, 'server-busy')
+        await sendError(address, 'server-busy', data.requestId)
         return
       }
       if (!attached) {
         const winner = options.state.getCharade(target.id)?.reply
         if (!winner || canonicalAddress(winner.address) !== key) {
-          await sendError(address, 'reply-taken')
+          await sendError(address, 'reply-taken', data.requestId)
           return
         }
       } else {
@@ -1518,7 +1599,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       }
       const request = { type: 'posted' as const, data: posted, durable: false }
       cacheSet(completedRequests, idempotencyKey, key, request)
-      if (!(await checkpointOrError(address, generation))) return
+      if (!(await checkpointOrError(address, generation, data.requestId))) return
       request.durable = true
       if (!isCurrentSession(address, generation)) return
       await sendTo(address, 'posted', posted)
@@ -1531,7 +1612,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       data.emotes.length !== 3 ||
       data.emotes.some((emote) => !EMOTES.has(emote))
     ) {
-      await sendError(address, 'invalid-post')
+      await sendError(address, 'invalid-post', data.requestId)
       return
     }
 
@@ -1553,7 +1634,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       }
       const request = { type: 'posted' as const, data: posted, durable: false }
       cacheSet(completedRequests, idempotencyKey, key, request)
-      if (!(await checkpointOrError(address, generation))) return
+      if (!(await checkpointOrError(address, generation, data.requestId))) return
       request.durable = true
       if (!isCurrentSession(address, generation)) return
       await sendTo(address, 'posted', posted)
@@ -1561,7 +1642,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     }
     const postShow = currentShow
     if (!postShow || !postShow.primaryPhraseIds.has(phrase.id)) {
-      await sendError(address, 'invalid-post')
+      await sendError(address, 'invalid-post', data.requestId)
       return
     }
 
@@ -1582,16 +1663,16 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     if (data.recipient !== undefined) {
       const sender = looks.get(key)
       if (!sender || sender.isGuest || !STABLE_ADDRESS.test(sender.address)) {
-        await sendError(address, 'mail-guest')
+        await sendError(address, 'mail-guest', data.requestId)
         return
       }
       if (!STABLE_ADDRESS.test(data.recipient) || canonicalAddress(data.recipient) === key) {
-        await sendError(address, 'mail-recipient-invalid')
+        await sendError(address, 'mail-recipient-invalid', data.requestId)
         return
       }
       recipientLook = options.state.getKnownRecipient(data.recipient)
       if (!recipientLook || recipientLook.isGuest || !STABLE_ADDRESS.test(recipientLook.address)) {
-        await sendError(address, 'mail-recipient-unknown')
+        await sendError(address, 'mail-recipient-unknown', data.requestId)
         return
       }
     }
@@ -1599,22 +1680,22 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     const beforeLookTime = now()
     const previousPost = latestPostAt()
     if (previousPost !== null && beforeLookTime - previousPost < AUTHOR_COOLDOWN_SECONDS * 1000) {
-      await sendError(address, 'post-rate-limited')
+      await sendError(address, 'post-rate-limited', data.requestId)
       return
     }
 
     const look = await waitForLook(address)
     if (!look) {
-      if (isCurrentSession(address, generation)) await sendError(address, 'look-not-ready')
+      if (isCurrentSession(address, generation)) await sendError(address, 'look-not-ready', data.requestId)
       return
     }
     if (!isCurrentSession(address, generation)) return
     if (look.isGuest) {
-      await sendError(address, recipientLook ? 'mail-guest' : 'post-guest')
+      await sendError(address, recipientLook ? 'mail-guest' : 'post-guest', data.requestId)
       return
     }
     if (recipientLook && (look.isGuest || !STABLE_ADDRESS.test(look.address))) {
-      await sendError(address, 'mail-guest')
+      await sendError(address, 'mail-guest', data.requestId)
       return
     }
     const existingAfterSnapshot = options.state.getCharade(id)
@@ -1624,7 +1705,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       const replay = cacheGet(completedRequests, idempotencyKey)
       if (replay) {
         if (!replay.durable) {
-          if (!(await checkpointOrError(address, generation))) return
+          if (!(await checkpointOrError(address, generation, data.requestId))) return
           replay.durable = true
         }
         if (!isCurrentSession(address, generation)) return
@@ -1643,7 +1724,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       }
       const request = { type: 'posted' as const, data: posted, durable: false }
       cacheSet(completedRequests, idempotencyKey, key, request)
-      if (!(await checkpointOrError(address, generation))) return
+      if (!(await checkpointOrError(address, generation, data.requestId))) return
       request.durable = true
       if (!isCurrentSession(address, generation)) return
       await sendTo(address, 'posted', posted)
@@ -1652,7 +1733,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     const currentTime = now()
     const lastPost = latestPostAt()
     if (lastPost !== null && currentTime - lastPost < AUTHOR_COOLDOWN_SECONDS * 1000) {
-      await sendError(address, 'post-rate-limited')
+      await sendError(address, 'post-rate-limited', data.requestId)
       return
     }
     const charade: Charade = {
@@ -1676,22 +1757,31 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         : null
     } catch (error) {
       if (!(error instanceof StorageUnavailableError)) console.error('[storage] post prerequisites failed', error)
-      if (isCurrentSession(address, generation)) await sendError(address, 'storage-unavailable')
+      if (isCurrentSession(address, generation)) await sendError(address, 'storage-unavailable', data.requestId)
       return
     }
-    if (!(await requireCurrentPrimary(address, generation, postShow.policy.showKey, phrase.id, 'invalid-post'))) {
+    if (
+      !(await requireCurrentPrimary(
+        address,
+        generation,
+        postShow.policy.showKey,
+        phrase.id,
+        'invalid-post',
+        data.requestId
+      ))
+    ) {
       return
     }
 
     const previousTitle = progressFor(stats).title
     try {
       if (!options.state.upsertCharade(charade)) {
-        await sendError(address, 'server-busy')
+        await sendError(address, 'server-busy', data.requestId)
         return
       }
     } catch (error) {
       if (!(error instanceof StorageCapacityError)) throw error
-      await sendError(address, 'server-busy')
+      await sendError(address, 'server-busy', data.requestId)
       return
     }
     let stampAwarded = false
@@ -1724,7 +1814,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     }
     const request = { type: 'posted' as const, data: posted, durable: false }
     cacheSet(completedRequests, idempotencyKey, key, request)
-    if (!(await checkpointOrError(address, generation))) return
+    if (!(await checkpointOrError(address, generation, data.requestId))) return
     request.durable = true
     if (!isCurrentSession(address, generation)) return
     await sendTo(address, 'posted', posted)

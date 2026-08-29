@@ -94,6 +94,8 @@ import { createOpeningController, type OpeningEffects } from '../src/client/open
 import { createRevealController, type RevealClock, type RevealEffects, type RevealOutcome } from '../src/client/reveal'
 import { INVITE_URL, MAX_GHOSTS, themeForTimestamp } from '../src/shared/config'
 import { DECK } from '../src/shared/deck'
+import { SEASON_ZERO_END_AT, SEASON_ZERO_WEEKS } from '../src/shared/seasons'
+import { showPolicyForTimestamp } from '../src/shared/show-policy'
 import { createServerProtocol, type ProtocolSend } from '../src/server/server'
 import { GhostlightState } from '../src/server/state'
 import { PLAYER_STATS_KEY, createStorageRepository } from '../src/server/storage'
@@ -222,6 +224,9 @@ class FakeRoom {
       case 'ready':
         runtime.receive({ type, data: data as ServerData<'ready'> })
         break
+      case 'showSchedule':
+        runtime.receive({ type, data: data as ServerData<'showSchedule'> })
+        break
       case 'pong':
         runtime.receive({ type, data: data as ServerData<'pong'> })
         break
@@ -263,6 +268,9 @@ class FakeRoom {
         break
       case 'roundWinner':
         runtime.receive({ type, data: data as ServerData<'roundWinner'> })
+        break
+      case 'requestError':
+        runtime.receive({ type, data: data as ServerData<'requestError'> })
         break
       case 'error':
         runtime.receive({ type, data: data as ServerData<'error'> })
@@ -388,7 +396,7 @@ describe('full experience integration', () => {
         audience = nextState.audience
         setAudience(audience)
       }
-      if (nextState.ready && nextState.screen === 'foyer' && !opening.hasPlayed()) {
+      if (nextState.ready && nextState.showKey !== '' && nextState.screen === 'foyer' && !opening.hasPlayed()) {
         if (opening.start(nextState.themeLabel)) runtime.requestNextCharade()
       }
     })
@@ -805,5 +813,239 @@ describe('full experience integration', () => {
       activeDecoders: 0,
       completedRequests: 0
     })
+  })
+
+  it('crosses Season Zero shows without leaking stale work and hydrates the daily fallback after restart', async () => {
+    const playerAddress = `0x${'3'.repeat(40)}`
+    const firstTimestamp = SEASON_ZERO_WEEKS[0].eligibility.endsAt - 1
+    const secondTimestamp = SEASON_ZERO_WEEKS[1].eligibility.startsAt
+    let timestamp = firstTimestamp
+    const firstPolicy = showPolicyForTimestamp(firstTimestamp)
+    const secondPolicy = showPolicyForTimestamp(secondTimestamp)
+    if (firstPolicy?.kind !== 'season-zero' || secondPolicy?.kind !== 'season-zero') {
+      throw new Error('Expected consecutive Season Zero policies')
+    }
+    const secondPhraseIds = new Set(secondPolicy.primaryPhraseIds)
+    const firstOnlyPhraseIds = firstPolicy.primaryPhraseIds.filter((phraseId) => !secondPhraseIds.has(phraseId))
+    expect(firstOnlyPhraseIds.length).toBeGreaterThanOrEqual(2)
+
+    const storage = new FakeStorage()
+    const repository = createStorageRepository(storage)
+    const state = new GhostlightState(repository, () => timestamp)
+    await state.hydrate()
+    const externalCharades = firstOnlyPhraseIds.slice(0, 2).map((phraseId, index) =>
+      makeCharade(`season-boundary-${index + 1}`, {
+        author: { address: `0x${String(index + 4).repeat(40)}`, name: `External ${index + 1}` },
+        phraseId,
+        createdAt: firstTimestamp
+      })
+    )
+    for (const charade of externalCharades) state.upsertCharade(charade)
+
+    const room = new FakeRoom()
+    let requestSequence = 0
+    let transportReady = false
+    const runtime = createFlowRuntime({
+      send: room.senderFor(playerAddress),
+      now: () => timestamp,
+      createRequestId: () => `season-lifecycle-${++requestSequence}`,
+      getProfile: () => ({ address: playerAddress, name: 'Season Decoder', isGuest: false }),
+      getLook: () => makeLook(playerAddress, 'Season Decoder'),
+      isTransportReady: () => transportReady
+    })
+    const protocol = createServerProtocol({
+      state,
+      send: room.sendFromServer,
+      snapshotLook: async (address) => makeLook(address, address === playerAddress ? 'Season Decoder' : address),
+      flush: repository.flushNow,
+      now: () => timestamp,
+      instanceId: 'season-lifecycle-server',
+      lookAttempts: 1,
+      lookRetryMilliseconds: 0,
+      random: () => 0.5
+    })
+    room.connectProtocol(protocol)
+    room.connectClient(playerAddress, runtime)
+    await protocol.handleEnter(playerAddress)
+    transportReady = true
+    runtime.tick(0)
+    await room.pumpClient(playerAddress)
+
+    expect(runtime.getState()).toMatchObject({
+      ready: true,
+      screen: 'foyer',
+      showKey: firstPolicy.showKey,
+      season: firstPolicy.season
+    })
+    expect(runtime.beginAuthoring()).toBe(true)
+    const seasonDraft = runtime.getState().author!
+    expect(firstPolicy.primaryPhraseIds).toContain(seasonDraft.phrase.id)
+    for (const emote of seasonDraft.offeredEmotes.slice(0, 3)) {
+      expect(runtime.selectAuthorEmote(emote)).toBe(true)
+    }
+    expect(runtime.postAuthor()).toBe(true)
+    await room.pumpClient(playerAddress)
+    expect(runtime.getState()).toMatchObject({ screen: 'posted', postedCharadeId: expect.any(String) })
+
+    expect(runtime.requestNextCharade()).toBe(true)
+    await room.pumpClient(playerAddress)
+    const firstServed = runtime.getState().charade!
+    expect(externalCharades.map((charade) => charade.id)).toContain(firstServed.id)
+    const firstSource = externalCharades.find((charade) => charade.id === firstServed.id)!
+    const firstCorrectIndex = firstServed.answerIds?.indexOf(firstSource.phraseId) ?? -1
+    expect(firstCorrectIndex).toBeGreaterThanOrEqual(0)
+    expect(runtime.guess(firstCorrectIndex)).toBe(true)
+    await room.pumpClient(playerAddress)
+    expect(state.playerStats.get(playerAddress.toLowerCase())?.showSet).toMatchObject({
+      showKey: firstPolicy.showKey,
+      round: 1
+    })
+
+    expect(runtime.requestNextCharade()).toBe(true)
+    await room.pumpClient(playerAddress)
+    const secondServed = runtime.getState().charade!
+    expect(externalCharades.map((charade) => charade.id)).toContain(secondServed.id)
+    expect(secondServed.id).not.toBe(firstServed.id)
+    const secondSource = externalCharades.find((charade) => charade.id === secondServed.id)!
+    const secondCorrectIndex = secondServed.answerIds?.indexOf(secondSource.phraseId) ?? -1
+    const secondWrongIndex = secondServed.answers.findIndex((_, index) => index !== secondCorrectIndex)
+    expect(runtime.guess(secondWrongIndex)).toBe(true)
+    await room.pumpClient(playerAddress)
+    expect(runtime.getState()).toMatchObject({ retry: { charadeId: secondServed.id } })
+    expect(runtime.guess(secondCorrectIndex)).toBe(true)
+    const staleGuessRequestId = runtime
+      .getState()
+      .pending.find((request) => request.kind === 'guess' || request.kind === 'roundGuess')!.requestId
+
+    timestamp = secondTimestamp
+    await protocol.handlePing({ seq: 500 }, playerAddress)
+
+    expect(runtime.getState()).toMatchObject({
+      screen: 'foyer',
+      showKey: secondPolicy.showKey,
+      season: secondPolicy.season,
+      charade: null,
+      retry: null,
+      reveal: null,
+      author: null,
+      pending: [],
+      roundId: '',
+      roundCharadeId: ''
+    })
+    expect(protocol.resourceCounts()).toMatchObject({
+      servedAnswers: 0,
+      retryStates: 0,
+      activeDecoders: 0,
+      nextRequests: 0
+    })
+    expect(runtime.requestNextCharade()).toBe(true)
+    const newWeekRequestId = runtime.getState().pending.find((request) => request.kind === 'nextCharade')!.requestId
+    await room.pumpClient(playerAddress)
+
+    expect(
+      room.serverMessages.find(
+        (message) =>
+          message.type === 'requestError' &&
+          (message.data as { requestId: string }).requestId === staleGuessRequestId
+      )?.data
+    ).toEqual({ code: 'charade-not-served', requestId: staleGuessRequestId })
+    expect(
+      room.serverMessages.find(
+        (message) => message.type === 'charade' && (message.data as { requestId: string }).requestId === newWeekRequestId
+      )
+    ).toBeDefined()
+    expect(runtime.getState()).toMatchObject({
+      screen: 'decode',
+      showKey: secondPolicy.showKey,
+      pending: [],
+      errorCode: ''
+    })
+    expect(externalCharades.map((charade) => charade.id)).not.toContain(runtime.getState().charade?.id)
+    expect(state.getCharade(secondServed.id)?.guesses).toEqual({ total: 0, correct: 0 })
+    expect(state.playerStats.get(playerAddress.toLowerCase())?.showSet).toEqual({
+      showKey: secondPolicy.showKey,
+      round: 0,
+      score: 0,
+      streak: 0,
+      bestStreak: 0,
+      understood: 0
+    })
+
+    await repository.flushNow()
+    expect(storage.readPlayerJSON<ReturnType<typeof makeStats>>(playerAddress.toLowerCase(), PLAYER_STATS_KEY)?.showSet).toEqual({
+      showKey: secondPolicy.showKey,
+      round: 0,
+      score: 0,
+      streak: 0,
+      bestStreak: 0,
+      understood: 0
+    })
+
+    await protocol.handleLeave(playerAddress)
+    const restartedRepository = createStorageRepository(storage)
+    const restartedState = new GhostlightState(restartedRepository, () => timestamp)
+    await restartedState.hydrate()
+    const restartedProtocol = createServerProtocol({
+      state: restartedState,
+      send: room.sendFromServer,
+      snapshotLook: async (address) => makeLook(address, 'Season Decoder'),
+      flush: restartedRepository.flushNow,
+      now: () => timestamp,
+      instanceId: 'season-lifecycle-restarted',
+      lookAttempts: 1,
+      lookRetryMilliseconds: 0,
+      random: () => 0.5
+    })
+    room.connectProtocol(restartedProtocol)
+    await restartedProtocol.handleEnter(playerAddress)
+    expect(runtime.getState()).toMatchObject({
+      ready: true,
+      screen: 'foyer',
+      showKey: '',
+      season: null,
+      pending: []
+    })
+    runtime.receive({ type: 'error', data: { code: 'protocol-required' } })
+    await room.pumpClient(playerAddress)
+    expect(runtime.getState()).toMatchObject({
+      ready: true,
+      instanceId: 'season-lifecycle-restarted',
+      screen: 'foyer',
+      showKey: secondPolicy.showKey,
+      season: secondPolicy.season
+    })
+    expect(restartedState.playerStats.get(playerAddress.toLowerCase())?.showSet).toEqual({
+      showKey: secondPolicy.showKey,
+      round: 0,
+      score: 0,
+      streak: 0,
+      bestStreak: 0,
+      understood: 0
+    })
+
+    timestamp = SEASON_ZERO_END_AT
+    await restartedProtocol.handlePing({ seq: 501 }, playerAddress)
+    const dailyShowKey = `daily:${new Date(timestamp).toISOString().slice(0, 10)}`
+    expect(runtime.getState()).toMatchObject({ screen: 'foyer', showKey: dailyShowKey, season: null })
+    const dailySchedule = room.serverMessages.findLast(
+      (message) =>
+        message.type === 'showSchedule' && (message.data as { serverTime: number }).serverTime === timestamp
+    )!.data as Record<string, unknown>
+    expect(dailySchedule).toMatchObject({
+      instanceId: 'season-lifecycle-restarted',
+      serverTime: timestamp,
+      showKey: dailyShowKey
+    })
+    expect(dailySchedule).not.toHaveProperty('season')
+
+    expect(runtime.beginAuthoring()).toBe(true)
+    const dailyDraft = runtime.getState().author!
+    for (const emote of dailyDraft.offeredEmotes.slice(0, 3)) {
+      expect(runtime.selectAuthorEmote(emote)).toBe(true)
+    }
+    expect(runtime.postAuthor()).toBe(true)
+    await room.pumpClient(playerAddress)
+    expect(runtime.getState()).toMatchObject({ screen: 'posted', postedCharadeId: expect.any(String) })
+    expect(restartedState.getCharade(runtime.getState().postedCharadeId)?.phraseId).toBe(dailyDraft.phrase.id)
   })
 })

@@ -16,7 +16,7 @@ type LegacyTheme = Readonly<{
   label: string
 }>
 
-type SeasonMetadata = Readonly<{
+export type SeasonMetadata = Readonly<{
   id: 'season-zero'
   weekId: SeasonWeekId
   startsAt: number
@@ -54,6 +54,7 @@ export type ShowPolicy = DailyShowPolicy | SeasonZeroShowPolicy
 const MAX_DATE_TIMESTAMP = 8_640_000_000_000_000
 const ALL_PHRASE_IDS = Object.freeze(DECK.map((phrase) => phrase.id as PhraseId))
 const ALL_HOUSE_PHRASE_IDS = Object.freeze(HOUSE_CHARADES.map((charade) => charade.phraseId as PhraseId))
+let cachedDefaultPolicy: { day: string; policy: ShowPolicy | null } | null = null
 
 function validTimestamp(timestamp: number) {
   return Number.isSafeInteger(timestamp) && timestamp >= 0 && timestamp <= MAX_DATE_TIMESTAMP
@@ -80,13 +81,25 @@ export function showPolicyForTimestamp(
   record: SeasonModerationRecord = SEASON_ZERO_MODERATION_RECORD
 ): ShowPolicy | null {
   if (!validTimestamp(timestamp)) return null
+  const defaultDay = record === SEASON_ZERO_MODERATION_RECORD ? new Date(timestamp).toISOString().slice(0, 10) : null
+  if (defaultDay && cachedDefaultPolicy?.day === defaultDay) return cachedDefaultPolicy.policy
   const week = seasonWeekForTimestamp(timestamp)
-  if (!week) return dailyPolicy(timestamp)
+  if (!week) {
+    const policy = dailyPolicy(timestamp)
+    if (defaultDay) cachedDefaultPolicy = { day: defaultDay, policy }
+    return policy
+  }
 
   const strictRecord = parseSeasonModerationRecord(record)
-  if (!strictRecord) return null
+  if (!strictRecord) {
+    if (defaultDay) cachedDefaultPolicy = { day: defaultDay, policy: null }
+    return null
+  }
   const evaluation = evaluateSeasonModerationRecord(strictRecord)
-  if (!evaluation.launchReady) return null
+  if (!evaluation.launchReady) {
+    if (defaultDay) cachedDefaultPolicy = { day: defaultDay, policy: null }
+    return null
+  }
 
   const primaryPhraseIds = Object.freeze(
     week.references
@@ -118,7 +131,7 @@ export function showPolicyForTimestamp(
       endsAt: week.finale.window.endsAt
     })
   })
-  return Object.freeze({
+  const policy = Object.freeze({
     kind: 'season-zero',
     showKey: `season-zero:${week.id}`,
     legacyTheme: legacyTheme(timestamp),
@@ -127,4 +140,39 @@ export function showPolicyForTimestamp(
     housePhraseIds,
     season
   })
+  if (defaultDay) cachedDefaultPolicy = { day: defaultDay, policy }
+  return policy
+}
+
+export function acceptedShowPolicy(
+  policy: ShowPolicy | null,
+  showKey: string,
+  season: unknown
+): ShowPolicy | null {
+  if (!policy || showKey !== policy.showKey) return null
+  if (policy.kind === 'daily') return season == null ? policy : null
+  if (!season || typeof season !== 'object') return null
+  const received = season as {
+    id?: unknown
+    weekId?: unknown
+    startsAt?: unknown
+    endsAt?: unknown
+    titleId?: unknown
+    propId?: unknown
+    finale?: unknown
+  }
+  if (!received.finale || typeof received.finale !== 'object') return null
+  const finale = received.finale as { id?: unknown; startsAt?: unknown; endsAt?: unknown }
+  const expected = policy.season
+  return received.id === expected.id &&
+    received.weekId === expected.weekId &&
+    received.startsAt === expected.startsAt &&
+    received.endsAt === expected.endsAt &&
+    received.titleId === expected.titleId &&
+    received.propId === expected.propId &&
+    finale.id === expected.finale.id &&
+    finale.startsAt === expected.finale.startsAt &&
+    finale.endsAt === expected.finale.endsAt
+    ? policy
+    : null
 }
