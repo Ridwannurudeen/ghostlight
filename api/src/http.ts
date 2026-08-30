@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { performance } from 'node:perf_hooks'
 import { Router } from '@well-known-components/http-server'
 import type { IHttpServerComponent } from '@well-known-components/interfaces'
 import {
@@ -53,6 +54,32 @@ const MODERATION_QUEUE_PATH = '/v1/moderation/queue'
 const MODERATION_DECISIONS_PATH = '/v1/moderation/decisions'
 const MODERATION_AUDIT_ROUTE = '/v1/moderation/audit/:afterSequence'
 const SEASON_ZERO_CALENDAR_PATH = '/v1/seasons/season-zero/calendar'
+const LIVE_PATH = '/health/live'
+const READY_PATH = '/health/ready'
+const FUNNEL_EXPORT_PATH = /^\/v1\/analytics\/funnel\/[^/]+\/[^/]+$/u
+const MODERATION_AUDIT_PATH = /^\/v1\/moderation\/audit\/[^/]+$/u
+
+type RequestSloRouteTemplate =
+  | typeof FUNNEL_PATH
+  | typeof FUNNEL_EXPORT_ROUTE
+  | typeof MODERATION_SUBJECTS_PATH
+  | typeof MODERATION_REPORTS_PATH
+  | typeof MODERATION_QUEUE_PATH
+  | typeof MODERATION_DECISIONS_PATH
+  | typeof MODERATION_AUDIT_ROUTE
+  | typeof SEASON_ZERO_CALENDAR_PATH
+  | typeof LIVE_PATH
+  | typeof READY_PATH
+  | 'unmatched'
+
+type RequestSloMethod = 'CONNECT' | 'DELETE' | 'GET' | 'HEAD' | 'OPTIONS' | 'PATCH' | 'POST' | 'PUT' | 'TRACE' | 'OTHER'
+
+export type RequestSloRecord = Readonly<{
+  route: RequestSloRouteTemplate
+  method: RequestSloMethod
+  status: number
+  durationMs: number
+}>
 
 export interface FunnelRepository {
   recordFunnel(sceneId: string, event: FunnelAnalyticsEvent, rate: AnalyticsRateIdentity): Promise<FunnelIngestResult>
@@ -127,6 +154,95 @@ type SignedJsonBodyResult =
   | Readonly<{ kind: 'invalid' | 'too-large' | 'unsupported' | 'unavailable' }>
 
 const CONTENT_LENGTH = /^(?:0|[1-9][0-9]*)$/u
+
+function requestSloRouteTemplate(pathname: string): RequestSloRouteTemplate {
+  const normalizedPathname = (pathname.endsWith('/') ? pathname.slice(0, -1) : pathname).toLowerCase()
+  switch (normalizedPathname) {
+    case FUNNEL_PATH:
+    case MODERATION_SUBJECTS_PATH:
+    case MODERATION_REPORTS_PATH:
+    case MODERATION_QUEUE_PATH:
+    case MODERATION_DECISIONS_PATH:
+    case SEASON_ZERO_CALENDAR_PATH:
+    case LIVE_PATH:
+    case READY_PATH:
+      return normalizedPathname
+  }
+  if (FUNNEL_EXPORT_PATH.test(normalizedPathname)) return FUNNEL_EXPORT_ROUTE
+  if (MODERATION_AUDIT_PATH.test(normalizedPathname)) return MODERATION_AUDIT_ROUTE
+  return 'unmatched'
+}
+
+function requestSloMethod(method: string): RequestSloMethod {
+  const normalized = method.toUpperCase()
+  switch (normalized) {
+    case 'CONNECT':
+    case 'DELETE':
+    case 'GET':
+    case 'HEAD':
+    case 'OPTIONS':
+    case 'PATCH':
+    case 'POST':
+    case 'PUT':
+    case 'TRACE':
+      return normalized
+    default:
+      return 'OTHER'
+  }
+}
+
+function requestSloStatus(status: number | undefined) {
+  if (status === undefined) return 200
+  return Number.isInteger(status) && status >= 100 && status <= 599 ? status : 500
+}
+
+function requestSloErrorStatus(error: unknown) {
+  if (typeof error !== 'object' || error === null) return 500
+  const status = 'status' in error ? error.status : undefined
+  const statusCode = 'statusCode' in error ? error.statusCode : undefined
+  const coercedStatus = status || statusCode
+  return typeof coercedStatus === 'number' &&
+    Number.isInteger(coercedStatus) &&
+    coercedStatus >= 100 &&
+    coercedStatus <= 599
+    ? coercedStatus
+    : 500
+}
+
+function requestSloDuration(startedAt: number, finishedAt: number) {
+  const duration = finishedAt - startedAt
+  return Number.isFinite(duration) && duration >= 0 ? duration : 0
+}
+
+export function createRequestSloMiddleware(
+  options: Readonly<{
+    record: (record: RequestSloRecord) => void
+    monotonicNow?: () => number
+  }>
+): IHttpServerComponent.IRequestHandler<ApiAuthContext> {
+  const monotonicNow = options.monotonicNow ?? (() => performance.now())
+  return async (context, next) => {
+    const route = requestSloRouteTemplate(context.url.pathname)
+    const method = requestSloMethod(context.request.method)
+    const startedAt = monotonicNow()
+    let status = 500
+    try {
+      const response = await next()
+      status = requestSloStatus(response.status)
+      return response
+    } catch (error) {
+      status = requestSloErrorStatus(error)
+      throw error
+    } finally {
+      options.record({
+        route,
+        method,
+        status,
+        durationMs: requestSloDuration(startedAt, monotonicNow())
+      })
+    }
+  }
+}
 
 function json(status: number, body: Record<string, unknown>, headers?: Record<string, string>) {
   return headers === undefined ? { status, body } : { status, body, headers }
@@ -715,8 +831,8 @@ export function createHttpRouter(options: HttpRouterOptions) {
     }
     return json(200, { ...seasonZeroCalendarSnapshot(Date.now()) })
   })
-  router.get('/health/live', async () => json(200, { status: 'pass' }))
-  router.get('/health/ready', async () => {
+  router.get(LIVE_PATH, async () => json(200, { status: 'pass' }))
+  router.get(READY_PATH, async () => {
     const now = Date.now()
     if (readiness === undefined || now >= readiness.expiresAt) {
       if (readinessProbe === undefined) {

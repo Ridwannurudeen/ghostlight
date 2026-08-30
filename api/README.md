@@ -19,6 +19,12 @@ It does not yet provide shared-pool reads, positive approval or channel elevatio
 Creator Studio, or Touring Kit. The static calendar does not synchronize the World or report operational season
 state. The API is not deployed, and real desktop/mobile Explorer interoperability has not been proven.
 
+Request SLO telemetry emits one structured log record per request containing only a stable route template (or
+`unmatched`), normalized HTTP method, HTTP status, and handler/middleware `durationMs` measured with a monotonic
+clock. It excludes the raw URL, path, query, headers, body, IP, wallet, scene, campaign, source, IDs, and
+exception text. The duration excludes socket flush, network, and cross-World latency. Deployment log retention and
+dashboard thresholds remain operational gates.
+
 ## Trust boundary
 
 `POST /v1/analytics/funnel` verifies a Decentraland auth chain and requires the exact production ADR-289 scene

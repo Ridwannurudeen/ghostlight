@@ -8,7 +8,7 @@ import type { ApiAuthContext } from './auth.js'
 import { parseConfig } from './config.js'
 import { createDatabase } from './database.js'
 import { ExpiredRowMaintenance } from './expired-row-maintenance.js'
-import { createHttpRouter } from './http.js'
+import { createHttpRouter, createRequestSloMiddleware, type RequestSloRecord } from './http.js'
 import { ModerationAuditExportRepository } from './moderation-audit-export-repository.js'
 import { ModerationRepository } from './moderation-repository.js'
 import { RetentionRepository } from './retention-repository.js'
@@ -57,6 +57,7 @@ async function initComponents() {
     analyticsRetentionDays: appConfig.analyticsRetentionDays
   })
   const requestLogger = logs.getLogger('ghostlight-api')
+  const requestSloLogger = logs.getLogger('ghostlight-api-request-slo')
   const maintenanceLogger = logs.getLogger('ghostlight-api-retention')
   const maintenance = new ExpiredRowMaintenance(retentionRepository, {
     onPruned(result) {
@@ -95,6 +96,18 @@ async function initComponents() {
         keepAliveTimeout: 5_000
       }
     }
+  )
+  server.use(
+    createRequestSloMiddleware({
+      record(record: RequestSloRecord) {
+        requestSloLogger.info('Request SLO', {
+          route: record.route,
+          method: record.method,
+          status: record.status,
+          durationMs: record.durationMs
+        })
+      }
+    })
   )
   server.use(router.middleware())
   server.use(router.allowedMethods())

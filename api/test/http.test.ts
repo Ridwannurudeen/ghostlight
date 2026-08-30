@@ -22,10 +22,12 @@ import {
   createModerationPublishHandler,
   createModerationQueueHandler,
   createModerationReportHandler,
+  createRequestSloMiddleware,
   type FunnelExportRepository,
   type FunnelRepository,
   type ModerationAuditExportHttpRepository,
-  type ModerationHttpRepository
+  type ModerationHttpRepository,
+  type RequestSloRecord
 } from '../src/http.js'
 import type { ModerationAuditExportResult } from '../src/moderation-audit-export-repository.js'
 import type {
@@ -1650,5 +1652,223 @@ describe('HTTP router boundaries', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('request SLO middleware', () => {
+  function productionServer(monotonicNow: () => number = () => 0) {
+    const records: RequestSloRecord[] = []
+    const router = createHttpRouter({
+      config,
+      repository: {
+        async recordFunnel() {
+          return 'recorded'
+        }
+      },
+      exportRepository: noAccessExportRepository,
+      moderationRepository: noAccessModerationRepository,
+      moderationAuditExportRepository: noAccessModerationAuditExportRepository,
+      isReady: async () => true
+    })
+    const server = createTestServerComponent<ApiAuthContext>()
+    server.setContext({})
+    server.use(createRequestSloMiddleware({ record: (record) => records.push(record), monotonicNow }))
+    server.use(router.middleware())
+    server.use(router.allowedMethods())
+    return { records, server }
+  }
+
+  it('records every registered route as a finite template, including a parameterized authentication failure', async () => {
+    let now = 0
+    const fixture = productionServer(() => now++)
+    const cases = [
+      ['/v1/seasons/season-zero/calendar', 'GET', '/v1/seasons/season-zero/calendar'],
+      ['/health/live', 'GET', '/health/live'],
+      ['/health/ready', 'GET', '/health/ready'],
+      ['/v1/analytics/funnel', 'POST', '/v1/analytics/funnel'],
+      [exportPath, 'GET', '/v1/analytics/funnel/:fromDay/:toDay'],
+      ['/v1/moderation/subjects', 'POST', '/v1/moderation/subjects'],
+      ['/v1/moderation/reports', 'POST', '/v1/moderation/reports'],
+      ['/v1/moderation/queue', 'GET', '/v1/moderation/queue'],
+      ['/v1/moderation/decisions', 'POST', '/v1/moderation/decisions'],
+      [auditExportPath, 'GET', '/v1/moderation/audit/:afterSequence']
+    ] as const
+
+    for (const [index, [path, method, route]] of cases.entries()) {
+      const response = await fixture.server.fetch(path, { method })
+      const record = fixture.records.at(-1)
+      expect(fixture.records).toHaveLength(index + 1)
+      expect(record).toEqual({ route, method, status: response.status, durationMs: 1 })
+      expect(Object.keys(record ?? {}).sort()).toEqual(['durationMs', 'method', 'route', 'status'])
+    }
+
+    expect(fixture.records[0]).toEqual({
+      route: '/v1/seasons/season-zero/calendar',
+      method: 'GET',
+      status: 200,
+      durationMs: 1
+    })
+    expect(fixture.records[4]).toMatchObject({
+      route: '/v1/analytics/funnel/:fromDay/:toDay',
+      method: 'GET'
+    })
+  })
+
+  it('attributes case and single-trailing-slash forms that the router matches to canonical templates', async () => {
+    let now = 10
+    const fixture = productionServer(() => now++)
+    const secret = 'Wallet-0x1111111111111111111111111111111111111111-Private'
+    const cases = [
+      ['/HEALTH/LIVE', '/health/live'],
+      ['/health/live/', '/health/live'],
+      ['/HEALTH/LIVE/', '/health/live'],
+      [`/V1/ANALYTICS/FUNNEL/${secret}/2026-08-30`, '/v1/analytics/funnel/:fromDay/:toDay'],
+      [`/v1/analytics/funnel/${secret}/2026-08-30/`, '/v1/analytics/funnel/:fromDay/:toDay'],
+      [`/V1/MODERATION/AUDIT/${secret}`, '/v1/moderation/audit/:afterSequence'],
+      [`/v1/moderation/audit/${secret}/`, '/v1/moderation/audit/:afterSequence']
+    ] as const
+
+    for (const [path, route] of cases) {
+      const response = await fixture.server.fetch(path)
+      expect(fixture.records.at(-1)).toEqual({ route, method: 'GET', status: response.status, durationMs: 1 })
+    }
+
+    expect(fixture.records).toHaveLength(cases.length)
+    expect(JSON.stringify(fixture.records).toLowerCase()).not.toContain(secret.toLowerCase())
+  })
+
+  it('records method-not-allowed and unknown methods with bounded method labels', async () => {
+    let now = 20
+    const fixture = productionServer(() => now++)
+
+    const methodNotAllowed = await fixture.server.fetch('/HEALTH/LIVE', { method: 'POST' })
+    const notImplemented = await fixture.server.fetch('/HEALTH/LIVE/', { method: 'BREW' })
+
+    expect(methodNotAllowed.status).toBe(405)
+    expect(notImplemented.status).toBe(501)
+    expect(fixture.records).toEqual([
+      { route: '/health/live', method: 'POST', status: 405, durationMs: 1 },
+      { route: '/health/live', method: 'OTHER', status: 501, durationMs: 1 }
+    ])
+  })
+
+  it('keeps double-slash and structurally nonmatching paths unmatched', async () => {
+    let now = 30
+    const fixture = productionServer(() => now++)
+    const paths = ['/health/live//', '/v1/analytics/funnel/only-one-segment', `${exportPath}//`, `${auditExportPath}//`]
+
+    for (const path of paths) {
+      const response = await fixture.server.fetch(path)
+      expect(response.status, path).toBe(404)
+      expect(fixture.records.at(-1)).toEqual({ route: 'unmatched', method: 'GET', status: 404, durationMs: 1 })
+    }
+
+    expect(fixture.records).toHaveLength(paths.length)
+  })
+
+  it('collapses secret-like unmatched requests without recording request data', async () => {
+    let now = 40
+    const fixture = productionServer(() => now++)
+    const secret = 'wallet-0x1111111111111111111111111111111111111111-campaign-private'
+
+    const response = await fixture.server.fetch(`/private/${secret}?source=${secret}`, {
+      method: 'PATCH',
+      headers: { authorization: `Bearer ${secret}`, 'x-scene-id': secret },
+      body: JSON.stringify({ sourceId: secret })
+    })
+
+    expect(response.status).toBe(404)
+    expect(fixture.records).toEqual([{ route: 'unmatched', method: 'PATCH', status: 404, durationMs: 1 }])
+    expect(JSON.stringify(fixture.records)).not.toContain(secret)
+  })
+
+  it('records a repository failure as 503 on its stable route', async () => {
+    const records: RequestSloRecord[] = []
+    const failure = new Error('postgresql://moderator:secret@db.internal leaked')
+    const mock = moderationMock({ queue: failure })
+    const server = createTestServerComponent<ApiAuthContext>()
+    const router = new Router<ApiAuthContext>()
+    let now = 30
+    server.setContext({})
+    server.use(createRequestSloMiddleware({ record: (record) => records.push(record), monotonicNow: () => now++ }))
+    server.use(async (context, next) => {
+      context.verification = { auth: address, authMetadata: {} }
+      return next()
+    })
+    router.get(
+      '/v1/moderation/queue',
+      createModerationQueueHandler({
+        config,
+        moderationRepository: mock.repository,
+        onUnexpectedError: () => undefined
+      })
+    )
+    server.use(router.middleware())
+
+    expect((await server.fetch('/v1/moderation/queue')).status).toBe(503)
+    expect(records).toEqual([{ route: '/v1/moderation/queue', method: 'GET', status: 503, durationMs: 1 }])
+    expect(JSON.stringify(records)).not.toContain('secret')
+  })
+
+  it('records a bounded status from a status-bearing error before the server coerces it', async () => {
+    const records: RequestSloRecord[] = []
+    const failure = Object.assign(new Error('status-exception-secret'), { status: 429 })
+    const server = createTestServerComponent<ApiAuthContext>()
+    let now = 35
+    server.setContext({})
+    server.use(createRequestSloMiddleware({ record: (record) => records.push(record), monotonicNow: () => now++ }))
+    server.use(async () => {
+      throw failure
+    })
+
+    const response = await server.fetch('/health/live')
+
+    expect(response.status).toBe(429)
+    expect(records).toEqual([{ route: '/health/live', method: 'GET', status: 429, durationMs: 1 }])
+    expect(JSON.stringify(records)).not.toContain('status-exception-secret')
+  })
+
+  it('normalizes backward and non-finite clock deltas to zero', async () => {
+    for (const [startedAt, finishedAt] of [
+      [10, 9],
+      [10, Number.NaN],
+      [10, Number.POSITIVE_INFINITY]
+    ]) {
+      const times = [startedAt, finishedAt]
+      const fixture = productionServer(() => times.shift() ?? 0)
+
+      expect((await fixture.server.fetch('/health/live')).status).toBe(200)
+      expect(fixture.records).toEqual([{ route: '/health/live', method: 'GET', status: 200, durationMs: 0 }])
+    }
+  })
+
+  it('defaults missing statuses to 200 and invalid or thrown outcomes to 500 while rethrowing', async () => {
+    const records: RequestSloRecord[] = []
+    let now = 40
+    const middleware = createRequestSloMiddleware({
+      record: (record) => records.push(record),
+      monotonicNow: () => now++
+    })
+    const context = {
+      request: { method: 'GET' },
+      url: new URL('http://0.0.0.0/health/live')
+    } as Parameters<typeof middleware>[0]
+    const failure = new Error('exception-secret')
+
+    await expect(middleware(context, async () => ({ body: 'ok' }))).resolves.toEqual({ body: 'ok' })
+    await expect(middleware(context, async () => ({ status: 600 }))).resolves.toEqual({ status: 600 })
+    await expect(
+      middleware(context, async () => {
+        throw failure
+      })
+    ).rejects.toBe(failure)
+
+    expect(records).toEqual([
+      { route: '/health/live', method: 'GET', status: 200, durationMs: 1 },
+      { route: '/health/live', method: 'GET', status: 500, durationMs: 1 },
+      { route: '/health/live', method: 'GET', status: 500, durationMs: 1 }
+    ])
+    expect(JSON.stringify(records)).not.toContain('exception-secret')
+    expect(records).toHaveLength(3)
   })
 })
