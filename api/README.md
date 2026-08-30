@@ -9,13 +9,15 @@ funnel analytics and persistent moderation staging. It currently provides:
 - direct-wallet, body-bound publishing into an isolated `untrusted` channel;
 - scene-shaped wallet-signed reporting plus a direct-wallet moderator queue and one-way moderation decisions;
 - a moderator-only, cursor-paginated audit export with a dedicated hourly quota and sanitized action details;
+- a public, no-store Season Zero calendar projected from the checked-in UTC schedule and the API clock;
 - bounded startup and 15-minute pruning of expired rate buckets and analytics receipts;
 - public liveness and database-backed readiness probes;
 - JSON application logs, graceful lifecycle shutdown, strict type-checking, an emitted runtime build, and focused
   unit and PostgreSQL integration tests.
 
-It does not yet provide shared-pool reads, positive approval or channel elevation, season synchronization, Creator
-Studio, or Touring Kit. It is not deployed, and real desktop/mobile Explorer interoperability has not been proven.
+It does not yet provide shared-pool reads, positive approval or channel elevation, live season synchronization,
+Creator Studio, or Touring Kit. The static calendar does not synchronize the World or report operational season
+state. The API is not deployed, and real desktop/mobile Explorer interoperability has not been proven.
 
 ## Trust boundary
 
@@ -60,6 +62,16 @@ promotion endpoint in this slice; role provisioning and any future positive revi
 | ------------------- | --------------------------------------------------------------------------------------------- |
 | `GET /health/live`  | `200` while the HTTP process is serving                                                       |
 | `GET /health/ready` | `200` only when the one-second coalesced PostgreSQL probe is ready; otherwise sanitized `503` |
+
+### Season Zero calendar
+
+`GET /v1/seasons/season-zero/calendar` is a public endpoint with no authentication requirement. It returns the
+checked-in Season Zero UTC schedule and derives the current calendar position from the API clock at request time.
+Responses are marked `Cache-Control: no-store`.
+
+This is a static schedule projection, not live or operational state. The API is not deployed or wired to the World,
+and the endpoint does not synchronize the World's season. Its output is not evidence that any listed proof event,
+prompt, reward, moderation workflow, or venue is live.
 
 ### Funnel ingestion
 

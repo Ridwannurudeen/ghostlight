@@ -38,6 +38,7 @@ import type {
   ModerationReportResult,
   ModerationSubjectRow
 } from '../src/moderation-repository.js'
+import { seasonZeroCalendarSnapshot } from '../src/season-calendar.js'
 
 const NOW = Date.parse('2026-10-01T12:00:00.000Z')
 const address = `0x${'1'.repeat(40)}`
@@ -1239,6 +1240,98 @@ describe('moderation audit export HTTP', () => {
     expect(JSON.parse(responseText)).toEqual({ error: 'service-unavailable' })
     expect(responseText).not.toContain('secret')
     expect(fixture.errors).toEqual([failure])
+  })
+})
+
+describe('Season Zero calendar HTTP', () => {
+  it('serves the exact scheduled calendar publicly without touching repositories or readiness', async () => {
+    vi.useFakeTimers()
+    const recordFunnel = vi.fn<FunnelRepository['recordFunnel']>()
+    const exportFunnel = vi.fn<FunnelExportRepository['exportFunnel']>()
+    const publish = vi.fn<ModerationHttpRepository['publish']>()
+    const report = vi.fn<ModerationHttpRepository['report']>()
+    const queue = vi.fn<ModerationHttpRepository['queue']>()
+    const decide = vi.fn<ModerationHttpRepository['decide']>()
+    const exportAudit = vi.fn<ModerationAuditExportHttpRepository['exportAudit']>()
+    const isReady = vi.fn(async () => false)
+    const router = createHttpRouter({
+      config,
+      repository: { recordFunnel },
+      exportRepository: { exportFunnel },
+      moderationRepository: { publish, report, queue, decide },
+      moderationAuditExportRepository: { exportAudit },
+      isReady
+    })
+    const server = createTestServerComponent<ApiAuthContext>()
+    server.setContext({})
+    server.use(router.middleware())
+
+    try {
+      vi.setSystemTime(NOW)
+      const response = await server.fetch('/v1/seasons/season-zero/calendar')
+
+      expect(response.status).toBe(200)
+      expect(response.headers.get('content-type')).toContain('application/json')
+      expect(response.headers.get('cache-control')).toBe('no-store')
+      const body: unknown = await response.json()
+      expect(body).toEqual(seasonZeroCalendarSnapshot(NOW))
+      expect(body).toMatchObject({ kind: 'scheduled-calendar', liveOperationalStateAvailable: false })
+      expect(body).not.toHaveProperty('active')
+      expect(body).not.toHaveProperty('liveState')
+      expect(body).not.toHaveProperty('operationalState')
+      expect(recordFunnel).not.toHaveBeenCalled()
+      expect(exportFunnel).not.toHaveBeenCalled()
+      expect(publish).not.toHaveBeenCalled()
+      expect(report).not.toHaveBeenCalled()
+      expect(queue).not.toHaveBeenCalled()
+      expect(decide).not.toHaveBeenCalled()
+      expect(exportAudit).not.toHaveBeenCalled()
+      expect(isReady).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('rejects query strings and noncanonical calendar paths without repository access', async () => {
+    const recordFunnel = vi.fn<FunnelRepository['recordFunnel']>()
+    const exportFunnel = vi.fn<FunnelExportRepository['exportFunnel']>()
+    const publish = vi.fn<ModerationHttpRepository['publish']>()
+    const report = vi.fn<ModerationHttpRepository['report']>()
+    const queue = vi.fn<ModerationHttpRepository['queue']>()
+    const decide = vi.fn<ModerationHttpRepository['decide']>()
+    const exportAudit = vi.fn<ModerationAuditExportHttpRepository['exportAudit']>()
+    const isReady = vi.fn(async () => false)
+    const router = createHttpRouter({
+      config,
+      repository: { recordFunnel },
+      exportRepository: { exportFunnel },
+      moderationRepository: { publish, report, queue, decide },
+      moderationAuditExportRepository: { exportAudit },
+      isReady
+    })
+    const server = createTestServerComponent<ApiAuthContext>()
+    server.setContext({})
+    server.use(router.middleware())
+
+    for (const path of [
+      '/v1/seasons/season-zero/calendar?state=live',
+      '/v1/seasons/season-zero/calendar/',
+      '/V1/SEASONS/SEASON-ZERO/CALENDAR'
+    ]) {
+      const response = await server.fetch(path)
+      expect(response.status, path).toBe(400)
+      expect(response.headers.get('cache-control'), path).toBe('no-store')
+      expect(await response.json(), path).toEqual({ error: 'invalid-request' })
+    }
+
+    expect(recordFunnel).not.toHaveBeenCalled()
+    expect(exportFunnel).not.toHaveBeenCalled()
+    expect(publish).not.toHaveBeenCalled()
+    expect(report).not.toHaveBeenCalled()
+    expect(queue).not.toHaveBeenCalled()
+    expect(decide).not.toHaveBeenCalled()
+    expect(exportAudit).not.toHaveBeenCalled()
+    expect(isReady).not.toHaveBeenCalled()
   })
 })
 

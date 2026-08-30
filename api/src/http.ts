@@ -40,6 +40,7 @@ import type {
   ModerationReportResult
 } from './moderation-repository.js'
 import { parseModerationAuditCursor, type ModerationAuditExportResult } from './moderation-audit-export-repository.js'
+import { seasonZeroCalendarSnapshot } from './season-calendar.js'
 
 export const MAX_FUNNEL_BODY_BYTES = 1_024
 export const MAX_MODERATION_BODY_BYTES = 8_192
@@ -51,6 +52,7 @@ const MODERATION_REPORTS_PATH = '/v1/moderation/reports'
 const MODERATION_QUEUE_PATH = '/v1/moderation/queue'
 const MODERATION_DECISIONS_PATH = '/v1/moderation/decisions'
 const MODERATION_AUDIT_ROUTE = '/v1/moderation/audit/:afterSequence'
+const SEASON_ZERO_CALENDAR_PATH = '/v1/seasons/season-zero/calendar'
 
 export interface FunnelRepository {
   recordFunnel(sceneId: string, event: FunnelAnalyticsEvent, rate: AnalyticsRateIdentity): Promise<FunnelIngestResult>
@@ -707,6 +709,12 @@ export function createHttpRouter(options: HttpRouterOptions) {
   const router = new Router<ApiAuthContext>()
   let readiness: Readonly<{ ready: boolean; expiresAt: number }> | undefined
   let readinessProbe: Promise<boolean> | undefined
+  router.get(SEASON_ZERO_CALENDAR_PATH, noStore, async (context) => {
+    if (context.url.pathname !== SEASON_ZERO_CALENDAR_PATH || context.url.search !== '') {
+      return invalidRequest()
+    }
+    return json(200, { ...seasonZeroCalendarSnapshot(Date.now()) })
+  })
   router.get('/health/live', async () => json(200, { status: 'pass' }))
   router.get('/health/ready', async () => {
     const now = Date.now()
