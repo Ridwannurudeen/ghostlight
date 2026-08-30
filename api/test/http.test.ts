@@ -12,13 +12,29 @@ import type { ApiAuthContext, SceneAuthContext, SceneMetadata } from '../src/aut
 import { parseConfig } from '../src/config.js'
 import {
   MAX_FUNNEL_BODY_BYTES,
+  MAX_MODERATION_BODY_BYTES,
   READINESS_CACHE_MILLISECONDS,
   createFunnelExportHandler,
   createFunnelHandler,
   createHttpRouter,
+  createModerationDecisionHandler,
+  createModerationPublishHandler,
+  createModerationQueueHandler,
+  createModerationReportHandler,
   type FunnelExportRepository,
-  type FunnelRepository
+  type FunnelRepository,
+  type ModerationHttpRepository
 } from '../src/http.js'
+import type {
+  ModerationDecisionIdentity,
+  ModerationDecisionResult,
+  ModerationPublishIdentity,
+  ModerationPublishResult,
+  ModerationQueueResult,
+  ModerationReportIdentity,
+  ModerationReportResult,
+  ModerationSubjectRow
+} from '../src/moderation-repository.js'
 
 const NOW = Date.parse('2026-10-01T12:00:00.000Z')
 const address = `0x${'1'.repeat(40)}`
@@ -47,6 +63,23 @@ type ExportCall = Readonly<{
   bucketHash: Buffer
 }>
 
+type PublishCall = Readonly<{
+  sceneId: string
+  subject: Parameters<ModerationHttpRepository['publish']>[1]
+  identity: ModerationPublishIdentity
+}>
+
+type ReportCall = Readonly<{
+  sceneId: string
+  report: Parameters<ModerationHttpRepository['report']>[1]
+  identity: ModerationReportIdentity
+}>
+
+type DecisionCall = Readonly<{
+  decision: Parameters<ModerationHttpRepository['decide']>[0]
+  identity: ModerationDecisionIdentity
+}>
+
 const exportRows: readonly AnalyticsExportRow[] = Object.freeze([
   Object.freeze({
     day: '2026-08-01',
@@ -62,8 +95,35 @@ const exportRows: readonly AnalyticsExportRow[] = Object.freeze([
   })
 ])
 
+const moderationSubject: ModerationSubjectRow = Object.freeze({
+  id: 'subject-1',
+  sceneId,
+  authorAddress: address,
+  content: 'A lighthouse forgets the sea.',
+  channel: 'untrusted',
+  status: 'published',
+  touringConsent: true,
+  createdAt: NOW,
+  deletedAt: null
+})
+
 const noAccessExportRepository: FunnelExportRepository = {
   async exportFunnel() {
+    return { status: 'unauthorized' }
+  }
+}
+
+const noAccessModerationRepository: ModerationHttpRepository = {
+  async publish() {
+    return { status: 'invalid-content' }
+  },
+  async report() {
+    return { status: 'scene-not-allowed' }
+  },
+  async queue() {
+    return { status: 'unauthorized' }
+  },
+  async decide() {
     return { status: 'unauthorized' }
   }
 }
@@ -73,6 +133,37 @@ function eventBody(overrides: Record<string, unknown> = {}) {
     eventId: `evt_${'a'.repeat(32)}`,
     event: 'wake',
     occurredAt: NOW,
+    ...overrides
+  })
+}
+
+function publishBody(overrides: Record<string, unknown> = {}) {
+  return JSON.stringify({
+    id: 'subject-1',
+    content: 'A lighthouse forgets the sea.',
+    touringConsent: true,
+    createdAt: NOW,
+    ...overrides
+  })
+}
+
+function reportBody(overrides: Record<string, unknown> = {}) {
+  return JSON.stringify({
+    id: 'report-1',
+    contentId: 'subject-1',
+    reason: 'abuse',
+    createdAt: NOW,
+    ...overrides
+  })
+}
+
+function decisionBody(overrides: Record<string, unknown> = {}) {
+  return JSON.stringify({
+    id: 'decision-1',
+    subjectId: 'subject-1',
+    action: 'quarantined',
+    reason: 'Reviewed by a moderator',
+    createdAt: NOW,
     ...overrides
   })
 }
@@ -182,6 +273,164 @@ function exportHandlerServer(
   return { server, calls, errors }
 }
 
+type ModerationOutcomes = Readonly<{
+  publish?: ModerationPublishResult | Error | undefined
+  report?: ModerationReportResult | Error | undefined
+  queue?: ModerationQueueResult | Error | undefined
+  decide?: ModerationDecisionResult | Error | undefined
+}>
+
+function moderationMock(outcomes: ModerationOutcomes = {}) {
+  const publishCalls: PublishCall[] = []
+  const reportCalls: ReportCall[] = []
+  const queueCalls: string[] = []
+  const decisionCalls: DecisionCall[] = []
+  const repository: ModerationHttpRepository = {
+    async publish(callSceneId, subject, identity) {
+      publishCalls.push({ sceneId: callSceneId, subject, identity })
+      const outcome = outcomes.publish ?? { status: 'published', subject: moderationSubject }
+      if (outcome instanceof Error) throw outcome
+      return outcome
+    },
+    async report(callSceneId, report, identity) {
+      reportCalls.push({ sceneId: callSceneId, report, identity })
+      const outcome = outcomes.report ?? { status: 'reported' }
+      if (outcome instanceof Error) throw outcome
+      return outcome
+    },
+    async queue(moderatorAddress) {
+      queueCalls.push(moderatorAddress)
+      const outcome = outcomes.queue ?? { status: 'data', rows: [] }
+      if (outcome instanceof Error) throw outcome
+      return outcome
+    },
+    async decide(decision, identity) {
+      decisionCalls.push({ decision, identity })
+      const outcome = outcomes.decide ?? {
+        status: 'applied',
+        action: 'quarantined',
+        subjectStatus: 'quarantined',
+        resolvedReports: 1
+      }
+      if (outcome instanceof Error) throw outcome
+      return outcome
+    }
+  }
+  return { repository, publishCalls, reportCalls, queueCalls, decisionCalls }
+}
+
+function publishHandlerServer(signedRaw: string | Buffer, outcome?: ModerationPublishResult | Error, actor = address) {
+  const mock = moderationMock({ publish: outcome })
+  const errors: unknown[] = []
+  const server = createTestServerComponent<ApiAuthContext>()
+  const router = new Router<ApiAuthContext>()
+  server.setContext({})
+  server.use(async (context, next) => {
+    context.verification = {
+      auth: actor,
+      authMetadata: { sceneId, hashPayload: hash(signedRaw) }
+    }
+    return next()
+  })
+  router.post(
+    '/v1/moderation/subjects',
+    createModerationPublishHandler({
+      config,
+      moderationRepository: mock.repository,
+      onUnexpectedError: (error) => errors.push(error)
+    })
+  )
+  server.use(router.middleware())
+  return { server, errors, ...mock }
+}
+
+function reportHandlerServer(
+  signedRaw: string | Buffer,
+  outcome?: ModerationReportResult | Error,
+  isGuest = false,
+  actor = address
+) {
+  const mock = moderationMock({ report: outcome })
+  const errors: unknown[] = []
+  const server = createTestServerComponent<ApiAuthContext>()
+  const router = new Router<ApiAuthContext>()
+  server.setContext({})
+  server.use(async (context, next) => {
+    context.verification = {
+      auth: actor,
+      authMetadata: sceneMetadata(signedRaw, isGuest)
+    }
+    return next()
+  })
+  router.post(
+    '/v1/moderation/reports',
+    createModerationReportHandler({
+      config,
+      moderationRepository: mock.repository,
+      onUnexpectedError: (error) => errors.push(error)
+    })
+  )
+  server.use(router.middleware())
+  return { server, errors, ...mock }
+}
+
+function decisionHandlerServer(
+  signedRaw: string | Buffer,
+  outcome?: ModerationDecisionResult | Error,
+  actor = address
+) {
+  const mock = moderationMock({ decide: outcome })
+  const errors: unknown[] = []
+  const server = createTestServerComponent<ApiAuthContext>()
+  const router = new Router<ApiAuthContext>()
+  server.setContext({})
+  server.use(async (context, next) => {
+    context.verification = { auth: actor, authMetadata: { hashPayload: hash(signedRaw) } }
+    return next()
+  })
+  router.post(
+    '/v1/moderation/decisions',
+    createModerationDecisionHandler({
+      config,
+      moderationRepository: mock.repository,
+      onUnexpectedError: (error) => errors.push(error)
+    })
+  )
+  server.use(router.middleware())
+  return { server, errors, ...mock }
+}
+
+function queueHandlerServer(outcome?: ModerationQueueResult | Error, actor = address) {
+  const mock = moderationMock({ queue: outcome })
+  const errors: unknown[] = []
+  const server = createTestServerComponent<ApiAuthContext>()
+  const router = new Router<ApiAuthContext>()
+  server.setContext({})
+  server.use(async (context, next) => {
+    context.verification = { auth: actor, authMetadata: {} }
+    return next()
+  })
+  router.get(
+    '/v1/moderation/queue',
+    createModerationQueueHandler({
+      config,
+      moderationRepository: mock.repository,
+      onUnexpectedError: (error) => errors.push(error)
+    })
+  )
+  server.use(router.middleware())
+  return { server, errors, ...mock }
+}
+
+function moderationPost(
+  server: ReturnType<typeof createTestServerComponent<ApiAuthContext>>,
+  path: string,
+  raw: string | Buffer,
+  headers: Record<string, string> = { 'content-type': 'application/json' }
+) {
+  return server.fetch(path, { method: 'POST', headers, body: raw })
+}
+
 describe('funnel HTTP ingestion', () => {
   it('hashes and parses the exact raw body, then derives wallet rate identity from verification', async () => {
     const raw = eventBody()
@@ -283,7 +532,7 @@ describe('funnel HTTP ingestion', () => {
     try {
       const { server } = handlerServer(raw, failure, false, address, false)
       expect((await post(server, raw)).status).toBe(503)
-      expect(errorSpy).toHaveBeenCalledWith('Unexpected analytics HTTP error')
+      expect(errorSpy).toHaveBeenCalledWith('Unexpected API HTTP error')
       expect(JSON.stringify(errorSpy.mock.calls)).not.toContain('secret')
     } finally {
       errorSpy.mockRestore()
@@ -366,6 +615,336 @@ describe('funnel HTTP ingestion', () => {
       const invalid = handlerServer(raw)
       expect((await post(invalid.server, raw)).status).toBe(400)
       expect(invalid.calls).toEqual([])
+    }
+  })
+})
+
+describe('moderation publishing HTTP', () => {
+  it('publishes only the parsed untrusted subject with normalized wallet identities', async () => {
+    const raw = publishBody()
+    const { server, publishCalls } = publishHandlerServer(raw, undefined, address.toUpperCase())
+
+    const response = await moderationPost(server, '/v1/moderation/subjects', raw)
+
+    expect(response.status).toBe(202)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.json()).toEqual({ ok: true })
+    expect(publishCalls).toEqual([
+      {
+        sceneId,
+        subject: {
+          id: 'subject-1',
+          content: 'A lighthouse forgets the sea.',
+          channel: 'untrusted',
+          touringConsent: true,
+          createdAt: NOW
+        },
+        identity: {
+          actorAddress: address,
+          bucketHash: config.digestActor('publish-rate', address),
+          auditDigest: config.digestActor('moderation-audit', address)
+        }
+      }
+    ])
+  })
+
+  it('maps every publish result to the fixed public contract', async () => {
+    const cases: ReadonlyArray<readonly [ModerationPublishResult, number, Record<string, unknown>, string | null]> = [
+      [{ status: 'published', subject: moderationSubject }, 202, { ok: true }, null],
+      [{ status: 'replay', subject: moderationSubject }, 202, { ok: true }, null],
+      [{ status: 'id-conflict' }, 409, { error: 'subject-id-conflict' }, null],
+      [{ status: 'duplicate-content', duplicateOf: 'subject-2' }, 409, { error: 'duplicate-content' }, null],
+      [{ status: 'invalid-content' }, 400, { error: 'invalid-request' }, null],
+      [{ status: 'timestamp-out-of-range' }, 400, { error: 'invalid-request' }, null],
+      [{ status: 'scene-not-allowed' }, 400, { error: 'invalid-request' }, null],
+      [{ status: 'rate-limited' }, 429, { error: 'rate-limited' }, '3600']
+    ]
+
+    for (const [outcome, status, body, retryAfter] of cases) {
+      const raw = publishBody()
+      const fixture = publishHandlerServer(raw, outcome)
+      const response = await moderationPost(fixture.server, '/v1/moderation/subjects', raw)
+      expect(response.status, outcome.status).toBe(status)
+      expect(response.headers.get('cache-control'), outcome.status).toBe('no-store')
+      expect(response.headers.get('retry-after'), outcome.status).toBe(retryAfter)
+      expect(await response.json(), outcome.status).toEqual(body)
+    }
+  })
+})
+
+describe('moderation reporting HTTP', () => {
+  it('uses actor-only rate identity but report-local unlinkable digests', async () => {
+    const raw = reportBody()
+    const { server, reportCalls } = reportHandlerServer(raw, undefined, false, address.toUpperCase())
+
+    const response = await moderationPost(server, '/v1/moderation/reports', raw)
+
+    expect(response.status).toBe(202)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.json()).toEqual({ ok: true })
+    const reportIdentity = `${address}\0subject-1\0abuse`
+    expect(reportCalls).toEqual([
+      {
+        sceneId,
+        report: {
+          id: 'report-1',
+          contentId: 'subject-1',
+          reason: 'abuse',
+          createdAt: NOW,
+          status: 'open'
+        },
+        identity: {
+          scope: 'report-wallet',
+          bucketHash: config.digestActor('report-wallet-rate', address),
+          reporterDigest: config.digestActor('moderation-report', reportIdentity),
+          auditDigest: config.digestActor('moderation-audit', reportIdentity)
+        }
+      }
+    ])
+    expect(reportCalls[0]?.identity).not.toHaveProperty('actorAddress')
+
+    const otherRaw = reportBody({ id: 'report-2', contentId: 'subject-2' })
+    const other = reportHandlerServer(otherRaw)
+    expect((await moderationPost(other.server, '/v1/moderation/reports', otherRaw)).status).toBe(202)
+    expect(other.reportCalls[0]?.identity.reporterDigest).not.toEqual(reportCalls[0]?.identity.reporterDigest)
+    expect(other.reportCalls[0]?.identity.auditDigest).not.toEqual(reportCalls[0]?.identity.auditDigest)
+  })
+
+  it('derives the independent guest rate scope from signed scene metadata', async () => {
+    const raw = reportBody()
+    const { server, reportCalls } = reportHandlerServer(raw, undefined, true)
+
+    expect((await moderationPost(server, '/v1/moderation/reports', raw)).status).toBe(202)
+    expect(reportCalls[0]?.identity).toMatchObject({
+      scope: 'report-guest',
+      bucketHash: config.digestActor('report-guest-rate', address)
+    })
+  })
+
+  it('maps every report result to the fixed public contract', async () => {
+    const cases: ReadonlyArray<readonly [ModerationReportResult, number, Record<string, unknown>, string | null]> = [
+      [{ status: 'reported' }, 202, { ok: true }, null],
+      [{ status: 'replay' }, 202, { ok: true }, null],
+      [{ status: 'duplicate-report', reportId: 'report-2' }, 202, { ok: true }, null],
+      [{ status: 'report-id-conflict' }, 409, { error: 'report-id-conflict' }, null],
+      [{ status: 'subject-not-found' }, 404, { error: 'not-found' }, null],
+      [{ status: 'subject-unavailable' }, 404, { error: 'not-found' }, null],
+      [{ status: 'timestamp-out-of-range' }, 400, { error: 'invalid-request' }, null],
+      [{ status: 'scene-not-allowed' }, 400, { error: 'invalid-request' }, null],
+      [{ status: 'rate-limited' }, 429, { error: 'rate-limited' }, '3600']
+    ]
+
+    for (const [outcome, status, body, retryAfter] of cases) {
+      const raw = reportBody()
+      const fixture = reportHandlerServer(raw, outcome)
+      const response = await moderationPost(fixture.server, '/v1/moderation/reports', raw)
+      expect(response.status, outcome.status).toBe(status)
+      expect(response.headers.get('cache-control'), outcome.status).toBe('no-store')
+      expect(response.headers.get('retry-after'), outcome.status).toBe(retryAfter)
+      expect(await response.json(), outcome.status).toEqual(body)
+    }
+  })
+})
+
+describe('moderation queue and decisions HTTP', () => {
+  it('returns the fixed repository queue without accepting a limit or exposing digests', async () => {
+    const row = Object.freeze({
+      reportId: 'report-1',
+      subjectId: 'subject-1',
+      sceneId,
+      authorAddress: address,
+      content: moderationSubject.content,
+      channel: 'untrusted' as const,
+      touringConsent: true,
+      subjectStatus: 'published' as const,
+      reason: 'abuse' as const,
+      reportedAt: NOW
+    })
+    const { server, queueCalls } = queueHandlerServer({ status: 'data', rows: [row] }, address.toUpperCase())
+
+    const response = await server.fetch('/v1/moderation/queue')
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    const responseText = await response.text()
+    expect(JSON.parse(responseText)).toEqual({ items: [row] })
+    expect(responseText).not.toContain('digest')
+    expect(queueCalls).toEqual([address])
+
+    const withLimit = await server.fetch('/v1/moderation/queue?limit=1')
+    expect(withLimit.status).toBe(400)
+    expect(withLimit.headers.get('cache-control')).toBe('no-store')
+    expect(queueCalls).toEqual([address])
+  })
+
+  it('maps queue role denial and failures without leaking details', async () => {
+    const forbidden = queueHandlerServer({ status: 'unauthorized' })
+    const forbiddenResponse = await forbidden.server.fetch('/v1/moderation/queue')
+    expect(forbiddenResponse.status).toBe(403)
+    expect(forbiddenResponse.headers.get('cache-control')).toBe('no-store')
+    expect(await forbiddenResponse.json()).toEqual({ error: 'forbidden' })
+
+    const failure = new Error('postgresql://moderator:secret@db.internal leaked')
+    const unavailable = queueHandlerServer(failure)
+    const unavailableResponse = await unavailable.server.fetch('/v1/moderation/queue')
+    expect(unavailableResponse.status).toBe(503)
+    expect(unavailableResponse.headers.get('cache-control')).toBe('no-store')
+    const responseText = await unavailableResponse.text()
+    expect(JSON.parse(responseText)).toEqual({ error: 'service-unavailable' })
+    expect(responseText).not.toContain('secret')
+    expect(unavailable.errors).toEqual([failure])
+  })
+
+  it('parses decisions and derives only moderator rate and audit identities', async () => {
+    const raw = decisionBody()
+    const { server, decisionCalls } = decisionHandlerServer(raw, undefined, address.toUpperCase())
+
+    const response = await moderationPost(server, '/v1/moderation/decisions', raw)
+
+    expect(response.status).toBe(202)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.json()).toEqual({ ok: true })
+    expect(decisionCalls).toEqual([
+      {
+        decision: {
+          id: 'decision-1',
+          subjectId: 'subject-1',
+          action: 'quarantined',
+          reason: 'Reviewed by a moderator',
+          createdAt: NOW
+        },
+        identity: {
+          actorAddress: address,
+          bucketHash: config.digestActor('decision-rate', address),
+          auditDigest: config.digestActor('moderation-audit', address)
+        }
+      }
+    ])
+  })
+
+  it('maps every decision result to the fixed public contract', async () => {
+    const cases: ReadonlyArray<readonly [ModerationDecisionResult, number, Record<string, unknown>, string | null]> = [
+      [
+        { status: 'applied', action: 'quarantined', subjectStatus: 'quarantined', resolvedReports: 1 },
+        202,
+        { ok: true },
+        null
+      ],
+      [{ status: 'replay' }, 202, { ok: true }, null],
+      [{ status: 'decision-id-conflict' }, 409, { error: 'decision-id-conflict' }, null],
+      [{ status: 'unauthorized' }, 403, { error: 'forbidden' }, null],
+      [{ status: 'subject-not-found' }, 404, { error: 'not-found' }, null],
+      [{ status: 'subject-unavailable' }, 409, { error: 'subject-unavailable' }, null],
+      [{ status: 'timestamp-out-of-range' }, 400, { error: 'invalid-request' }, null],
+      [{ status: 'rate-limited' }, 429, { error: 'rate-limited' }, '60']
+    ]
+
+    for (const [outcome, status, body, retryAfter] of cases) {
+      const raw = decisionBody()
+      const fixture = decisionHandlerServer(raw, outcome)
+      const response = await moderationPost(fixture.server, '/v1/moderation/decisions', raw)
+      expect(response.status, outcome.status).toBe(status)
+      expect(response.headers.get('cache-control'), outcome.status).toBe('no-store')
+      expect(response.headers.get('retry-after'), outcome.status).toBe(retryAfter)
+      expect(await response.json(), outcome.status).toEqual(body)
+    }
+  })
+})
+
+describe('moderation signed-body boundaries', () => {
+  it('accepts exactly 8,192 raw bytes and rejects 8,193 before parsing', async () => {
+    const body = publishBody()
+    const exact = `${' '.repeat(MAX_MODERATION_BODY_BYTES - Buffer.byteLength(body))}${body}`
+    expect(Buffer.byteLength(exact)).toBe(MAX_MODERATION_BODY_BYTES)
+    const accepted = publishHandlerServer(exact)
+    expect((await moderationPost(accepted.server, '/v1/moderation/subjects', exact)).status).toBe(202)
+    expect(accepted.publishCalls).toHaveLength(1)
+
+    const oversized = ` ${exact}`
+    const rejected = publishHandlerServer(oversized)
+    const response = await moderationPost(rejected.server, '/v1/moderation/subjects', oversized)
+    expect(Buffer.byteLength(oversized)).toBe(MAX_MODERATION_BODY_BYTES + 1)
+    expect(response.status).toBe(413)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.json()).toEqual({ error: 'payload-too-large' })
+    expect(rejected.publishCalls).toEqual([])
+  })
+
+  it('binds the exact raw body before fatal UTF-8, JSON, and contract parsing', async () => {
+    const valid = publishBody()
+    const mismatch = publishHandlerServer(valid)
+    expect((await moderationPost(mismatch.server, '/v1/moderation/subjects', `${valid} `)).status).toBe(400)
+    expect(mismatch.publishCalls).toEqual([])
+
+    for (const raw of [Buffer.from([0xff]), Buffer.from('{'), Buffer.from(publishBody({ extra: true }))]) {
+      const invalid = publishHandlerServer(raw)
+      const response = await moderationPost(invalid.server, '/v1/moderation/subjects', raw)
+      expect(response.status).toBe(400)
+      expect(response.headers.get('cache-control')).toBe('no-store')
+      expect(invalid.publishCalls).toEqual([])
+    }
+
+    const report = reportBody()
+    const mismatchedReport = reportHandlerServer(report)
+    expect((await moderationPost(mismatchedReport.server, '/v1/moderation/reports', `${report} `)).status).toBe(400)
+    expect(mismatchedReport.reportCalls).toEqual([])
+
+    const decision = decisionBody()
+    const mismatchedDecision = decisionHandlerServer(decision)
+    expect((await moderationPost(mismatchedDecision.server, '/v1/moderation/decisions', `${decision} `)).status).toBe(
+      400
+    )
+    expect(mismatchedDecision.decisionCalls).toEqual([])
+  })
+
+  it('rejects noncanonical paths, queries, encodings, and media types', async () => {
+    const raw = publishBody()
+    const cases: ReadonlyArray<readonly [string, Record<string, string>, number]> = [
+      ['/v1/moderation/subjects?mode=trusted', { 'content-type': 'application/json' }, 400],
+      ['/V1/MODERATION/SUBJECTS', { 'content-type': 'application/json' }, 400],
+      ['/v1/moderation/subjects/', { 'content-type': 'application/json' }, 400],
+      ['/v1/moderation/subjects', { 'content-type': 'text/plain' }, 415],
+      ['/v1/moderation/subjects', { 'content-type': 'application/json', 'content-encoding': 'gzip' }, 415]
+    ]
+
+    for (const [path, headers, status] of cases) {
+      const fixture = publishHandlerServer(raw)
+      const response = await moderationPost(fixture.server, path, raw, headers)
+      expect(response.status, path).toBe(status)
+      expect(response.headers.get('cache-control'), path).toBe('no-store')
+      expect(fixture.publishCalls, path).toEqual([])
+    }
+  })
+
+  it('sanitizes repository exceptions for every moderation mutation', async () => {
+    const failure = new Error('postgresql://user:secret@db.internal exploded')
+    const fixtures = [
+      {
+        raw: publishBody(),
+        path: '/v1/moderation/subjects',
+        fixture: (raw: string) => publishHandlerServer(raw, failure)
+      },
+      {
+        raw: reportBody(),
+        path: '/v1/moderation/reports',
+        fixture: (raw: string) => reportHandlerServer(raw, failure)
+      },
+      {
+        raw: decisionBody(),
+        path: '/v1/moderation/decisions',
+        fixture: (raw: string) => decisionHandlerServer(raw, failure)
+      }
+    ]
+
+    for (const entry of fixtures) {
+      const fixture = entry.fixture(entry.raw)
+      const response = await moderationPost(fixture.server, entry.path, entry.raw)
+      expect(response.status, entry.path).toBe(503)
+      expect(response.headers.get('cache-control'), entry.path).toBe('no-store')
+      const responseText = await response.text()
+      expect(JSON.parse(responseText), entry.path).toEqual({ error: 'service-unavailable' })
+      expect(responseText, entry.path).not.toContain('secret')
+      expect(fixture.errors, entry.path).toEqual([failure])
     }
   })
 })
@@ -470,6 +1049,7 @@ describe('HTTP router boundaries', () => {
       config,
       repository,
       exportRepository: noAccessExportRepository,
+      moderationRepository: noAccessModerationRepository,
       isReady: async () => {
         readinessProbes += 1
         if (readiness === 'error') throw new Error('database credentials leaked')
@@ -487,10 +1067,7 @@ describe('HTTP router boundaries', () => {
       expect(live.status).toBe(200)
       expect(await live.json()).toEqual({ status: 'pass' })
 
-      const [unready, coalesced] = await Promise.all([
-        server.fetch('/health/ready'),
-        server.fetch('/health/ready')
-      ])
+      const [unready, coalesced] = await Promise.all([server.fetch('/health/ready'), server.fetch('/health/ready')])
       expect(unready.status).toBe(503)
       expect(coalesced.status).toBe(503)
       expect(await unready.json()).toEqual({ status: 'fail' })
@@ -526,6 +1103,7 @@ describe('HTTP router boundaries', () => {
         }
       },
       exportRepository: noAccessExportRepository,
+      moderationRepository: noAccessModerationRepository,
       isReady: async () => true
     })
     const server = createTestServerComponent<SceneAuthContext>()
@@ -537,6 +1115,65 @@ describe('HTTP router boundaries', () => {
     expect(response.status).toBe(400)
     expect(await response.json()).toEqual({ error: 'invalid-request' })
     expect(persisted).toBe(false)
+  })
+
+  it('places exact authentication before moderation and marks authentication failures no-store', async () => {
+    const mock = moderationMock()
+    const router = createHttpRouter({
+      config,
+      repository: {
+        async recordFunnel() {
+          return 'recorded'
+        }
+      },
+      exportRepository: noAccessExportRepository,
+      moderationRepository: mock.repository,
+      isReady: async () => true
+    })
+    const server = createTestServerComponent<ApiAuthContext>()
+    server.setContext({})
+    server.use(router.middleware())
+
+    for (const [path, method, body] of [
+      ['/v1/moderation/subjects', 'POST', publishBody()],
+      ['/v1/moderation/reports', 'POST', reportBody()],
+      ['/v1/moderation/queue', 'GET', undefined],
+      ['/v1/moderation/decisions', 'POST', decisionBody()]
+    ] as const) {
+      const response = await server.fetch(path, {
+        method,
+        headers: body === undefined ? undefined : { 'content-type': 'application/json' },
+        body
+      })
+      expect(response.status, path).toBe(400)
+      expect(response.headers.get('cache-control'), path).toBe('no-store')
+      expect(await response.json(), path).toEqual({ error: 'invalid-request' })
+    }
+
+    const publishRaw = publishBody()
+    const signedMetadata = JSON.stringify({ sceneId, hashPayload: hash(publishRaw) })
+    const invalidSignature = await server.fetch('/v1/moderation/subjects', {
+      method: 'POST',
+      headers: {
+        'x-identity-auth-chain-0': JSON.stringify({ type: 'SIGNER', payload: address, signature: '' }),
+        'x-identity-auth-chain-1': JSON.stringify({
+          type: 'ECDSA_SIGNED_ENTITY',
+          payload: 'not-the-signed-payload',
+          signature: 'malformed'
+        }),
+        'x-identity-timestamp': String(Date.now()),
+        'x-identity-metadata': signedMetadata,
+        'content-type': 'application/json'
+      },
+      body: publishRaw
+    })
+    expect(invalidSignature.status).toBe(401)
+    expect(invalidSignature.headers.get('cache-control')).toBe('no-store')
+    expect(await invalidSignature.json()).toEqual({ error: 'unauthorized' })
+    expect(mock.publishCalls).toEqual([])
+    expect(mock.reportCalls).toEqual([])
+    expect(mock.queueCalls).toEqual([])
+    expect(mock.decisionCalls).toEqual([])
   })
 
   it('places direct-wallet authentication in front of the production export route', async () => {
@@ -554,6 +1191,7 @@ describe('HTTP router boundaries', () => {
           return { status: 'data', rows: exportRows }
         }
       },
+      moderationRepository: noAccessModerationRepository,
       isReady: async () => true
     })
     const server = createTestServerComponent<ApiAuthContext>()
@@ -562,6 +1200,7 @@ describe('HTTP router boundaries', () => {
 
     const unsigned = await server.fetch(exportPath)
     expect(unsigned.status).toBe(400)
+    expect(unsigned.headers.get('cache-control')).toBe('no-store')
     expect(await unsigned.json()).toEqual({ error: 'invalid-request' })
     expect(calls).toEqual([])
 

@@ -162,4 +162,25 @@ describe('moderation contracts', () => {
       })
     ).toThrow('Invalid moderation decision')
   })
+
+  it('rejects PostgreSQL-incompatible null characters at the request boundary', () => {
+    expect(() => parsePublishSubject({ id: 'performance\0one', content: 'Ghost', createdAt: NOW })).toThrow(
+      'Invalid publish subject'
+    )
+    expect(() => parsePublishSubject({ id: 'performance-one', content: 'Ghost\0light', createdAt: NOW })).toThrow(
+      'Invalid publish subject'
+    )
+    expect(() =>
+      parseModerationReport({ id: 'report\0one', contentId: 'performance-one', reason: 'abuse', createdAt: NOW })
+    ).toThrow('Invalid moderation report')
+    expect(() =>
+      parseModerationDecision({
+        id: 'decision-one',
+        subjectId: 'performance-one',
+        action: 'quarantined',
+        reason: 'Unsafe\0content',
+        createdAt: NOW
+      })
+    ).toThrow('Invalid moderation decision')
+  })
 })

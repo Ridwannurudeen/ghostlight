@@ -73,6 +73,7 @@ function requireText(value: unknown, label: string, maxBytes: number) {
   if (typeof value !== 'string') throw new Error(`${label} is required`)
   const normalized = value.trim()
   if (normalized === '') throw new Error(`${label} is required`)
+  if (normalized.includes('\0')) throw new Error(`${label} contains invalid characters`)
   if (Buffer.byteLength(normalized, 'utf8') > maxBytes) {
     throw new Error(`${label} exceeds ${maxBytes} UTF-8 bytes`)
   }

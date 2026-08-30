@@ -7,14 +7,48 @@ import {
   type AnalyticsExportResult
 } from './analytics-export-repository.js'
 import type { AnalyticsRateIdentity, FunnelAnalyticsEvent, FunnelIngestResult } from './analytics-repository.js'
-import { createSceneAuthMiddleware, createWalletAuthMiddleware, isSceneMetadata, type ApiAuthContext } from './auth.js'
+import {
+  createDecisionAuthMiddleware,
+  createPublishAuthMiddleware,
+  createQueueAuthMiddleware,
+  createSceneAuthMiddleware,
+  createWalletAuthMiddleware,
+  isDecisionWalletMetadata,
+  isEmptyWalletMetadata,
+  isPublishWalletMetadata,
+  isSceneMetadata,
+  type ApiAuthContext
+} from './auth.js'
 import type { AppConfig } from './config.js'
-import { normalizeAddress, parseAnalyticsEvent } from './contracts.js'
+import {
+  normalizeAddress,
+  parseAnalyticsEvent,
+  parseModerationDecision,
+  parseModerationReport,
+  parsePublishSubject,
+  type ModerationDecisionInput,
+  type ModerationReportInput,
+  type PublishSubject
+} from './contracts.js'
+import type {
+  ModerationDecisionIdentity,
+  ModerationDecisionResult,
+  ModerationPublishIdentity,
+  ModerationPublishResult,
+  ModerationQueueResult,
+  ModerationReportIdentity,
+  ModerationReportResult
+} from './moderation-repository.js'
 
 export const MAX_FUNNEL_BODY_BYTES = 1_024
+export const MAX_MODERATION_BODY_BYTES = 8_192
 export const READINESS_CACHE_MILLISECONDS = 1_000
 const FUNNEL_PATH = '/v1/analytics/funnel'
 const FUNNEL_EXPORT_ROUTE = '/v1/analytics/funnel/:fromDay/:toDay'
+const MODERATION_SUBJECTS_PATH = '/v1/moderation/subjects'
+const MODERATION_REPORTS_PATH = '/v1/moderation/reports'
+const MODERATION_QUEUE_PATH = '/v1/moderation/queue'
+const MODERATION_DECISIONS_PATH = '/v1/moderation/decisions'
 
 export interface FunnelRepository {
   recordFunnel(sceneId: string, event: FunnelAnalyticsEvent, rate: AnalyticsRateIdentity): Promise<FunnelIngestResult>
@@ -22,6 +56,21 @@ export interface FunnelRepository {
 
 export interface FunnelExportRepository {
   exportFunnel(actorAddress: string, range: AnalyticsExportRange, bucketHash: Buffer): Promise<AnalyticsExportResult>
+}
+
+export interface ModerationHttpRepository {
+  publish(
+    sceneId: string,
+    subject: PublishSubject,
+    identity: ModerationPublishIdentity
+  ): Promise<ModerationPublishResult>
+  report(
+    sceneId: string,
+    report: ModerationReportInput,
+    identity: ModerationReportIdentity
+  ): Promise<ModerationReportResult>
+  queue(moderatorAddress: string): Promise<ModerationQueueResult>
+  decide(decision: ModerationDecisionInput, identity: ModerationDecisionIdentity): Promise<ModerationDecisionResult>
 }
 
 type FunnelHttpConfig = Pick<AppConfig, 'allowedSceneIds' | 'trustedCatalystUrl' | 'digestActor'>
@@ -41,10 +90,16 @@ export type FunnelExportHandlerOptions = HttpBaseOptions &
     exportRepository: FunnelExportRepository
   }>
 
+export type ModerationHandlerOptions = HttpBaseOptions &
+  Readonly<{
+    moderationRepository: ModerationHttpRepository
+  }>
+
 export type HttpRouterOptions = HttpBaseOptions &
   Readonly<{
     repository: FunnelRepository
     exportRepository: FunnelExportRepository
+    moderationRepository: ModerationHttpRepository
     isReady: () => Promise<boolean>
   }>
 
@@ -53,17 +108,57 @@ type RawBodyResult =
   | Readonly<{ kind: 'invalid' }>
   | Readonly<{ kind: 'too-large' }>
 
+type SignedJsonBodyResult =
+  | Readonly<{ kind: 'json'; value: unknown }>
+  | Readonly<{ kind: 'invalid' | 'too-large' | 'unsupported' | 'unavailable' }>
+
 const CONTENT_LENGTH = /^(?:0|[1-9][0-9]*)$/u
 
 function json(status: number, body: Record<string, unknown>, headers?: Record<string, string>) {
   return headers === undefined ? { status, body } : { status, body, headers }
 }
 
+type HeaderCollection = Readonly<{
+  forEach(callback: (value: string, name: string) => void): void
+}>
+
+function isHeaderCollection(value: object): value is HeaderCollection {
+  return 'forEach' in value && typeof value.forEach === 'function'
+}
+
+function withNoStore(headers: IHttpServerComponent.IResponse['headers']) {
+  const normalized: Record<string, string | string[]> = {}
+  if (Array.isArray(headers)) {
+    for (const pair of headers) {
+      const name = pair[0]
+      const value = pair[1]
+      if (name !== undefined && value !== undefined) normalized[name] = value
+    }
+  } else if (headers !== undefined && isHeaderCollection(headers)) {
+    headers.forEach((value, name) => {
+      normalized[name] = value
+    })
+  } else if (headers !== undefined) {
+    Object.assign(normalized, headers)
+  }
+
+  for (const name of Object.keys(normalized)) {
+    if (name.toLowerCase() === 'cache-control') delete normalized[name]
+  }
+  normalized['Cache-Control'] = 'no-store'
+  return normalized
+}
+
+const noStore: IHttpServerComponent.IRequestHandler<ApiAuthContext> = async (_context, next) => {
+  const response = await next()
+  return { ...response, headers: withNoStore(response.headers) }
+}
+
 function reportUnexpected(options: HttpBaseOptions, error: unknown) {
   if (options.onUnexpectedError) {
     options.onUnexpectedError(error)
   } else {
-    console.error('Unexpected analytics HTTP error')
+    console.error('Unexpected API HTTP error')
   }
 }
 
@@ -80,16 +175,16 @@ function asBuffer(chunk: unknown) {
   throw new TypeError('Unsupported request body chunk')
 }
 
-async function readRawBody(request: IHttpServerComponent.IRequest): Promise<RawBodyResult> {
+async function readRawBody(request: IHttpServerComponent.IRequest, maximumBytes: number): Promise<RawBodyResult> {
   const contentLength = request.headers.get('content-length')
   if (contentLength !== null) {
     if (!CONTENT_LENGTH.test(contentLength)) return { kind: 'invalid' }
-    if (Number(contentLength) > MAX_FUNNEL_BODY_BYTES) return { kind: 'too-large' }
+    if (Number(contentLength) > maximumBytes) return { kind: 'too-large' }
   }
 
   if (request.body === null) return { kind: 'body', value: Buffer.alloc(0) }
   if (request.body instanceof Uint8Array) {
-    if (request.body.byteLength > MAX_FUNNEL_BODY_BYTES) return { kind: 'too-large' }
+    if (request.body.byteLength > maximumBytes) return { kind: 'too-large' }
     return { kind: 'body', value: Buffer.from(request.body) }
   }
   const chunks: Buffer[] = []
@@ -97,7 +192,7 @@ async function readRawBody(request: IHttpServerComponent.IRequest): Promise<RawB
   for await (const chunk of request.body as AsyncIterable<unknown>) {
     const buffer = asBuffer(chunk)
     length += buffer.byteLength
-    if (length > MAX_FUNNEL_BODY_BYTES) return { kind: 'too-large' }
+    if (length > maximumBytes) return { kind: 'too-large' }
     chunks.push(buffer)
   }
   return { kind: 'body', value: Buffer.concat(chunks, length) }
@@ -113,6 +208,58 @@ function exportJson(status: number, body: Record<string, unknown>, headers: Reco
 
 function invalidExportRequest() {
   return exportJson(400, { error: 'invalid-request' })
+}
+
+function moderationJson(status: number, body: Record<string, unknown>, headers: Record<string, string> = {}) {
+  return json(status, body, { ...headers, 'Cache-Control': 'no-store' })
+}
+
+function moderationInvalidRequest() {
+  return moderationJson(400, { error: 'invalid-request' })
+}
+
+async function readSignedJsonBody(
+  request: IHttpServerComponent.IRequest,
+  expectedHash: string,
+  options: HttpBaseOptions
+): Promise<SignedJsonBodyResult> {
+  const contentEncoding = request.headers.get('content-encoding')
+  if (contentEncoding !== null && contentEncoding.toLowerCase() !== 'identity') {
+    return { kind: 'unsupported' }
+  }
+  if (!acceptsJson(request.headers.get('content-type'))) return { kind: 'unsupported' }
+
+  let rawBody: RawBodyResult
+  try {
+    rawBody = await readRawBody(request, MAX_MODERATION_BODY_BYTES)
+  } catch (error) {
+    reportUnexpected(options, error)
+    return { kind: 'unavailable' }
+  }
+  if (rawBody.kind !== 'body') return rawBody
+  if (createHash('sha256').update(rawBody.value).digest('hex') !== expectedHash) {
+    return { kind: 'invalid' }
+  }
+
+  try {
+    const decoded = new TextDecoder('utf-8', { fatal: true }).decode(rawBody.value)
+    return { kind: 'json', value: JSON.parse(decoded) as unknown }
+  } catch {
+    return { kind: 'invalid' }
+  }
+}
+
+function moderationBodyFailure(result: Exclude<SignedJsonBodyResult, { kind: 'json' }>) {
+  switch (result.kind) {
+    case 'invalid':
+      return moderationInvalidRequest()
+    case 'too-large':
+      return moderationJson(413, { error: 'payload-too-large' })
+    case 'unsupported':
+      return moderationJson(415, { error: 'unsupported-media-type' })
+    case 'unavailable':
+      return moderationJson(503, { error: 'service-unavailable' })
+  }
 }
 
 function resultResponse(result: FunnelIngestResult) {
@@ -159,7 +306,7 @@ export function createFunnelHandler(
 
     let rawBody: RawBodyResult
     try {
-      rawBody = await readRawBody(context.request)
+      rawBody = await readRawBody(context.request, MAX_FUNNEL_BODY_BYTES)
     } catch (error) {
       reportUnexpected(options, error)
       return json(503, { error: 'service-unavailable' })
@@ -199,6 +346,227 @@ export function createFunnelHandler(
       return json(503, { error: 'service-unavailable' })
     }
     return resultResponse(result)
+  }
+}
+
+export function createModerationPublishHandler(
+  options: ModerationHandlerOptions
+): IHttpServerComponent.IRequestHandler<ApiAuthContext> {
+  return async (context) => {
+    if (context.url.pathname !== MODERATION_SUBJECTS_PATH || context.url.search !== '') {
+      return moderationInvalidRequest()
+    }
+
+    const verification = context.verification
+    if (
+      verification === undefined ||
+      !isPublishWalletMetadata(verification.authMetadata, options.config.allowedSceneIds)
+    ) {
+      return moderationJson(401, { error: 'unauthorized' })
+    }
+
+    let actor: string
+    try {
+      actor = normalizeAddress(verification.auth)
+    } catch {
+      return moderationJson(401, { error: 'unauthorized' })
+    }
+
+    const body = await readSignedJsonBody(context.request, verification.authMetadata.hashPayload, options)
+    if (body.kind !== 'json') return moderationBodyFailure(body)
+
+    let subject: PublishSubject
+    try {
+      subject = parsePublishSubject(body.value)
+    } catch {
+      return moderationInvalidRequest()
+    }
+
+    let result: ModerationPublishResult
+    try {
+      result = await options.moderationRepository.publish(verification.authMetadata.sceneId, subject, {
+        actorAddress: actor,
+        bucketHash: options.config.digestActor('publish-rate', actor),
+        auditDigest: options.config.digestActor('moderation-audit', actor)
+      })
+    } catch (error) {
+      reportUnexpected(options, error)
+      return moderationJson(503, { error: 'service-unavailable' })
+    }
+
+    switch (result.status) {
+      case 'published':
+      case 'replay':
+        return moderationJson(202, { ok: true })
+      case 'id-conflict':
+        return moderationJson(409, { error: 'subject-id-conflict' })
+      case 'duplicate-content':
+        return moderationJson(409, { error: 'duplicate-content' })
+      case 'invalid-content':
+      case 'timestamp-out-of-range':
+      case 'scene-not-allowed':
+        return moderationInvalidRequest()
+      case 'rate-limited':
+        return moderationJson(429, { error: 'rate-limited' }, { 'Retry-After': '3600' })
+    }
+  }
+}
+
+export function createModerationReportHandler(
+  options: ModerationHandlerOptions
+): IHttpServerComponent.IRequestHandler<ApiAuthContext> {
+  return async (context) => {
+    if (context.url.pathname !== MODERATION_REPORTS_PATH || context.url.search !== '') {
+      return moderationInvalidRequest()
+    }
+
+    const verification = context.verification
+    if (verification === undefined || !isSceneMetadata(verification.authMetadata, options.config.allowedSceneIds)) {
+      return moderationJson(401, { error: 'unauthorized' })
+    }
+
+    let actor: string
+    try {
+      actor = normalizeAddress(verification.auth)
+    } catch {
+      return moderationJson(401, { error: 'unauthorized' })
+    }
+
+    const body = await readSignedJsonBody(context.request, verification.authMetadata.hashPayload, options)
+    if (body.kind !== 'json') return moderationBodyFailure(body)
+
+    let report: ModerationReportInput
+    try {
+      report = parseModerationReport(body.value)
+    } catch {
+      return moderationInvalidRequest()
+    }
+
+    const digestIdentity = `${actor}\0${report.contentId}\0${report.reason}`
+    const scope = verification.authMetadata.isGuest ? 'report-guest' : 'report-wallet'
+    const ratePurpose = verification.authMetadata.isGuest ? 'report-guest-rate' : 'report-wallet-rate'
+    let result: ModerationReportResult
+    try {
+      result = await options.moderationRepository.report(verification.authMetadata.sceneId, report, {
+        scope,
+        bucketHash: options.config.digestActor(ratePurpose, actor),
+        reporterDigest: options.config.digestActor('moderation-report', digestIdentity),
+        auditDigest: options.config.digestActor('moderation-audit', digestIdentity)
+      })
+    } catch (error) {
+      reportUnexpected(options, error)
+      return moderationJson(503, { error: 'service-unavailable' })
+    }
+
+    switch (result.status) {
+      case 'reported':
+      case 'replay':
+      case 'duplicate-report':
+        return moderationJson(202, { ok: true })
+      case 'report-id-conflict':
+        return moderationJson(409, { error: 'report-id-conflict' })
+      case 'subject-not-found':
+      case 'subject-unavailable':
+        return moderationJson(404, { error: 'not-found' })
+      case 'timestamp-out-of-range':
+      case 'scene-not-allowed':
+        return moderationInvalidRequest()
+      case 'rate-limited':
+        return moderationJson(429, { error: 'rate-limited' }, { 'Retry-After': '3600' })
+    }
+  }
+}
+
+export function createModerationQueueHandler(
+  options: ModerationHandlerOptions
+): IHttpServerComponent.IRequestHandler<ApiAuthContext> {
+  return async (context) => {
+    if (context.url.pathname !== MODERATION_QUEUE_PATH || context.url.search !== '') {
+      return moderationInvalidRequest()
+    }
+    const verification = context.verification
+    if (verification === undefined || !isEmptyWalletMetadata(verification.authMetadata)) {
+      return moderationJson(401, { error: 'unauthorized' })
+    }
+
+    let actor: string
+    try {
+      actor = normalizeAddress(verification.auth)
+    } catch {
+      return moderationJson(401, { error: 'unauthorized' })
+    }
+
+    let result: ModerationQueueResult
+    try {
+      result = await options.moderationRepository.queue(actor)
+    } catch (error) {
+      reportUnexpected(options, error)
+      return moderationJson(503, { error: 'service-unavailable' })
+    }
+    if (result.status === 'unauthorized') return moderationJson(403, { error: 'forbidden' })
+    return moderationJson(200, { items: result.rows })
+  }
+}
+
+export function createModerationDecisionHandler(
+  options: ModerationHandlerOptions
+): IHttpServerComponent.IRequestHandler<ApiAuthContext> {
+  return async (context) => {
+    if (context.url.pathname !== MODERATION_DECISIONS_PATH || context.url.search !== '') {
+      return moderationInvalidRequest()
+    }
+
+    const verification = context.verification
+    if (verification === undefined || !isDecisionWalletMetadata(verification.authMetadata)) {
+      return moderationJson(401, { error: 'unauthorized' })
+    }
+
+    let actor: string
+    try {
+      actor = normalizeAddress(verification.auth)
+    } catch {
+      return moderationJson(401, { error: 'unauthorized' })
+    }
+
+    const body = await readSignedJsonBody(context.request, verification.authMetadata.hashPayload, options)
+    if (body.kind !== 'json') return moderationBodyFailure(body)
+
+    let decision: ModerationDecisionInput
+    try {
+      decision = parseModerationDecision(body.value)
+    } catch {
+      return moderationInvalidRequest()
+    }
+
+    let result: ModerationDecisionResult
+    try {
+      result = await options.moderationRepository.decide(decision, {
+        actorAddress: actor,
+        bucketHash: options.config.digestActor('decision-rate', actor),
+        auditDigest: options.config.digestActor('moderation-audit', actor)
+      })
+    } catch (error) {
+      reportUnexpected(options, error)
+      return moderationJson(503, { error: 'service-unavailable' })
+    }
+
+    switch (result.status) {
+      case 'applied':
+      case 'replay':
+        return moderationJson(202, { ok: true })
+      case 'decision-id-conflict':
+        return moderationJson(409, { error: 'decision-id-conflict' })
+      case 'unauthorized':
+        return moderationJson(403, { error: 'forbidden' })
+      case 'subject-not-found':
+        return moderationJson(404, { error: 'not-found' })
+      case 'subject-unavailable':
+        return moderationJson(409, { error: 'subject-unavailable' })
+      case 'timestamp-out-of-range':
+        return moderationInvalidRequest()
+      case 'rate-limited':
+        return moderationJson(429, { error: 'rate-limited' }, { 'Retry-After': '60' })
+    }
   }
 }
 
@@ -297,8 +665,39 @@ export function createHttpRouter(options: HttpRouterOptions) {
   )
   router.get(
     FUNNEL_EXPORT_ROUTE,
+    noStore,
     createWalletAuthMiddleware({ trustedCatalystUrl: options.config.trustedCatalystUrl }),
     createFunnelExportHandler(options)
+  )
+  router.post(
+    MODERATION_SUBJECTS_PATH,
+    noStore,
+    createPublishAuthMiddleware({
+      allowedSceneIds: options.config.allowedSceneIds,
+      trustedCatalystUrl: options.config.trustedCatalystUrl
+    }),
+    createModerationPublishHandler(options)
+  )
+  router.post(
+    MODERATION_REPORTS_PATH,
+    noStore,
+    createSceneAuthMiddleware({
+      allowedSceneIds: options.config.allowedSceneIds,
+      trustedCatalystUrl: options.config.trustedCatalystUrl
+    }),
+    createModerationReportHandler(options)
+  )
+  router.get(
+    MODERATION_QUEUE_PATH,
+    noStore,
+    createQueueAuthMiddleware({ trustedCatalystUrl: options.config.trustedCatalystUrl }),
+    createModerationQueueHandler(options)
+  )
+  router.post(
+    MODERATION_DECISIONS_PATH,
+    noStore,
+    createDecisionAuthMiddleware({ trustedCatalystUrl: options.config.trustedCatalystUrl }),
+    createModerationDecisionHandler(options)
   )
   return router
 }

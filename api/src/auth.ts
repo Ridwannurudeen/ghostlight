@@ -28,6 +28,17 @@ export type SceneMetadata = Readonly<{
 export type SceneAuthContext = DecentralandSignatureContext<SceneMetadata>
 export type ApiAuthContext = DecentralandSignatureContext<Record<string, unknown>>
 
+export type PublishWalletMetadata = Readonly<{
+  sceneId: string
+  hashPayload: string
+}> &
+  Readonly<Record<string, unknown>>
+
+export type DecisionWalletMetadata = Readonly<{
+  hashPayload: string
+}> &
+  Readonly<Record<string, unknown>>
+
 export type SceneAuthOptions = Readonly<{
   allowedSceneIds: readonly string[]
   trustedCatalystUrl: string
@@ -39,6 +50,8 @@ export type WalletAuthOptions = Readonly<{
 
 const METADATA_KEYS = new Set(['sceneId', 'parcel', 'tld', 'network', 'isGuest', 'signer', 'realm', 'hashPayload'])
 const REALM_KEYS = new Set(['hostname', 'protocol', 'serverName'])
+const PUBLISH_WALLET_METADATA_KEYS = new Set(['sceneId', 'hashPayload'])
+const DECISION_WALLET_METADATA_KEYS = new Set(['hashPayload'])
 const SHA_256 = /^[0-9a-f]{64}$/u
 const AUTH_EXPIRATION_MILLISECONDS = 60_000
 const MAX_AUTH_CHAIN_LENGTH = 3
@@ -83,9 +96,7 @@ async function bufferAuthResponse(response: Response) {
   })
 }
 
-export function createBoundedAuthFetcher(
-  fetchImpl: AuthFetch = (input, init) => globalThis.fetch(input, init)
-) {
+export function createBoundedAuthFetcher(fetchImpl: AuthFetch = (input, init) => globalThis.fetch(input, init)) {
   let activeRequests = 0
 
   return {
@@ -165,6 +176,31 @@ export function isSceneMetadata(
   return matchesSceneMetadata(metadata, new Set(allowedSceneIds))
 }
 
+export function isPublishWalletMetadata(
+  metadata: Record<string, unknown>,
+  allowedSceneIds: readonly string[]
+): metadata is PublishWalletMetadata {
+  return (
+    hasExactKeys(metadata, PUBLISH_WALLET_METADATA_KEYS) &&
+    typeof metadata.sceneId === 'string' &&
+    new Set(allowedSceneIds).has(metadata.sceneId) &&
+    typeof metadata.hashPayload === 'string' &&
+    SHA_256.test(metadata.hashPayload)
+  )
+}
+
+export function isDecisionWalletMetadata(metadata: Record<string, unknown>): metadata is DecisionWalletMetadata {
+  return (
+    hasExactKeys(metadata, DECISION_WALLET_METADATA_KEYS) &&
+    typeof metadata.hashPayload === 'string' &&
+    SHA_256.test(metadata.hashPayload)
+  )
+}
+
+export function isEmptyWalletMetadata(metadata: Record<string, unknown>) {
+  return Object.keys(metadata).length === 0
+}
+
 type RequiredAuthOptions<P extends Record<string, unknown>> = Readonly<{
   trustedCatalystUrl: string
   metadataValidator: (metadata: P) => boolean
@@ -217,5 +253,42 @@ export function createWalletAuthMiddleware(
   return createRequiredAuthMiddleware({
     trustedCatalystUrl: options.trustedCatalystUrl,
     metadataValidator: rejectIfSigner(SCENE_SIGNER)
+  })
+}
+
+export function createPublishAuthMiddleware(
+  options: SceneAuthOptions
+): IHttpServerComponent.IRequestHandler<ApiAuthContext> {
+  const allowedSceneIds = new Set(options.allowedSceneIds)
+  const directWallet = rejectIfSigner(SCENE_SIGNER)
+  return createRequiredAuthMiddleware<PublishWalletMetadata>({
+    trustedCatalystUrl: options.trustedCatalystUrl,
+    metadataValidator: (metadata) =>
+      directWallet(metadata) &&
+      hasExactKeys(metadata, PUBLISH_WALLET_METADATA_KEYS) &&
+      typeof metadata.sceneId === 'string' &&
+      allowedSceneIds.has(metadata.sceneId) &&
+      typeof metadata.hashPayload === 'string' &&
+      SHA_256.test(metadata.hashPayload)
+  })
+}
+
+export function createDecisionAuthMiddleware(
+  options: WalletAuthOptions
+): IHttpServerComponent.IRequestHandler<ApiAuthContext> {
+  const directWallet = rejectIfSigner(SCENE_SIGNER)
+  return createRequiredAuthMiddleware<DecisionWalletMetadata>({
+    trustedCatalystUrl: options.trustedCatalystUrl,
+    metadataValidator: (metadata) => directWallet(metadata) && isDecisionWalletMetadata(metadata)
+  })
+}
+
+export function createQueueAuthMiddleware(
+  options: WalletAuthOptions
+): IHttpServerComponent.IRequestHandler<ApiAuthContext> {
+  const directWallet = rejectIfSigner(SCENE_SIGNER)
+  return createRequiredAuthMiddleware({
+    trustedCatalystUrl: options.trustedCatalystUrl,
+    metadataValidator: (metadata) => directWallet(metadata) && isEmptyWalletMetadata(metadata)
   })
 }
