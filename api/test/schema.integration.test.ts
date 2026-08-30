@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { Client } from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { createDatabase, type DatabaseClient } from '../src/database.js'
 
 const databaseUrl = process.env.TEST_DATABASE_URL
 const initialMigration = readFileSync(fileURLToPath(new URL('../migrations/001_initial.sql', import.meta.url)), 'utf8')
@@ -26,6 +27,21 @@ describeDatabase('initial schema against PostgreSQL', () => {
     await client.query('SET search_path TO public')
     await client.query(`DROP SCHEMA "${schema}" CASCADE`)
     await client.end()
+  })
+
+  it('applies the bounded server statement timeout to pooled sessions', async () => {
+    if (databaseUrl === undefined) throw new Error('TEST_DATABASE_URL is required')
+    const database = createDatabase(databaseUrl)
+    let connection: DatabaseClient | undefined
+
+    try {
+      connection = await database.connect()
+      const result = await connection.query('SHOW statement_timeout')
+      expect(result.rows).toEqual([{ statement_timeout: '4s' }])
+    } finally {
+      connection?.release()
+      await database.close()
+    }
   })
 
   it('executes both migrations twice and preserves existing rows while upgrading the schema', async () => {

@@ -256,8 +256,11 @@ requests, a three-second full-response deadline, and a 16 KiB response body. Exc
 
 Configured scenes are upserted at startup without deleting historical allowlist rows. The service applies the
 ordered, rerunnable `001_initial.sql` and `002_audit_export.sql` migrations behind a session advisory lock before it
-starts listening. PostgreSQL connections have a five-second acquisition timeout, and shutdown closes the HTTP
-listener before the pool.
+starts listening. PostgreSQL connections have a five-second acquisition timeout; every pooled query has a four-second
+server statement timeout and a 4.5-second client completion timeout. These bounds also apply to migrations, seeding,
+maintenance, readiness, and request work: a startup timeout prevents the service from listening, periodic maintenance
+retries after a failure, and readiness or request failures remain sanitized. Shutdown closes the HTTP listener before
+the pool.
 
 ## Build and verification
 

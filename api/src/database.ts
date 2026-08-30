@@ -26,6 +26,8 @@ export interface DatabasePool extends DatabaseConnectionSource {
 const MIGRATION_LOCK_NAMESPACE = 1_195_912_019
 const MIGRATION_LOCK_ID = 1
 const CONNECTION_TIMEOUT_MILLISECONDS = 5_000
+const STATEMENT_TIMEOUT_MILLISECONDS = 4_000
+const QUERY_TIMEOUT_MILLISECONDS = 4_500
 const migrationPaths = Object.freeze([
   fileURLToPath(new URL('../migrations/001_initial.sql', import.meta.url)),
   fileURLToPath(new URL('../migrations/002_audit_export.sql', import.meta.url))
@@ -138,7 +140,12 @@ export class Database implements DatabaseConnectionSource {
 export function createDatabase(databaseUrl: string) {
   return new Database(
     new PostgresPoolAdapter(
-      new Pool({ connectionString: databaseUrl, connectionTimeoutMillis: CONNECTION_TIMEOUT_MILLISECONDS })
+      new Pool({
+        connectionString: databaseUrl,
+        connectionTimeoutMillis: CONNECTION_TIMEOUT_MILLISECONDS,
+        statement_timeout: STATEMENT_TIMEOUT_MILLISECONDS,
+        query_timeout: QUERY_TIMEOUT_MILLISECONDS
+      })
     )
   )
 }
