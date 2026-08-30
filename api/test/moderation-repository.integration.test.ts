@@ -519,6 +519,64 @@ describeDatabase('moderation repository against PostgreSQL', () => {
     expect(counts.rows).toEqual([{ hides: '1', decisions: '1', audits: '1', open_reports: '0' }])
   })
 
+  it('requires affirmative touring consent in addition to channel and moderation eligibility', async () => {
+    const moderation = repository()
+    const inputs = [
+      { id: 'trusted-opt-in', content: 'Trusted opted in', actor: ACTOR_A, consent: true },
+      { id: 'curated-opt-in', content: 'Curated opted in', actor: ACTOR_A, consent: true },
+      { id: 'trusted-opt-out', content: 'Trusted opted out', actor: ACTOR_A, consent: false },
+      { id: 'curated-opt-out', content: 'Curated opted out', actor: ACTOR_A, consent: false },
+      { id: 'untrusted-opt-in', content: 'Untrusted opted in', actor: ACTOR_A, consent: true },
+      { id: 'quarantined-opt-in', content: 'Quarantined opted in', actor: ACTOR_A, consent: true },
+      { id: 'tombstoned-opt-in', content: 'Tombstoned opted in', actor: ACTOR_A, consent: true },
+      { id: 'hidden-opt-in', content: 'Hidden opted in', actor: ACTOR_B, consent: true }
+    ] as const
+
+    for (const [index, input] of inputs.entries()) {
+      await expect(
+        moderation.publish(
+          'scene-a',
+          { ...subject(input.id, input.content), touringConsent: input.consent },
+          publishIdentity(input.actor, index + 1),
+          NOW
+        )
+      ).resolves.toMatchObject({ status: 'published' })
+    }
+
+    await inspect.query(
+      `UPDATE moderation_subjects
+       SET channel = 'trusted'
+       WHERE id = ANY($1::text[])`,
+      [['trusted-opt-in', 'trusted-opt-out', 'quarantined-opt-in', 'tombstoned-opt-in', 'hidden-opt-in']]
+    )
+    await inspect.query(
+      `UPDATE moderation_subjects
+       SET channel = 'curated'
+       WHERE id = ANY($1::text[])`,
+      [['curated-opt-in', 'curated-opt-out']]
+    )
+    await moderation.decide(
+      decision('quarantine-opt-in', 'quarantined-opt-in', 'quarantined'),
+      decisionIdentity(20),
+      NOW
+    )
+    await moderation.decide(decision('tombstone-opt-in', 'tombstoned-opt-in', 'tombstoned'), decisionIdentity(21), NOW)
+    await moderation.decide(decision('shadow-hide-opt-in', 'hidden-opt-in', 'shadow-hidden'), decisionIdentity(22), NOW)
+
+    await expect(moderation.eligible('trusted-opt-in')).resolves.toMatchObject({ status: 'eligible' })
+    await expect(moderation.eligible('curated-opt-in')).resolves.toMatchObject({ status: 'eligible' })
+    for (const id of [
+      'trusted-opt-out',
+      'curated-opt-out',
+      'untrusted-opt-in',
+      'quarantined-opt-in',
+      'tombstoned-opt-in',
+      'hidden-opt-in'
+    ]) {
+      await expect(moderation.eligible(id)).resolves.toEqual({ status: 'unavailable' })
+    }
+  })
+
   it('serializes a cross-subject report racing the first author shadow-hide without leaving an open report', async () => {
     const moderation = repository()
     await moderation.publish('scene-a', subject('subject-1', 'Shadow race decision'), publishIdentity(ACTOR_A, 1), NOW)

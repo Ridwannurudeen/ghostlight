@@ -25,8 +25,10 @@ performances spanning all six themes. House content is excluded from player stat
    reveals the verdict, cues the audience, and reports the aggregate result.
 5. Answer back with a new performance of the same phrase, make a new charade from the fixed phrase deck, or send
    a private Ghost Mail to a recent real performer.
-6. Preview and post the ordered three-emote performance, inspect today's boards, or copy a general World invite
-   for a friend. The server selects eligible content after arrival; the link does not target one charade.
+6. Preview and post the ordered three-emote performance. An ordinary charade can explicitly opt into future
+   touring to other Worlds from this final confirmation; the control starts off. Then inspect today's boards or
+   copy a general World invite for a friend. The server selects eligible content after arrival; the link does not
+   target one charade.
 7. Return later to see how many people understood your ghosts, whether anyone answered back, and how much Ghost Mail
    is waiting.
 
@@ -80,10 +82,20 @@ without typing an address or message. The server persists it outside the public 
 only to its recipient, and allows that recipient to decode and Answer Back. Guests, self-sends, and unknown
 recipients are rejected.
 
+## Touring consent
+
+The ordinary Preview/Post confirmation includes one `ALLOW TOUR TO OTHER WORLDS` control. It is off by default for
+every new draft and must be deliberately enabled to opt in before posting. The selected value remains attached to
+that draft through emote changes and network retries. Answer Back and Ghost Mail never show the control and always
+post with touring consent set to false.
+
+This release records the opt-in only as part of the authored performance. No shared touring read, cross-World feed,
+or client-facing touring API exists yet, and the separate `api/` service is not wired to this consent.
+
 ## Languages and accessibility
 
 English is the default; Settings cycles English, Spanish, and Portuguese without text entry. The client bundle
-contains 183 interface strings and all 120 phrase texts in each language under stable IDs. The server sends
+contains 206 interface strings and all 120 phrase texts in each language under stable IDs. The server sends
 canonical phrase and answer IDs alongside compatibility fallback text, so authors and decoders can use different
 languages while retaining answer options from the same theme.
 
@@ -98,7 +110,7 @@ motion shortens the reveal to three seconds while retaining the verdict, sound, 
 | Start decoding | Follow the static `WALK TO THE STAGE` instruction, then tap `DECODE A GHOST` in the house or stage area. |
 | Guess | Tap one of three 96 px answer buttons. Required UI stays inside Decentraland's interactable screen inset. |
 | Watch again | Tap `REPLAY` to restart the current solo performance or duet. |
-| Make a charade | Tap `MAKE YOUR OWN`, accept or shuffle the dealt phrase, continue to five-emote selection, then choose three in order. The third choice advances to a separate Preview/Post confirmation. |
+| Make a charade | Tap `MAKE YOUR OWN`, accept or shuffle the dealt phrase, continue to five-emote selection, then choose three in order. The third choice advances to a separate Preview/Post confirmation with one off-by-default touring opt-in. |
 | Answer back | After an eligible reveal, tap `ANSWER BACK`, choose three emotes for the same phrase, preview, then send the reply. |
 | Send Ghost Mail | Tap `GHOST MAIL`, choose a recent real performer, then use the normal phrase, emote, preview, and send flow. No address or message entry is required. |
 | React in a live round | While watching an active round in the stage area, open `REACT`. Laugh, Gasp, and Applause replace the other actions, trigger one local emote and stamp, and relay once to the other players present. |
@@ -132,7 +144,8 @@ The separate `api/` service is an undeployed PostgreSQL-backed foundation for si
 analytics and persistent moderation staging. It is not wired into the current World candidate. Its authenticated
 ingestion, untrusted publishing, privacy-bounded reporting, and role-gated moderator/export boundaries are documented
 in [`api/README.md`](api/README.md). HTTP-published content cannot enter a shared pool because this slice has no
-positive approval or channel-elevation path.
+positive approval or channel-elevation path. It also has no shared touring read and is not wired to the World
+client's touring-consent field.
 
 The client sends intents such as guess, post, and react. It never supplies the avatar look used for a stored
 performance; the server snapshots Decentraland's player ECS data. All persisted values are serialized JSON, and

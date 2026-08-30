@@ -1,6 +1,6 @@
 import type { PlayerTitle } from './config'
 
-export const STORAGE_SCHEMA_VERSION = 2
+export const STORAGE_SCHEMA_VERSION = 3
 export const SHOW_SET_SIZE = 5
 
 export type Color = {
@@ -21,6 +21,7 @@ export type Look = {
 }
 
 export type CharadeReply = {
+  requestId: string | null
   address: string
   name: string
   look: Look
@@ -41,6 +42,7 @@ export type Charade = {
   }
   lastGuessAt: number
   isHouse: boolean
+  touringConsent: boolean
   recipient?: string
   reply?: CharadeReply
 }

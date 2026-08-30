@@ -861,16 +861,30 @@ describe('moderator queue and public eligibility', () => {
     malformed.assertComplete()
   })
 
-  it('collapses unknown, non-published, and active shadow-hidden subjects into unavailable eligibility', async () => {
+  it('requires touring consent and maps only eligible trusted subjects while collapsing unavailable results', async () => {
     const eligible = new ScriptedClient([{ result: oneRow(subjectRow({ channel: 'trusted' })) }])
     const unavailable = new ScriptedClient([{ result: emptyResult() }])
     const moderation = repository(new ScriptedDatabase([eligible, unavailable]))
 
-    await expect(moderation.eligible('subject-1')).resolves.toMatchObject({ status: 'eligible' })
+    await expect(moderation.eligible('subject-1')).resolves.toEqual({
+      status: 'eligible',
+      subject: {
+        id: 'subject-1',
+        sceneId: 'scene-a',
+        authorAddress: ACTOR,
+        content: 'The ghost bows.',
+        channel: 'trusted',
+        status: 'published',
+        touringConsent: true,
+        createdAt: NOW,
+        deletedAt: null
+      }
+    })
     await expect(moderation.eligible('subject-2')).resolves.toEqual({ status: 'unavailable' })
 
     expect(eligible.calls[0]?.text).toContain("subjects.status = 'published'")
     expect(eligible.calls[0]?.text).toContain("subjects.channel IN ('curated', 'trusted')")
+    expect(eligible.calls[0]?.text).toContain('subjects.touring_consent = TRUE')
     expect(eligible.calls[0]?.text).toContain('FROM shadow_hides')
     expect(eligible.calls[0]?.text).toContain('hides.lifted_at IS NULL')
     expect(eligible.releases).toEqual([undefined])

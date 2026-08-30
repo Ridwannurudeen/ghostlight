@@ -30,6 +30,7 @@ const uiActions = vi.hoisted(() => ({
   beginAuthoring: vi.fn(),
   requestNextCharade: vi.fn(),
   toggleSpotlight: vi.fn(),
+  toggleTouringConsent: vi.fn(),
   moreAuthorEmotes: vi.fn(),
   setInviteStatus: vi.fn()
 }))
@@ -69,6 +70,8 @@ vi.mock('../src/client/ghosts', () => ({
 vi.mock('../src/client/flow', () => ({
   canAnswerBack: () => uiTest.canReply,
   canSendMail: () => uiTest.mailRecipients.length > 0,
+  canToggleTouringConsent: (author: Record<string, unknown> | null) =>
+    author?.phase === 'confirm' && !author.replyTo && !author.recipient,
   canSpectatorReact: (state: Record<string, unknown>) =>
     state.ready === true &&
     (state.screen === 'foyer' || (state.screen === 'reveal' && state.reveal?.correct === false)) &&
@@ -86,6 +89,7 @@ vi.mock('../src/client/flow', () => ({
     backFromAuthor: vi.fn(),
     continueAuthoring: vi.fn(),
     reviseAuthorEmotes: vi.fn(),
+    toggleTouringConsent: uiActions.toggleTouringConsent,
     selectAuthorEmote: vi.fn(),
     moreAuthorEmotes: uiActions.moreAuthorEmotes,
     shuffleAuthorPhrase: vi.fn(),
@@ -300,6 +304,7 @@ function authorState(selectedEmotes: string[]) {
       emotePage: 0,
       selectedEmotes,
       shufflesRemaining: 2,
+      touringConsent: false,
       phase: selectedEmotes.length === 3 ? 'confirm' : 'emotes'
     }
   }
@@ -508,7 +513,7 @@ describe('mobile control budget', () => {
   it.each([
     ['phrase', 3],
     ['emotes', 5],
-    ['confirm', 4]
+    ['confirm', 5]
   ] as const)('keeps author %s phase within five buttons', (phase, expected) => {
     uiTest.state = {
       ...stateFor('decode'),
@@ -519,6 +524,7 @@ describe('mobile control budget', () => {
         emotePage: 0,
         selectedEmotes: phase === 'confirm' ? ['wave', 'clap', 'dab'] : [],
         shufflesRemaining: 2,
+        touringConsent: false,
         phase
       }
     }
@@ -534,6 +540,42 @@ describe('mobile control budget', () => {
       }
       ;(findButton(component, 'MORE')?.onMouseDown as (() => void) | undefined)?.()
       expect(uiActions.moreAuthorEmotes).toHaveBeenCalledTimes(1)
+    } else if (phase === 'confirm') {
+      expect(buttons.map(({ value }) => value)).toEqual([
+        'PREVIEW',
+        'ALLOW TOUR TO OTHER WORLDS · OFF',
+        'POST',
+        'CHANGE EMOTES',
+        'BACK'
+      ])
+      for (const { value } of buttons) {
+        expect(findButton(component, value)?.uiTransform).toMatchObject({ minHeight: 72, height: 72 })
+      }
+      ;(findButton(component, 'ALLOW TOUR TO OTHER WORLDS · OFF')?.onMouseDown as (() => void) | undefined)?.()
+      expect(uiActions.toggleTouringConsent).toHaveBeenCalledTimes(1)
+    }
+  })
+
+  it('shows touring consent only for ordinary confirmation, never Ghost Mail or Answer Back', () => {
+    const ordinary = authorState(['wave', 'clap', 'dab'])
+    uiTest.state = {
+      ...ordinary,
+      author: { ...(ordinary.author as Record<string, unknown>), touringConsent: true }
+    }
+    expect(collectButtons(uiComponent()).map(({ value }) => value)).toContain('ALLOW TOUR TO OTHER WORLDS · ON')
+
+    for (const privateDraft of [
+      { ...(ordinary.author as Record<string, unknown>), replyTo: 'charade-1', touringConsent: true },
+      {
+        ...(ordinary.author as Record<string, unknown>),
+        recipient: { address: '0xRecipient', name: 'Recipient' },
+        touringConsent: true
+      }
+    ]) {
+      uiTest.state = { ...ordinary, author: privateDraft }
+      const buttons = collectButtons(uiComponent())
+      expect(buttons).toHaveLength(4)
+      expect(buttons.some(({ value }) => value.includes('OTHER WORLDS'))).toBe(false)
     }
   })
 

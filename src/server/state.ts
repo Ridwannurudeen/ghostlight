@@ -54,13 +54,14 @@ const MAX_FUTURE_SKEW_MILLISECONDS = 5 * 60 * 1000
 const MAX_STORED_ID_BYTES = 128
 const MAX_STORED_NAME_BYTES = 128
 const MAX_STORED_URN_BYTES = 512
+const MAX_REPLY_REQUEST_ID_BYTES = 64
 const MAX_STORED_WEARABLES = 20
 const MAX_RECENT_VISITOR_INPUTS = AUDIENCE_SEATS * 4
 export const MAX_PLAYER_SEEN_IDS = 512
 export const MAX_INDEX_IDS_PER_DAY = 128
 export const MAX_LIVE_CHARADES = 512
 export const MAX_DAILY_DECODERS = 256
-const SUPPORTED_STORAGE_VERSIONS = new Set([0, 1, STORAGE_SCHEMA_VERSION])
+const SUPPORTED_STORAGE_VERSIONS = new Set([0, 1, 2, STORAGE_SCHEMA_VERSION])
 const HOUSE_CHARADE_IDS = new Set(HOUSE_CHARADES.map((charade) => charade.id))
 const PHRASE_IDS = new Set(DECK.map((phrase) => phrase.id))
 const VALID_EMOTES = new Set<string>(EMOTE_VOCABULARY)
@@ -286,12 +287,20 @@ export function migrateLook(value: unknown): Look | null {
   }
 }
 
-export function migrateReply(value: unknown): CharadeReply | null {
+export function migrateReply(value: unknown, legacy = false): CharadeReply | null {
   const stored = asObject(value)
   if (!stored) return null
   const look = migrateLook(stored.look)
   const emotes = exactStrings(stored.emotes, 3, 64)
+  const requestId: string | null = legacy
+    ? null
+    : typeof stored.requestId === 'string' &&
+        stored.requestId.length > 0 &&
+        utf8Bytes(stored.requestId) <= MAX_REPLY_REQUEST_ID_BYTES
+      ? stored.requestId
+      : null
   if (
+    (!legacy && requestId === null) ||
     typeof stored.address !== 'string' ||
     typeof stored.name !== 'string' ||
     !look ||
@@ -304,6 +313,7 @@ export function migrateReply(value: unknown): CharadeReply | null {
     return null
   }
   return {
+    requestId,
     address: stored.address,
     name: stored.name,
     look,
@@ -345,6 +355,13 @@ export function migrateCharade(value: unknown, context: { expectedDay?: string; 
   }
 
   const total = asNonNegativeInt(guesses.total)
+  const touringConsent =
+    stored.v === STORAGE_SCHEMA_VERSION
+      ? typeof stored.touringConsent === 'boolean'
+        ? stored.touringConsent
+        : null
+      : false
+  if (touringConsent === null || (stored.isHouse && touringConsent)) return null
   const migrated: Charade = {
     v: STORAGE_SCHEMA_VERSION,
     id: stored.id,
@@ -357,14 +374,16 @@ export function migrateCharade(value: unknown, context: { expectedDay?: string; 
       correct: Math.min(asNonNegativeInt(guesses.correct), total)
     },
     lastGuessAt,
-    isHouse: stored.isHouse
+    isHouse: stored.isHouse,
+    touringConsent
   }
-  if (stored.v === STORAGE_SCHEMA_VERSION && stored.recipient !== undefined) {
+  if (stored.v >= 2 && stored.recipient !== undefined) {
     if (typeof stored.recipient !== 'string' || !STABLE_ADDRESS.test(stored.recipient)) return null
+    if (touringConsent) return null
     migrated.recipient = stored.recipient
   }
-  if (stored.v === STORAGE_SCHEMA_VERSION && !stored.isHouse) {
-    const reply = migrateReply(stored.reply)
+  if (stored.v >= 2 && !stored.isHouse) {
+    const reply = migrateReply(stored.reply, stored.v < STORAGE_SCHEMA_VERSION)
     if (reply) migrated.reply = reply
   }
   return migrated

@@ -17,7 +17,15 @@ type PingPayload = { seq: number }
 type NextCharadePayload = { requestId: string; exclude: string[] }
 type GuessPayload = { charadeId: string; answerIndex: number; requestId: string; spotlight?: boolean }
 type RoundGuessPayload = GuessPayload & { roundId: string }
-type PostPayload = { phraseId: string; emotes: string[]; requestId: string; replyTo?: string; recipient?: string }
+type PostPayload = {
+  phraseId: string
+  emotes: string[]
+  requestId: string
+  touringConsent: boolean
+  replyTo?: string
+  recipient?: string
+}
+type PostPayloadInput = Omit<PostPayload, 'touringConsent'> & { touringConsent?: unknown }
 type ReactPayload = { kind: string }
 
 type RevealPayload = {
@@ -66,6 +74,19 @@ type PostedPayload = {
   nextUnlock: PlayerProgress['nextUnlock']
   titleUnlocked: boolean
 }
+
+type AuthoredPost = {
+  phraseId: string
+  emotes: string[]
+  touringConsent: boolean
+  replyTo?: string
+  recipient?: string
+}
+
+type CompletedRequest =
+  | { type: 'retry'; data: RetryPayload; durable: boolean }
+  | { type: 'reveal'; data: RevealPayload; durable: boolean }
+  | { type: 'posted'; data: PostedPayload; durable: boolean; authoredPost: AuthoredPost }
 
 type PreparedCharade = {
   charade: Charade
@@ -234,6 +255,65 @@ function charadeId(address: string, requestId: string) {
   return `ghost-${hashText(source, 0)}${hashText(source, 0x9e3779b9)}`
 }
 
+function snapshotAuthoredPost(data: PostPayload): AuthoredPost {
+  return {
+    phraseId: data.phraseId,
+    emotes: [...data.emotes],
+    touringConsent: data.touringConsent,
+    ...(data.replyTo === undefined ? {} : { replyTo: data.replyTo }),
+    ...(data.recipient === undefined ? {} : { recipient: canonicalAddress(data.recipient) })
+  }
+}
+
+function sameAuthoredPost(left: AuthoredPost, right: AuthoredPost) {
+  return (
+    left.phraseId === right.phraseId &&
+    left.emotes.length === right.emotes.length &&
+    left.emotes.every((emote, index) => emote === right.emotes[index]) &&
+    left.touringConsent === right.touringConsent &&
+    left.replyTo === right.replyTo &&
+    left.recipient === right.recipient
+  )
+}
+
+function storedCharadeMatchesPost(charade: Charade, author: string, post: AuthoredPost) {
+  return (
+    post.replyTo === undefined &&
+    canonicalAddress(charade.author.address) === author &&
+    charade.phraseId === post.phraseId &&
+    charade.emotes.length === post.emotes.length &&
+    charade.emotes.every((emote, index) => emote === post.emotes[index]) &&
+    charade.touringConsent === post.touringConsent &&
+    (charade.recipient === undefined ? undefined : canonicalAddress(charade.recipient)) === post.recipient
+  )
+}
+
+function findStoredReplyRequest(state: GhostlightState, replier: string, requestId: string) {
+  return (
+    state
+      .getPlayerCharades()
+      .find(
+        (charade) => charade.reply?.requestId === requestId && canonicalAddress(charade.reply.address) === replier
+      ) ?? null
+  )
+}
+
+function storedReplyMatchesPost(charade: Charade, replier: string, requestId: string, post: AuthoredPost) {
+  const reply = charade.reply
+  return (
+    reply !== undefined &&
+    reply.requestId === requestId &&
+    reply.requestId.length <= MAX_WIRE_ID_BYTES &&
+    canonicalAddress(reply.address) === replier &&
+    post.replyTo === charade.id &&
+    post.recipient === undefined &&
+    post.touringConsent === false &&
+    post.phraseId === charade.phraseId &&
+    reply.emotes.length === post.emotes.length &&
+    reply.emotes.every((emote, index) => emote === post.emotes[index])
+  )
+}
+
 function sleep(milliseconds: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, milliseconds))
 }
@@ -280,14 +360,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
   const lastAuthors = new Map<string, string>()
   const lastPosts = new Map<string, number>()
   const lastReactions = new Map<string, number>()
-  const completedRequests = new Map<
-    string,
-    CachedRequest<{
-      type: 'retry' | 'reveal' | 'posted'
-      data: RetryPayload | RevealPayload | PostedPayload
-      durable: boolean
-    }>
-  >()
+  const completedRequests = new Map<string, CachedRequest<CompletedRequest>>()
   const nextRequests = new Map<string, CachedRequest<Promise<PreparedCharade | null>>>()
   const activeRequestHandlers = new Map<string, Promise<void>>()
   const outstandingRequests = new Map<string, number>()
@@ -573,7 +646,11 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       currentDay = nextDay
       currentShow = nextShow
       for (const { address, generation } of scheduleSessions) {
-        if (generation === null || !isCurrentSession(address, generation) || !negotiated.has(canonicalAddress(address))) {
+        if (
+          generation === null ||
+          !isCurrentSession(address, generation) ||
+          !negotiated.has(canonicalAddress(address))
+        ) {
           continue
         }
         await sendTo(address, 'ready', readyPayload(timestamp))
@@ -785,10 +862,9 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     const rankIndex = options.state.boards.decoders.findIndex((row) => canonicalAddress(row.address) === key)
     const pending = { ...stats.pending }
     const canReceiveMail = !look.isGuest && STABLE_ADDRESS.test(look.address)
-    pending.mail =
-      canReceiveMail
-        ? options.state.countMailForRecipient(look.address, stats.seen, currentShow?.primaryPhraseIds ?? NO_PHRASE_IDS)
-        : 0
+    pending.mail = canReceiveMail
+      ? options.state.countMailForRecipient(look.address, stats.seen, currentShow?.primaryPhraseIds ?? NO_PHRASE_IDS)
+      : 0
     const progress = progressFor(stats)
 
     options.state.consumePending(key, !look.isGuest)
@@ -820,10 +896,9 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       throw error
     }
     if (welcomePromises.get(key) !== owner || !isCurrentSession(key, generation)) return false
-    pending.mail =
-      canReceiveMail
-        ? options.state.countMailForRecipient(look.address, stats.seen, currentShow?.primaryPhraseIds ?? NO_PHRASE_IDS)
-        : 0
+    pending.mail = canReceiveMail
+      ? options.state.countMailForRecipient(look.address, stats.seen, currentShow?.primaryPhraseIds ?? NO_PHRASE_IDS)
+      : 0
     if (pending.triedYou > 0 || pending.replies > 0 || pending.mail > 0) {
       await sendTo(address, 'since', {
         triedYou: pending.triedYou,
@@ -1300,7 +1375,10 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     }
     if (!(await rolloverOrError(address, generation, undefined, data.requestId))) return
     if (!isCurrentSession(address, generation)) return
-    if (!isCurrentServed(served.showKey, servedKey, servedState) || !isCurrentRoundGuess(key, roundId, data.charadeId)) {
+    if (
+      !isCurrentServed(served.showKey, servedKey, servedState) ||
+      !isCurrentRoundGuess(key, roundId, data.charadeId)
+    ) {
       await sendError(address, 'invalid-guess', data.requestId)
       return
     }
@@ -1356,7 +1434,10 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     }
     if (!(await rolloverOrError(address, generation, undefined, data.requestId))) return
     if (!isCurrentSession(address, generation)) return
-    if (!isCurrentServed(served.showKey, servedKey, servedState) || !isCurrentRoundGuess(key, roundId, data.charadeId)) {
+    if (
+      !isCurrentServed(served.showKey, servedKey, servedState) ||
+      !isCurrentRoundGuess(key, roundId, data.charadeId)
+    ) {
       await sendError(address, 'invalid-guess', data.requestId)
       return
     }
@@ -1441,7 +1522,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     if (countable) await refreshBoards()
   }
 
-  async function handlePost(data: PostPayload, address: string) {
+  async function handlePost(data: PostPayloadInput, address: string) {
     await ready
     const correlatedRequestId = validWireString(data.requestId) ? data.requestId : undefined
     const generation = sessionGeneration(address)
@@ -1461,9 +1542,22 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       await sendError(address, data.replyTo === undefined ? 'invalid-post' : 'invalid-reply')
       return
     }
+    if (typeof data.touringConsent !== 'boolean') {
+      await sendError(address, data.replyTo === undefined ? 'invalid-post' : 'invalid-reply', data.requestId)
+      return
+    }
+    if ((data.replyTo !== undefined || data.recipient !== undefined) && data.touringConsent) {
+      await sendError(address, data.replyTo === undefined ? 'invalid-post' : 'invalid-reply', data.requestId)
+      return
+    }
+    const authoredPost = snapshotAuthoredPost({ ...data, touringConsent: data.touringConsent })
     const idempotencyKey = requestKey(key, 'post', data.requestId)
     const completed = cacheGet(completedRequests, idempotencyKey)
     if (completed) {
+      if (completed.type !== 'posted' || !sameAuthoredPost(completed.authoredPost, authoredPost)) {
+        await sendError(address, data.replyTo === undefined ? 'invalid-post' : 'invalid-reply', data.requestId)
+        return
+      }
       if (!completed.durable) {
         if (!(await checkpointOrError(address, generation, data.requestId))) return
         completed.durable = true
@@ -1477,6 +1571,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       await sendError(address, data.recipient !== undefined ? 'mail-guest' : 'post-guest', data.requestId)
       return
     }
+    const storedReplyRequest = findStoredReplyRequest(options.state, key, data.requestId)
     if (data.replyTo !== undefined) {
       if (
         !validWireString(data.requestId) ||
@@ -1485,6 +1580,14 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         !data.phraseId ||
         data.emotes.length !== 3 ||
         data.emotes.some((emote) => !EMOTES.has(emote))
+      ) {
+        await sendError(address, 'invalid-reply', data.requestId)
+        return
+      }
+      const storedCharadeRequest = options.state.getCharade(charadeId(key, data.requestId))
+      if (
+        (storedCharadeRequest && canonicalAddress(storedCharadeRequest.author.address) === key) ||
+        (storedReplyRequest && !storedReplyMatchesPost(storedReplyRequest, key, data.requestId, authoredPost))
       ) {
         await sendError(address, 'invalid-reply', data.requestId)
         return
@@ -1504,12 +1607,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         await sendError(address, 'reply-not-eligible', data.requestId)
         return
       }
-      const existingReply = target.reply
-      if (existingReply) {
-        if (canonicalAddress(existingReply.address) !== key) {
-          await sendError(address, 'reply-taken', data.requestId)
-          return
-        }
+      if (storedReplyRequest) {
         const posted: PostedPayload = {
           requestId: data.requestId,
           charadeId: target.id,
@@ -1520,12 +1618,21 @@ export function createServerProtocol(options: ServerProtocolOptions) {
           ...progressFor(stats),
           titleUnlocked: false
         }
-        const request = { type: 'posted' as const, data: posted, durable: false }
+        const request = { type: 'posted' as const, data: posted, durable: false, authoredPost }
         cacheSet(completedRequests, idempotencyKey, key, request)
         if (!(await checkpointOrError(address, generation, data.requestId))) return
         request.durable = true
         if (!isCurrentSession(address, generation)) return
         await sendTo(address, 'posted', posted)
+        return
+      }
+      const existingReply = target.reply
+      if (existingReply) {
+        await sendError(
+          address,
+          canonicalAddress(existingReply.address) === key ? 'invalid-reply' : 'reply-taken',
+          data.requestId
+        )
         return
       }
       const replyShow = currentShow
@@ -1566,6 +1673,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       let attached: boolean
       try {
         attached = options.state.attachReply(target.id, {
+          requestId: data.requestId,
           address: replyLook.address,
           name: replyLook.name,
           look: replyLook,
@@ -1578,9 +1686,13 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         return
       }
       if (!attached) {
-        const winner = options.state.getCharade(target.id)?.reply
-        if (!winner || canonicalAddress(winner.address) !== key) {
+        const winner = options.state.getCharade(target.id)
+        if (!winner?.reply || canonicalAddress(winner.reply.address) !== key) {
           await sendError(address, 'reply-taken', data.requestId)
+          return
+        }
+        if (!storedReplyMatchesPost(winner, key, data.requestId, authoredPost)) {
+          await sendError(address, 'invalid-reply', data.requestId)
           return
         }
       } else {
@@ -1597,7 +1709,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         ...progressFor(stats),
         titleUnlocked: false
       }
-      const request = { type: 'posted' as const, data: posted, durable: false }
+      const request = { type: 'posted' as const, data: posted, durable: false, authoredPost }
       cacheSet(completedRequests, idempotencyKey, key, request)
       if (!(await checkpointOrError(address, generation, data.requestId))) return
       request.durable = true
@@ -1615,10 +1727,18 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       await sendError(address, 'invalid-post', data.requestId)
       return
     }
+    if (storedReplyRequest) {
+      await sendError(address, 'invalid-post', data.requestId)
+      return
+    }
 
     const id = charadeId(key, data.requestId)
     const existing = options.state.getCharade(id)
     if (existing) {
+      if (!storedCharadeMatchesPost(existing, key, authoredPost)) {
+        await sendError(address, 'invalid-post', data.requestId)
+        return
+      }
       const look = looks.get(key)
       const stats = await options.state.getOrCreateStats(key, playerName(key), !(look?.isGuest ?? true))
       if (!isCurrentSession(address, generation)) return
@@ -1632,7 +1752,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         ...progressFor(stats),
         titleUnlocked: false
       }
-      const request = { type: 'posted' as const, data: posted, durable: false }
+      const request = { type: 'posted' as const, data: posted, durable: false, authoredPost }
       cacheSet(completedRequests, idempotencyKey, key, request)
       if (!(await checkpointOrError(address, generation, data.requestId))) return
       request.durable = true
@@ -1700,6 +1820,10 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     }
     const existingAfterSnapshot = options.state.getCharade(id)
     if (existingAfterSnapshot) {
+      if (!storedCharadeMatchesPost(existingAfterSnapshot, key, authoredPost)) {
+        await sendError(address, 'invalid-post', data.requestId)
+        return
+      }
       const stats = await options.state.getOrCreateStats(key, look.name, !look.isGuest)
       if (!isCurrentSession(address, generation)) return
       const replay = cacheGet(completedRequests, idempotencyKey)
@@ -1722,7 +1846,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         ...progressFor(stats),
         titleUnlocked: false
       }
-      const request = { type: 'posted' as const, data: posted, durable: false }
+      const request = { type: 'posted' as const, data: posted, durable: false, authoredPost }
       cacheSet(completedRequests, idempotencyKey, key, request)
       if (!(await checkpointOrError(address, generation, data.requestId))) return
       request.durable = true
@@ -1746,6 +1870,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       guesses: { total: 0, correct: 0 },
       lastGuessAt: 0,
       isHouse: false,
+      touringConsent: recipientLook ? false : data.touringConsent,
       ...(recipientLook ? { recipient: recipientLook.address } : {})
     }
     let stats: Awaited<ReturnType<GhostlightState['getOrCreateStats']>>
@@ -1812,7 +1937,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       ...progress,
       titleUnlocked
     }
-    const request = { type: 'posted' as const, data: posted, durable: false }
+    const request = { type: 'posted' as const, data: posted, durable: false, authoredPost }
     cacheSet(completedRequests, idempotencyKey, key, request)
     if (!(await checkpointOrError(address, generation, data.requestId))) return
     request.durable = true

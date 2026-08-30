@@ -174,6 +174,7 @@ export function makeLook(address: string, name = address): Look {
 
 export function makeReply(address = 'replier', name = 'Replier', overrides: Partial<CharadeReply> = {}): CharadeReply {
   return {
+    requestId: 'reply-request',
     address,
     name,
     look: makeLook(address, name),
@@ -204,6 +205,7 @@ export function makeCharade(
     guesses: { total: 0, correct: 0, ...guesses },
     lastGuessAt: FIXED_NOW,
     isHouse: false,
+    touringConsent: false,
     ...fields
   }
 }

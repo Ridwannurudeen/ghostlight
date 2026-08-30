@@ -227,11 +227,16 @@ export type AuthorDraft = {
   selectedEmotes: Emote[]
   shufflesRemaining: number
   phase: 'phrase' | 'emotes' | 'confirm'
+  touringConsent: boolean
   replyTo?: string
   recipient?: {
     address: string
     name: string
   }
+}
+
+export function canToggleTouringConsent(author: AuthorDraft | null) {
+  return !!author && author.phase === 'confirm' && !author.replyTo && !author.recipient
 }
 
 export type PendingRequestKind = 'nextCharade' | 'guess' | 'roundGuess' | 'post'
@@ -340,6 +345,7 @@ export type FlowAction =
   | { type: 'authorSelect'; emote: Emote }
   | { type: 'authorMore' }
   | { type: 'authorRevise' }
+  | { type: 'authorToggleTouringConsent' }
   | { type: 'authorBack' }
   | { type: 'progress'; progress: ProgressView; revision: number }
   | {
@@ -692,6 +698,9 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
             }
           }
         : state
+    case 'authorToggleTouringConsent':
+      if (!state.author || !canToggleTouringConsent(state.author)) return state
+      return { ...state, author: { ...state.author, touringConsent: !state.author.touringConsent } }
     case 'authorBack':
       return { ...state, screen: state.authorReturnScreen }
     case 'progress':
@@ -853,7 +862,14 @@ export type OutboundMessage =
     }
   | {
       type: 'post'
-      data: { phraseId: string; emotes: string[]; requestId: string; replyTo?: string; recipient?: string }
+      data: {
+        phraseId: string
+        emotes: string[]
+        requestId: string
+        touringConsent: boolean
+        replyTo?: string
+        recipient?: string
+      }
     }
 
 type ServerProgress = {
@@ -1269,16 +1285,12 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           if (!requestNextCharadeExcluding(abandonedRetryCharadeId)) {
             deferredAbandonedRetryCharadeId = abandonedRetryCharadeId
           }
-        }
-        else requestRoundCharadeIfNeeded()
+        } else requestRoundCharadeIfNeeded()
         break
       }
       case 'showSchedule': {
         const receivedAt = now()
-        if (
-          message.data.instanceId !== state.instanceId ||
-          message.data.serverTime < state.acceptedServerTime
-        ) {
+        if (message.data.instanceId !== state.instanceId || message.data.serverTime < state.acceptedServerTime) {
           break
         }
         const policy = acceptedShowPolicy(
@@ -1311,10 +1323,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           themeLabel: policy.legacyTheme.label,
           dailyDay: new Date(message.data.serverTime).toISOString().slice(0, 10)
         })
-        if (
-          deferredAbandonedRetryCharadeId &&
-          requestNextCharadeExcluding(deferredAbandonedRetryCharadeId)
-        ) {
+        if (deferredAbandonedRetryCharadeId && requestNextCharadeExcluding(deferredAbandonedRetryCharadeId)) {
           deferredAbandonedRetryCharadeId = ''
         }
         break
@@ -1823,7 +1832,8 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         emotePage: 0,
         selectedEmotes: [],
         shufflesRemaining: 2,
-        phase: 'phrase'
+        phase: 'phrase',
+        touringConsent: false
       }
     })
     return true
@@ -1856,6 +1866,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         selectedEmotes: [],
         shufflesRemaining: 0,
         phase: 'phrase',
+        touringConsent: false,
         replyTo: charade.id
       }
     })
@@ -1907,6 +1918,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         selectedEmotes: [],
         shufflesRemaining: 2,
         phase: 'phrase',
+        touringConsent: false,
         recipient: { address: recipient.address, name: normalizePlayerName(recipient.name) }
       }
     })
@@ -1930,6 +1942,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         selectedEmotes: [],
         shufflesRemaining: state.author.shufflesRemaining - 1,
         phase: 'phrase',
+        touringConsent: state.author.touringConsent,
         ...(state.author.recipient ? { recipient: state.author.recipient } : {})
       }
     })
@@ -1970,6 +1983,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           phraseId: state.author.phrase.id,
           emotes: [...state.author.selectedEmotes],
           requestId,
+          touringConsent: canToggleTouringConsent(state.author) ? state.author.touringConsent : false,
           ...(state.author.replyTo ? { replyTo: state.author.replyTo } : {}),
           ...(state.author.recipient ? { recipient: state.author.recipient.address } : {})
         }
@@ -2028,6 +2042,11 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     reviseAuthorEmotes() {
       if (!state.author || state.author.phase !== 'confirm') return false
       dispatch({ type: 'authorRevise' })
+      return true
+    },
+    toggleTouringConsent() {
+      if (!canToggleTouringConsent(state.author)) return false
+      dispatch({ type: 'authorToggleTouringConsent' })
       return true
     },
     previewAuthor,

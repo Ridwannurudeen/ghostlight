@@ -325,6 +325,7 @@ FROM moderation_subjects AS subjects
 WHERE subjects.id = $1
   AND subjects.status = 'published'
   AND subjects.channel IN ('curated', 'trusted')
+  AND subjects.touring_consent = TRUE
   AND NOT EXISTS (
     SELECT 1
     FROM shadow_hides AS hides

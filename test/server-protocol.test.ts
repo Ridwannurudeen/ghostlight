@@ -155,7 +155,7 @@ async function createHarness(
   }
   const snapshotLook = overrides.snapshotLook ?? (async (address: string) => makeLook(address, 'Player'))
   const checkpoint = vi.fn(overrides.flush ?? (async () => undefined))
-  const protocol = createServerProtocol({
+  const rawProtocol = createServerProtocol({
     state,
     send,
     snapshotLook,
@@ -168,7 +168,12 @@ async function createHarness(
     random: overrides.random ?? (() => 0.5),
     roundDurationMilliseconds: overrides.roundDurationMilliseconds
   })
-  return { storage, repository, state, sent, snapshotLook, checkpoint, protocol }
+  const protocol = {
+    ...rawProtocol,
+    handlePost: (data: Parameters<typeof rawProtocol.handlePost>[0], address: string) =>
+      rawProtocol.handlePost({ touringConsent: false, ...data }, address)
+  }
+  return { storage, repository, state, sent, snapshotLook, checkpoint, protocol, rawProtocol }
 }
 
 type ProtocolHarness = Awaited<ReturnType<typeof createHarness>>
@@ -2494,6 +2499,187 @@ describe('charade serving and guesses', () => {
 })
 
 describe('authoring protocol', () => {
+  it('requires explicit consent and persists ordinary opt-in without changing local selection', async () => {
+    const { state, sent, rawProtocol } = await createHarness()
+    await negotiate(rawProtocol, 'player')
+    sent.length = 0
+
+    await rawProtocol.handlePost(
+      { phraseId: DECK[0].id, emotes: [...DECK[0].suggested], requestId: 'missing-consent' },
+      'player'
+    )
+    await rawProtocol.handlePost(
+      {
+        phraseId: DECK[0].id,
+        emotes: [...DECK[0].suggested],
+        requestId: 'invalid-consent',
+        touringConsent: 'yes'
+      },
+      'player'
+    )
+    await rawProtocol.handlePost(
+      {
+        phraseId: DECK[0].id,
+        emotes: [...DECK[0].suggested],
+        requestId: 'touring-opt-in',
+        touringConsent: true
+      },
+      'player'
+    )
+    await negotiate(rawProtocol, 'player-two')
+    await rawProtocol.handlePost(
+      {
+        phraseId: DECK[0].id,
+        emotes: [...DECK[0].suggested],
+        requestId: 'touring-opt-out',
+        touringConsent: false
+      },
+      'player-two'
+    )
+
+    expect(messagesOfType(sent, 'error').map((message) => dataOf<ErrorMessage>(message).code)).toEqual([
+      'invalid-post',
+      'invalid-post'
+    ])
+    expect(state.getPool().map((charade) => charade.touringConsent)).toEqual([false, true])
+  })
+
+  it.each([
+    { originalConsent: true, conflictingConsent: false },
+    { originalConsent: false, conflictingConsent: true }
+  ])(
+    'rejects an in-memory request-id replay that changes consent from $originalConsent to $conflictingConsent',
+    async ({ originalConsent, conflictingConsent }) => {
+      const { state, sent, rawProtocol } = await createHarness()
+      await negotiate(rawProtocol, 'player')
+      const post = {
+        phraseId: DECK[0].id,
+        emotes: [...DECK[0].suggested],
+        requestId: 'consent-cache-replay',
+        touringConsent: originalConsent
+      }
+      await rawProtocol.handlePost(post, 'player')
+      const stored = state.getPool()[0]
+      sent.length = 0
+
+      await rawProtocol.handlePost({ ...post, touringConsent: conflictingConsent }, 'player')
+
+      expect(messagesOfType(sent, 'posted')).toEqual([])
+      expect(messagesOfType(sent, 'error')).toEqual([
+        {
+          type: 'requestError',
+          data: { code: 'invalid-post', requestId: post.requestId },
+          to: ['player']
+        }
+      ])
+      expect(state.getCharade(stored.id)?.touringConsent).toBe(originalConsent)
+      sent.length = 0
+
+      await rawProtocol.handlePost(post, 'player')
+
+      expect(messagesOfType(sent, 'posted')).toHaveLength(1)
+      expect(messagesOfType(sent, 'error')).toEqual([])
+      expect(state.getCharade(stored.id)?.touringConsent).toBe(originalConsent)
+    }
+  )
+
+  it.each([
+    { originalConsent: true, conflictingConsent: false },
+    { originalConsent: false, conflictingConsent: true }
+  ])(
+    'rejects a durable request-id replay that changes consent from $originalConsent to $conflictingConsent',
+    async ({ originalConsent, conflictingConsent }) => {
+      const storage = new FakeStorage()
+      const first = await createHarness({}, storage)
+      await negotiate(first.rawProtocol, 'player')
+      const post = {
+        phraseId: DECK[0].id,
+        emotes: [...DECK[0].suggested],
+        requestId: 'consent-durable-replay',
+        touringConsent: originalConsent
+      }
+      await first.rawProtocol.handlePost(post, 'player')
+      const storedId = first.state.getPool()[0].id
+      await first.repository.flushNow()
+
+      const second = await createHarness({}, storage)
+      await negotiate(second.rawProtocol, 'player')
+      second.sent.length = 0
+
+      await second.rawProtocol.handlePost({ ...post, touringConsent: conflictingConsent }, 'player')
+
+      expect(messagesOfType(second.sent, 'posted')).toEqual([])
+      expect(messagesOfType(second.sent, 'error')).toEqual([
+        {
+          type: 'requestError',
+          data: { code: 'invalid-post', requestId: post.requestId },
+          to: ['player']
+        }
+      ])
+      expect(second.state.getCharade(storedId)?.touringConsent).toBe(originalConsent)
+      second.sent.length = 0
+
+      await second.rawProtocol.handlePost(post, 'player')
+
+      expect(messagesOfType(second.sent, 'posted')).toHaveLength(1)
+      expect(messagesOfType(second.sent, 'error')).toEqual([])
+      expect(second.state.getCharade(storedId)?.touringConsent).toBe(originalConsent)
+    }
+  )
+
+  it('rejects mail and reply opt-in while storing accepted mail as non-touring', async () => {
+    const sender = `0x${'1'.repeat(40)}`
+    const recipient = `0x${'2'.repeat(40)}`
+    const author = `0x${'3'.repeat(40)}`
+    const { state, sent, rawProtocol } = await createHarness({
+      snapshotLook: async (address) => makeLook(address, address)
+    })
+    state.recentVisitors = [{ ...makeLook(recipient, 'Recipient'), lastSeenAt: FIXED_NOW }]
+    const target = makeCharade('reply-consent-target', { author: { address: author, name: 'Author' } })
+    state.upsertCharade(target)
+    await negotiate(rawProtocol, sender)
+    state.playerStats.get(sender)!.seen.push(target.id)
+    sent.length = 0
+
+    await rawProtocol.handlePost(
+      {
+        phraseId: DECK[0].id,
+        emotes: [...DECK[0].suggested],
+        requestId: 'touring-mail',
+        touringConsent: true,
+        recipient
+      },
+      sender
+    )
+    await rawProtocol.handlePost(
+      {
+        phraseId: target.phraseId,
+        emotes: [...DECK[0].suggested],
+        requestId: 'touring-reply',
+        touringConsent: true,
+        replyTo: target.id
+      },
+      sender
+    )
+    await rawProtocol.handlePost(
+      {
+        phraseId: DECK[0].id,
+        emotes: [...DECK[0].suggested],
+        requestId: 'private-mail',
+        touringConsent: false,
+        recipient
+      },
+      sender
+    )
+
+    expect(messagesOfType(sent, 'error').map((message) => dataOf<ErrorMessage>(message).code)).toEqual([
+      'invalid-post',
+      'invalid-reply'
+    ])
+    expect(state.getPlayerCharades()).toContainEqual(expect.objectContaining({ recipient, touringConsent: false }))
+    expect(state.getCharade(target.id)?.reply).toBeUndefined()
+  })
+
   it('keeps guest guesses and authoring out of persistent global effects', async () => {
     const snapshotLook = async (address: string) => ({ ...makeLook(address, 'Guest'), isGuest: true })
     const { state, sent, protocol } = await createHarness({ snapshotLook })
@@ -3098,7 +3284,7 @@ describe('answer-back protocol', () => {
     expect(checkpoint).toHaveBeenCalledOnce()
   })
 
-  it('returns an idempotent success to the same canonical replier without notifying twice', async () => {
+  it('rejects a second different reply request from the same canonical replier', async () => {
     const snapshotLook = vi.fn(async (address: string) => makeLook(address, 'Alice'))
     const { state, sent, checkpoint, protocol } = await createHarness({ snapshotLook })
     const target = makeCharade('idempotent-target', { author: { address: 'author', name: 'Author' } })
@@ -3119,15 +3305,188 @@ describe('answer-back protocol', () => {
       'ALICE'
     )
 
-    expect(messagesOfType(sent, 'posted').map((message) => dataOf<PostedMessage>(message).replyTo)).toEqual([
-      target.id,
-      target.id
+    expect(messagesOfType(sent, 'posted').map((message) => dataOf<PostedMessage>(message).replyTo)).toEqual([target.id])
+    expect(messagesOfType(sent, 'error')).toEqual([
+      {
+        type: 'requestError',
+        data: { code: 'invalid-reply', requestId: 'retry-reply' },
+        to: ['ALICE']
+      }
     ])
-    expect(messagesOfType(sent, 'error')).toEqual([])
     expect(state.getCharade(target.id)?.reply?.emotes).toEqual(firstEmotes)
     expect(state.playerStats.get('author')?.pending.replies).toBe(1)
     expect(snapshotLook).toHaveBeenCalledOnce()
-    expect(checkpoint).toHaveBeenCalledTimes(2)
+    expect(checkpoint).toHaveBeenCalledOnce()
+  })
+
+  it('binds an attached reply to its exact request after the completed cache expires', async () => {
+    let timestamp = FIXED_NOW
+    const { state, sent, protocol } = await createHarness({ now: () => timestamp })
+    const target = makeCharade('expired-reply-request', {
+      author: { address: 'author', name: 'Author' },
+      touringConsent: true
+    })
+    state.upsertCharade(target)
+    await negotiate(protocol, 'alice')
+    state.playerStats.get('alice')!.seen.push(target.id)
+    const reply = {
+      phraseId: target.phraseId,
+      emotes: [...DECK[0].suggested],
+      requestId: 'expired-reply-id',
+      replyTo: target.id
+    }
+    await protocol.handlePost(reply, 'alice')
+    timestamp += 16_000
+    sent.length = 0
+
+    await protocol.handlePost({ ...reply, emotes: [...DECK[1].suggested] }, 'alice')
+
+    expect(messagesOfType(sent, 'posted')).toEqual([])
+    expect(messagesOfType(sent, 'error')).toEqual([
+      {
+        type: 'requestError',
+        data: { code: 'invalid-reply', requestId: reply.requestId },
+        to: ['alice']
+      }
+    ])
+    expect(state.getCharade(target.id)?.reply?.emotes).toEqual(reply.emotes)
+    expect(state.getCharade(target.id)?.touringConsent).toBe(true)
+    sent.length = 0
+
+    await protocol.handlePost(reply, 'alice')
+
+    expect(messagesOfType(sent, 'posted')).toHaveLength(1)
+    expect(messagesOfType(sent, 'error')).toEqual([])
+    expect(state.getCharade(target.id)?.touringConsent).toBe(true)
+  })
+
+  it('binds an attached reply to its exact request across server restart', async () => {
+    const storage = new FakeStorage()
+    const first = await createHarness({}, storage)
+    const target = makeCharade('durable-reply-request', {
+      author: { address: 'author', name: 'Author' },
+      touringConsent: true
+    })
+    first.state.upsertCharade(target)
+    await negotiate(first.protocol, 'alice')
+    first.state.playerStats.get('alice')!.seen.push(target.id)
+    first.state.saveStats('alice')
+    const reply = {
+      phraseId: target.phraseId,
+      emotes: [...DECK[0].suggested],
+      requestId: 'durable-reply-id',
+      replyTo: target.id
+    }
+    await first.protocol.handlePost(reply, 'alice')
+    await first.repository.flushNow()
+
+    const second = await createHarness({}, storage)
+    await negotiate(second.protocol, 'alice')
+    second.sent.length = 0
+
+    await second.protocol.handlePost({ ...reply, emotes: [...DECK[1].suggested] }, 'alice')
+
+    expect(messagesOfType(second.sent, 'posted')).toEqual([])
+    expect(messagesOfType(second.sent, 'error')).toEqual([
+      {
+        type: 'requestError',
+        data: { code: 'invalid-reply', requestId: reply.requestId },
+        to: ['alice']
+      }
+    ])
+    expect(second.state.getCharade(target.id)?.reply?.emotes).toEqual(reply.emotes)
+    expect(second.state.getCharade(target.id)?.touringConsent).toBe(true)
+    second.sent.length = 0
+
+    await second.protocol.handlePost(reply, 'alice')
+
+    expect(messagesOfType(second.sent, 'posted')).toHaveLength(1)
+    expect(messagesOfType(second.sent, 'error')).toEqual([])
+    expect(second.state.getCharade(target.id)?.touringConsent).toBe(true)
+  })
+
+  it.each([
+    { label: 'ordinary', mailed: false },
+    { label: 'mail', mailed: true }
+  ])('rejects durable $label-to-reply and reply-to-$label request-id reuse', async ({ mailed }) => {
+    const storage = new FakeStorage()
+    const sender = `0x${'1'.repeat(40)}`
+    const recipient = `0x${'2'.repeat(40)}`
+    const author = `0x${'3'.repeat(40)}`
+    const first = await createHarness({ snapshotLook: async (address) => makeLook(address, address) }, storage)
+    const repliedTarget = makeCharade('cross-shape-replied', {
+      author: { address: author, name: 'Author' },
+      touringConsent: true,
+      createdAt: FIXED_NOW - 3
+    })
+    const emptyTarget = makeCharade('cross-shape-empty', {
+      author: { address: author, name: 'Author' },
+      createdAt: FIXED_NOW - 2
+    })
+    const recipientPerformance = makeCharade('cross-shape-recipient', {
+      author: { address: recipient, name: 'Recipient' },
+      createdAt: FIXED_NOW - 1
+    })
+    first.state.upsertCharade(repliedTarget)
+    first.state.upsertCharade(emptyTarget)
+    first.state.upsertCharade(recipientPerformance)
+    await negotiate(first.protocol, sender)
+    first.state.playerStats.get(sender)!.seen.push(repliedTarget.id, emptyTarget.id)
+    first.state.saveStats(sender)
+    const shapedRequest = {
+      phraseId: DECK[0].id,
+      emotes: [...DECK[0].suggested],
+      requestId: 'cross-shaped-post',
+      ...(mailed ? { recipient } : {})
+    }
+    await first.protocol.handlePost(shapedRequest, sender)
+    await first.protocol.handlePost(
+      {
+        phraseId: repliedTarget.phraseId,
+        emotes: [...DECK[1].suggested],
+        requestId: 'cross-shaped-reply',
+        replyTo: repliedTarget.id
+      },
+      sender
+    )
+    await first.repository.flushNow()
+
+    const second = await createHarness(
+      { now: () => FIXED_NOW + 61_000, snapshotLook: async (address) => makeLook(address, address) },
+      storage
+    )
+    await negotiate(second.protocol, sender)
+    second.sent.length = 0
+
+    await second.protocol.handlePost(
+      {
+        phraseId: emptyTarget.phraseId,
+        emotes: [...DECK[0].suggested],
+        requestId: shapedRequest.requestId,
+        replyTo: emptyTarget.id
+      },
+      sender
+    )
+    await second.protocol.handlePost(
+      {
+        phraseId: DECK[0].id,
+        emotes: [...DECK[0].suggested],
+        requestId: 'cross-shaped-reply',
+        ...(mailed ? { recipient } : {})
+      },
+      sender
+    )
+
+    expect(messagesOfType(second.sent, 'posted')).toEqual([])
+    expect(messagesOfType(second.sent, 'error').map((message) => dataOf<ErrorMessage>(message).code)).toEqual([
+      'invalid-reply',
+      'invalid-post'
+    ])
+    expect(second.state.getCharade(emptyTarget.id)?.reply).toBeUndefined()
+    expect(second.state.getCharade(repliedTarget.id)?.touringConsent).toBe(true)
+    expect(
+      second.state.getPlayerCharades().filter((charade) => charade.author.address.toLowerCase() === sender)
+    ).toHaveLength(1)
   })
 
   it('restores a reply and consumes its author notification exactly once after server restarts', async () => {

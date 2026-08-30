@@ -108,7 +108,7 @@ const ERROR_CODES = [
 describe('localization copy', () => {
   it('has the same complete, non-empty player-copy key set in every language', () => {
     const expectedKeys = Object.keys(COPY.en).sort()
-    expect(expectedKeys).toHaveLength(205)
+    expect(expectedKeys).toHaveLength(206)
 
     for (const language of LANGUAGES) {
       expect(Object.keys(COPY[language]).sort(), language).toEqual(expectedKeys)
@@ -116,6 +116,17 @@ describe('localization copy', () => {
         expect(value.trim().length, `${language}:${key}`).toBeGreaterThan(0)
       }
     }
+  })
+
+  it('localizes explicit touring consent with the same state placeholder', () => {
+    for (const language of LANGUAGES) {
+      expect(COPY[language]['author.touringConsent']).toContain('{value}')
+      expect(translate('author.touringConsent', language, { value: COPY[language]['common.off'] })).not.toMatch(
+        /\{value\}/u
+      )
+    }
+    expect(COPY.es['author.touringConsent']).not.toBe(COPY.en['author.touringConsent'])
+    expect(COPY.pt['author.touringConsent']).not.toBe(COPY.en['author.touringConsent'])
   })
 
   it('uses exact three-beat authoring copy in every language', () => {

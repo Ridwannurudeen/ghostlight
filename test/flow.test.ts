@@ -6,6 +6,7 @@ import {
   AUTHOR_EMOTE_PAGE_COUNT,
   authorEmotePage,
   canSpectatorReact,
+  canToggleTouringConsent,
   createFlowRuntime,
   createInitialFlowState,
   flowReducer,
@@ -121,11 +122,7 @@ function createFlowHarness(
   }
 }
 
-function receiveShowSchedule(
-  runtime: ReturnType<typeof createFlowRuntime>,
-  timestamp: number,
-  instanceId = 'server'
-) {
+function receiveShowSchedule(runtime: ReturnType<typeof createFlowRuntime>, timestamp: number, instanceId = 'server') {
   const policy = showPolicyForTimestamp(timestamp)
   expect(policy).not.toBeNull()
   runtime.receive({
@@ -304,7 +301,8 @@ describe('flow reducer', () => {
       emotePage: 0,
       selectedEmotes: [phrase.suggested[0]],
       shufflesRemaining: 2,
-      phase: 'emotes' as const
+      phase: 'emotes' as const,
+      touringConsent: false
     }
     const authorState = flowReducer(createInitialFlowState(), { type: 'author', draft, returnScreen: 'foyer' })
 
@@ -379,6 +377,7 @@ describe('flow lifecycle', () => {
       }
     })
     const firstPhrase = runtime.getState().author!.phrase.id
+    expect(runtime.toggleTouringConsent()).toBe(false)
     expect(runtime.shuffleAuthorPhrase()).toBe(true)
     expect(runtime.getState().author).toMatchObject({ recipient: { address: recipient, name: 'Recipient' } })
     expect(runtime.getState().author!.phrase.id).not.toBe(firstPhrase)
@@ -386,8 +385,13 @@ describe('flow lifecycle', () => {
       .getState()
       .author!.offeredEmotes.slice(0, 3)
       .forEach((emote) => runtime.selectAuthorEmote(emote))
+    runtime.dispatch({
+      type: 'author',
+      returnScreen: 'mail',
+      draft: { ...runtime.getState().author!, touringConsent: true }
+    })
     expect(runtime.postAuthor()).toBe(true)
-    expect(messagesOfType(sent, 'post').at(-1)?.data).toMatchObject({ recipient })
+    expect(messagesOfType(sent, 'post').at(-1)?.data).toMatchObject({ recipient, touringConsent: false })
     expect(messagesOfType(sent, 'post').at(-1)?.data).not.toHaveProperty('replyTo')
 
     receivePosted(runtime, { charadeId: 'mailed', recipient })
@@ -508,6 +512,7 @@ describe('flow lifecycle', () => {
       shufflesRemaining: 0,
       replyTo: charade.id
     })
+    expect(runtime.toggleTouringConsent()).toBe(false)
     expect(runtime.shuffleAuthorPhrase()).toBe(false)
     draft.offeredEmotes.slice(0, 3).forEach((emote) => runtime.selectAuthorEmote(emote))
     expect(runtime.previewAuthor()).toBe(true)
@@ -520,10 +525,16 @@ describe('flow lifecycle', () => {
       .getState()
       .author!.offeredEmotes.slice(0, 3)
       .forEach((emote) => runtime.selectAuthorEmote(emote))
+    runtime.dispatch({
+      type: 'author',
+      returnScreen: 'reveal',
+      draft: { ...runtime.getState().author!, touringConsent: true }
+    })
     expect(runtime.postAuthor()).toBe(true)
     expect(messagesOfType(sent, 'post').at(-1)?.data).toMatchObject({
       phraseId: DECK[0].id,
-      replyTo: charade.id
+      replyTo: charade.id,
+      touringConsent: false
     })
 
     receivePosted(runtime, { charadeId: charade.id, replyTo: charade.id })
@@ -1638,6 +1649,52 @@ describe('audience and rounds', () => {
 })
 
 describe('author controls and request guards', () => {
+  it('defaults touring consent off and includes false in an ordinary post', () => {
+    const { runtime, sent } = createFlowHarness()
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    receiveShowSchedule(runtime, FIXED_NOW)
+
+    expect(runtime.beginAuthoring()).toBe(true)
+    expect(runtime.getState().author?.touringConsent).toBe(false)
+    expect(runtime.toggleTouringConsent()).toBe(false)
+    expect(runtime.continueAuthoring()).toBe(true)
+    runtime
+      .getState()
+      .author!.offeredEmotes.slice(0, 3)
+      .forEach((emote) => runtime.selectAuthorEmote(emote))
+
+    expect(canToggleTouringConsent(runtime.getState().author)).toBe(true)
+    expect(runtime.postAuthor()).toBe(true)
+    expect(messagesOfType(sent, 'post').at(-1)?.data.touringConsent).toBe(false)
+  })
+
+  it('keeps opted-in touring consent through revision and an identical request retry', () => {
+    const { runtime, sent, advance } = createFlowHarness()
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    receiveShowSchedule(runtime, FIXED_NOW)
+    runtime.beginAuthoring()
+    runtime.continueAuthoring()
+    runtime
+      .getState()
+      .author!.offeredEmotes.slice(0, 3)
+      .forEach((emote) => runtime.selectAuthorEmote(emote))
+
+    expect(runtime.toggleTouringConsent()).toBe(true)
+    expect(runtime.getState().author?.touringConsent).toBe(true)
+    expect(runtime.reviseAuthorEmotes()).toBe(true)
+    expect(runtime.getState().author?.touringConsent).toBe(true)
+    runtime
+      .getState()
+      .author!.offeredEmotes.slice(0, 3)
+      .forEach((emote) => runtime.selectAuthorEmote(emote))
+    expect(runtime.postAuthor()).toBe(true)
+    const firstPost = messagesOfType(sent, 'post').at(-1)!
+    expect(firstPost.data.touringConsent).toBe(true)
+
+    advance(5_000)
+    expect(messagesOfType(sent, 'post').slice(-2)).toEqual([firstPost, firstPost])
+  })
+
   it('enforces the physical decode gate at request and guess boundaries', () => {
     let inDecodeArea = false
     const { runtime } = createFlowHarness({ canDecode: () => inDecodeArea })
@@ -1838,9 +1895,7 @@ describe('show schedule author policy', () => {
           topDecoders: [],
           hardestGhosts: [],
           ghostOfNightId: '',
-          playbill: [
-            { address: recipient, name: 'Recipient', isGuest: false, title: '', performedAt: timestamp }
-          ]
+          playbill: [{ address: recipient, name: 'Recipient', isGuest: false, title: '', performedAt: timestamp }]
         }
       })
       expect(runtime.selectGhostMailRecipient(recipient)).toBe(true)
@@ -1875,7 +1930,8 @@ describe('show schedule author policy', () => {
           emotePage: 0,
           selectedEmotes: [],
           shufflesRemaining: 2,
-          phase: 'phrase'
+          phase: 'phrase',
+          touringConsent: false
         }
       })
     }
@@ -2384,7 +2440,8 @@ describe('show schedule author policy', () => {
         emotePage: 0,
         selectedEmotes: [],
         shufflesRemaining: 2,
-        phase: 'emotes'
+        phase: 'emotes',
+        touringConsent: false
       }
     })
     offPolicy.suggested.forEach((emote) => runtime.selectAuthorEmote(emote))

@@ -167,6 +167,7 @@ export const Messages = {
     phraseId: Schemas.String,
     emotes: Schemas.Array(Schemas.String),
     requestId: Schemas.String,
+    touringConsent: Schemas.Boolean,
     replyTo: Schemas.Optional(Schemas.String),
     recipient: Schemas.Optional(Schemas.String)
   }),

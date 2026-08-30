@@ -58,16 +58,21 @@ describe('state migrations', () => {
     expect(migrateLook({ ...look, hairColor: { r: 0, g: 0, b: 1.01 } })).toBeNull()
   })
 
-  it('migrates v0 and v1 charades and rejects unsupported or malformed records', () => {
-    const legacy = { ...makeCharade('legacy'), v: 0, lastGuessAt: undefined }
+  it('migrates v0 through v2 charades without consent and rejects unsupported or malformed records', () => {
+    const legacy = { ...makeCharade('legacy'), v: 0, lastGuessAt: undefined, touringConsent: true }
     expect(migrateCharade(legacy)).toMatchObject({
       v: STORAGE_SCHEMA_VERSION,
       id: 'legacy',
-      lastGuessAt: FIXED_NOW
+      lastGuessAt: FIXED_NOW,
+      touringConsent: false
     })
-    const v1 = { ...makeCharade('v1'), v: 1 }
-    expect(migrateCharade(v1)).toEqual({ ...v1, v: STORAGE_SCHEMA_VERSION })
+    const v1 = { ...makeCharade('v1'), v: 1, touringConsent: true }
+    expect(migrateCharade(v1)).toEqual({ ...v1, v: STORAGE_SCHEMA_VERSION, touringConsent: false })
     expect(migrateCharade(v1)?.reply).toBeUndefined()
+    expect(migrateCharade({ ...makeCharade('v2'), v: 2, touringConsent: true })).toMatchObject({
+      v: STORAGE_SCHEMA_VERSION,
+      touringConsent: false
+    })
     expect(migrateCharade({ ...legacy, v: 99 })).toBeNull()
     expect(migrateCharade({ ...legacy, emotes: ['wave', 'clap'] })).toBeNull()
     expect(migrateCharade({ ...legacy, emotes: ['wave', 'wave', 'wave'] })?.emotes).toEqual(['wave', 'wave', 'wave'])
@@ -75,11 +80,29 @@ describe('state migrations', () => {
     expect(migrateCharade('{bad json')).toBeNull()
   })
 
-  it('restores valid v2 replies while isolating a malformed optional reply', () => {
+  it('requires exact v3 touring consent and forbids touring House or mail records', () => {
+    const ordinary = makeCharade('ordinary', { touringConsent: true })
+    const { touringConsent: _touringConsent, ...missingConsent } = ordinary
+    const recipient = `0x${'a'.repeat(40)}`
+
+    expect(migrateCharade(ordinary)).toEqual(ordinary)
+    expect(migrateCharade({ ...ordinary, touringConsent: false })).toMatchObject({ touringConsent: false })
+    expect(migrateCharade(missingConsent)).toBeNull()
+    expect(migrateCharade({ ...ordinary, touringConsent: 'yes' })).toBeNull()
+    expect(migrateCharade({ ...ordinary, isHouse: true })).toBeNull()
+    expect(migrateCharade({ ...ordinary, recipient })).toBeNull()
+  })
+
+  it('requires reply request identity in v3 while safely preserving legacy v2 replies', () => {
     const reply = makeReply('replier', 'Replier')
     const charade = makeCharade('with-reply', { reply })
 
     expect(migrateCharade(charade)?.reply).toEqual(reply)
+    const { requestId: _requestId, ...missingRequestId } = reply
+    expect(migrateCharade({ ...charade, reply: missingRequestId })?.reply).toBeUndefined()
+    expect(migrateCharade({ ...charade, reply: { ...reply, requestId: null } })?.reply).toBeUndefined()
+    expect(migrateCharade({ ...charade, reply: { ...reply, requestId: '' } })?.reply).toBeUndefined()
+    expect(migrateCharade({ ...charade, reply: { ...reply, requestId: 'x'.repeat(65) } })?.reply).toBeUndefined()
     const migrated = migrateCharade({
       ...charade,
       reply: { ...reply, emotes: ['wave', 'clap'] }
@@ -88,6 +111,10 @@ describe('state migrations', () => {
     expect(migrated?.reply).toBeUndefined()
     expect(migrateCharade({ ...charade, reply: { ...reply, address: 'different-player' } })?.reply).toBeUndefined()
     expect(migrateCharade({ ...charade, reply: { ...reply, name: 'Different name' } })?.reply).toBeUndefined()
+
+    const legacy = migrateCharade({ ...charade, v: 2, reply: missingRequestId })
+    expect(legacy?.reply).toMatchObject({ address: reply.address, emotes: reply.emotes })
+    expect(legacy?.reply?.requestId).toBeNull()
   })
 
   it('restores a valid v2 mail recipient while leaving v1 records intact', () => {
@@ -442,7 +469,7 @@ describe('state mutations', () => {
 
   it('attaches exactly one reply atomically and persists the winning reply', async () => {
     const { storage, repository, state } = setup()
-    const charade = makeCharade('reply-target')
+    const charade = makeCharade('reply-target', { touringConsent: true })
     const first = makeReply('first', 'First')
     const second = makeReply('second', 'Second')
     state.upsertCharade(charade)
@@ -452,6 +479,7 @@ describe('state mutations', () => {
     expect(state.attachReply(HOUSE_CHARADE.id, first)).toBe(false)
     expect(state.attachReply('missing', first)).toBe(false)
     expect(state.getCharade(charade.id)?.reply).toEqual(first)
+    expect(state.getCharade(charade.id)?.touringConsent).toBe(true)
     await repository.flushNow()
 
     expect(storage.readJSON<typeof charade>(charadeKey(charade.id))?.reply).toEqual(first)
@@ -765,6 +793,24 @@ describe('state mutations', () => {
     await expect(secondState.getRecentPerformers()).resolves.toEqual([])
     expect(seen).toEqual(['already-seen'])
     expect(exclude).toEqual(['excluded'])
+  })
+
+  it('round-trips ordinary touring consent across server sleep without changing pool eligibility', async () => {
+    const storage = new FakeStorage()
+    const firstRepository = createStorageRepository(storage)
+    const firstState = new GhostlightState(firstRepository, () => FIXED_NOW)
+    const optedIn = makeCharade('touring-opt-in', { touringConsent: true })
+    const optedOut = makeCharade('touring-opt-out', { touringConsent: false, createdAt: FIXED_NOW + 1 })
+    firstState.upsertCharade(optedIn)
+    firstState.upsertCharade(optedOut)
+    await firstRepository.flushNow()
+
+    const restored = new GhostlightState(createStorageRepository(storage), () => FIXED_NOW + 1)
+    await restored.hydrate()
+
+    expect(restored.getPool()).toEqual([optedIn, optedOut])
+    expect(restored.getCharade(optedIn.id)?.touringConsent).toBe(true)
+    expect(restored.getCharade(optedOut.id)?.touringConsent).toBe(false)
   })
 })
 

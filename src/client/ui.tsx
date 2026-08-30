@@ -20,7 +20,14 @@ import {
   type Language
 } from '../shared/i18n'
 import { acceptedShowPolicy, showPolicyForTimestamp } from '../shared/show-policy'
-import { canSendMail, canSpectatorReact, clientFlow, mailRecipients, type ClientFlowState } from './flow'
+import {
+  canSendMail,
+  canSpectatorReact,
+  canToggleTouringConsent,
+  clientFlow,
+  mailRecipients,
+  type ClientFlowState
+} from './flow'
 import { getPerformerBeatIndex } from './ghosts'
 import { getOpeningViewState, skipOpening, type OpeningViewState } from './opening-scene'
 import { REACTION_OPTIONS, sendReaction } from './reactions'
@@ -56,6 +63,7 @@ const PANEL = {
 
 const BUTTON = { width: '100%', minHeight: 96, height: 96, margin: '6px 0' } satisfies UiTransformProps
 const DECODE_BUTTON = { width: '100%', minHeight: 96, height: 96, margin: '2px 0' } satisfies UiTransformProps
+const AUTHOR_CONFIRM_BUTTON = { width: '100%', minHeight: 72, height: 72, margin: '4px 0' } satisfies UiTransformProps
 const HINT_HEIGHT = 48
 
 export const REVEAL_VERTICAL_BUDGET = {
@@ -761,6 +769,8 @@ function authorScreen(state: ClientFlowState) {
   const posting = state.pending.some((request) => request.kind === 'post')
   const replying = !!author.replyTo
   const mailing = !!author.recipient
+  const touringConsentVisible = canToggleTouringConsent(author)
+  const confirmationButton = touringConsentVisible ? AUTHOR_CONFIRM_BUTTON : BUTTON
   const phrase = phraseText(author.phrase.id, getClientSettings().language) ?? author.phrase.text
   const visibleEmotes = author.offeredEmotes.slice(author.emotePage * 4, author.emotePage * 4 + 4)
   const sentence =
@@ -815,20 +825,41 @@ function authorScreen(state: ClientFlowState) {
             copy('author.preview'),
             () => clientFlow.previewAuthor(),
             !readyToPost || posting || !showReady,
-            'secondary'
+            'secondary',
+            confirmationButton
           )}
+          {touringConsentVisible
+            ? actionButton(
+                copy('author.touringConsent', {
+                  value: copy(author.touringConsent ? 'common.on' : 'common.off')
+                }),
+                () => clientFlow.toggleTouringConsent(),
+                posting || !showReady,
+                author.touringConsent ? 'primary' : 'secondary',
+                confirmationButton
+              )
+            : null}
           {actionButton(
             replying ? copy('author.sendReply') : mailing ? copy('author.sendMail') : copy('author.post'),
             () => clientFlow.postAuthor(),
-            !readyToPost || posting || !showReady
+            !readyToPost || posting || !showReady,
+            'primary',
+            confirmationButton
           )}
           {actionButton(
             copy('author.changeEmotes'),
             () => clientFlow.reviseAuthorEmotes(),
             posting || !showReady,
-            'secondary'
+            'secondary',
+            confirmationButton
           )}
-          {actionButton(copy('common.back'), () => clientFlow.backFromAuthor(), posting, 'secondary')}
+          {actionButton(
+            copy('common.back'),
+            () => clientFlow.backFromAuthor(),
+            posting,
+            'secondary',
+            confirmationButton
+          )}
         </UiEntity>
       )}
     </UiEntity>,

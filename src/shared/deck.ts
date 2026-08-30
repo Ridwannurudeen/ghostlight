@@ -776,7 +776,8 @@ export const HOUSE_CHARADES: readonly Charade[] = HOUSE_CHARADE_SOURCES.map((sou
   createdAt: 0,
   guesses: { total: 0, correct: 0 },
   lastGuessAt: 0,
-  isHouse: true
+  isHouse: true,
+  touringConsent: false
 }))
 
 export const HOUSE_CHARADE: Charade = HOUSE_CHARADES[0]
