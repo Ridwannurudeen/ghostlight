@@ -64,5 +64,7 @@ jobs:
         run: npm ls --depth=0
       - name: test API
         run: npm test
+      - name: type-check API
+        run: npm run check
       - name: build API
         run: npm run build

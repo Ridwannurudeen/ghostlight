@@ -128,6 +128,10 @@ Decentraland Storage
   player: signed-in statistics, daily stamps, titles, return and mail notifications
 ```
 
+The separate `api/` service is an undeployed PostgreSQL-backed foundation for signed, aggregate-only funnel
+analytics. It is not wired into the current World candidate. Its scene-authenticated ingestion and role-gated
+wallet export boundaries are documented in [`api/README.md`](api/README.md).
+
 The client sends intents such as guess, post, and react. It never supplies the avatar look used for a stored
 performance; the server snapshots Decentraland's player ECS data. All persisted values are serialized JSON, and
 charade and player-stat records carry a schema version. Storage writes pass through a dirty queue, retry when the
@@ -219,6 +223,7 @@ tools/
   ui/       Procedural PNG generator
 assets/     Committed generated models, sounds, textures, and their manifests
 docs/       Build plans, device checklist, roadmap, and submission materials
+api/        Isolated signed analytics service, PostgreSQL migration, and API tests
 ```
 
 ## Roadmap
