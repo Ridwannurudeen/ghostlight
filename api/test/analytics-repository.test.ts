@@ -117,9 +117,10 @@ function successfulClient(aggregateResult = oneRow()) {
 }
 
 describe('database lifecycle', () => {
-  it('serializes the rerunnable initial migration behind a session advisory lock', async () => {
+  it('serializes the ordered rerunnable migrations behind a session advisory lock', async () => {
     const client = new ScriptedClient([
       { result: oneRow() },
+      { result: emptyResult() },
       { result: emptyResult() },
       { result: oneRow({ unlocked: true }) }
     ])
@@ -127,11 +128,13 @@ describe('database lifecycle', () => {
 
     await database.migrate()
 
-    expect(client.calls).toHaveLength(3)
+    expect(client.calls).toHaveLength(4)
     expect(client.calls[0]?.text).toContain('pg_advisory_lock')
     expect(client.calls[1]?.text.trimStart()).toMatch(/^BEGIN;/u)
     expect(client.calls[1]?.text).toContain('CREATE TABLE IF NOT EXISTS analytics_receipts')
-    expect(client.calls[2]?.text).toContain('pg_advisory_unlock')
+    expect(client.calls[2]?.text.trimStart()).toMatch(/^BEGIN;/u)
+    expect(client.calls[2]?.text).toContain('ADD COLUMN IF NOT EXISTS revoked_at')
+    expect(client.calls[3]?.text).toContain('pg_advisory_unlock')
     expect(client.releases).toEqual([undefined])
     client.assertComplete()
   })
@@ -140,6 +143,7 @@ describe('database lifecycle', () => {
     const migrationFailure = new Error('migration failed')
     const client = new ScriptedClient([
       { result: oneRow() },
+      { result: emptyResult() },
       { error: migrationFailure },
       { result: emptyResult() },
       { result: oneRow({ unlocked: true }) }
@@ -150,6 +154,7 @@ describe('database lifecycle', () => {
 
     expect(client.calls.map(({ text }) => text.trim())).toEqual([
       expect.stringContaining('pg_advisory_lock'),
+      expect.stringMatching(/^BEGIN;/u),
       expect.stringMatching(/^BEGIN;/u),
       'ROLLBACK',
       expect.stringContaining('pg_advisory_unlock')

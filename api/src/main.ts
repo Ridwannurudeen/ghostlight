@@ -8,6 +8,7 @@ import type { ApiAuthContext } from './auth.js'
 import { parseConfig } from './config.js'
 import { createDatabase } from './database.js'
 import { createHttpRouter } from './http.js'
+import { ModerationAuditExportRepository } from './moderation-audit-export-repository.js'
 import { ModerationRepository } from './moderation-repository.js'
 
 async function initComponents() {
@@ -47,12 +48,16 @@ async function initComponents() {
     reportGuestPerHour: appConfig.rates.reportGuestPerHour,
     decisionPerMinute: appConfig.rates.decisionPerMinute
   })
+  const moderationAuditExportRepository = new ModerationAuditExportRepository(databaseStore, {
+    auditExportPerHour: appConfig.rates.auditExportPerHour
+  })
   const requestLogger = logs.getLogger('ghostlight-api')
   const router = createHttpRouter({
     config: appConfig,
     repository,
     exportRepository,
     moderationRepository,
+    moderationAuditExportRepository,
     async isReady() {
       await databaseStore.ping()
       return true

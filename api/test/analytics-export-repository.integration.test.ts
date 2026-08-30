@@ -18,6 +18,7 @@ const MODERATOR = `0x${'22'.repeat(20)}`
 const TRUSTED_CREATOR = `0x${'33'.repeat(20)}`
 const UNLISTED = `0x${'44'.repeat(20)}`
 const DUAL_ROLE = `0x${'55'.repeat(20)}`
+const REVOKED_ANALYST = `0x${'66'.repeat(20)}`
 const RANGE = parseAnalyticsExportRange('2026-08-10', '2026-08-12')
 
 function bucket(value: number) {
@@ -50,14 +51,15 @@ describeDatabase('analytics aggregate export against PostgreSQL', () => {
     )
     await database.seedSceneAllowlist(['scene-a', 'scene-b'], CATALYST)
     await inspect.query(
-      `INSERT INTO actor_roles (actor_address, role)
+      `INSERT INTO actor_roles (actor_address, role, revoked_at)
        VALUES
-         ($1, 'analyst'),
-         ($2, 'moderator'),
-         ($3, 'trusted-creator'),
-         ($4, 'analyst'),
-         ($4, 'moderator')`,
-      [ANALYST, MODERATOR, TRUSTED_CREATOR, DUAL_ROLE]
+         ($1, 'analyst', NULL),
+         ($2, 'moderator', NULL),
+         ($3, 'trusted-creator', NULL),
+         ($4, 'analyst', NULL),
+         ($4, 'moderator', NULL),
+         ($5, 'analyst', $6::timestamptz)`,
+      [ANALYST, MODERATOR, TRUSTED_CREATOR, DUAL_ROLE, REVOKED_ANALYST, new Date(NOW)]
     )
   })
 
@@ -91,9 +93,9 @@ describeDatabase('analytics aggregate export against PostgreSQL', () => {
     )
   }
 
-  it('allows analyst, moderator, and dual-role actors while denying trusted-creator and unlisted actors', async () => {
+  it('allows active analyst, moderator, and dual-role actors while denying revoked, unrelated, and unlisted actors', async () => {
     const analytics = repository()
-    const actors = [ANALYST, MODERATOR, DUAL_ROLE, TRUSTED_CREATOR, UNLISTED] as const
+    const actors = [ANALYST, MODERATOR, DUAL_ROLE, REVOKED_ANALYST, TRUSTED_CREATOR, UNLISTED] as const
     const results = await Promise.all(
       actors.map((actor, index) => analytics.exportFunnel(actor, RANGE, bucket(index + 1), NOW))
     )
@@ -103,10 +105,69 @@ describeDatabase('analytics aggregate export against PostgreSQL', () => {
       { status: 'data', rows: [] },
       { status: 'data', rows: [] },
       { status: 'unauthorized' },
+      { status: 'unauthorized' },
       { status: 'unauthorized' }
     ])
     const rates = await inspect.query<{ count: string }>("SELECT count(*) FROM rate_buckets WHERE scope = 'export'")
     expect(rates.rows).toEqual([{ count: '3' }])
+  })
+
+  it('revokes a moderator without deleting the role row referenced by historical moderation decisions', async () => {
+    await inspect.query(
+      `INSERT INTO moderation_subjects (
+         id,
+         scene_id,
+         author_address,
+         content,
+         fingerprint,
+         channel,
+         created_at
+       )
+       VALUES ('subject-a', 'scene-a', $1, 'Ghost', 'fingerprint-a', 'untrusted', $2::timestamptz)`,
+      [ANALYST, new Date(NOW)]
+    )
+    await inspect.query(
+      `INSERT INTO moderation_reports (id, subject_id, reporter_digest, reason, created_at)
+       VALUES ('report-a', 'subject-a', $1, 'other', $2::timestamptz)`,
+      [bucket(9), new Date(NOW)]
+    )
+    await inspect.query(
+      `INSERT INTO moderation_decisions (
+         id,
+         subject_id,
+         report_id,
+         action,
+         reason,
+         moderator_address,
+         created_at
+       )
+       VALUES ('decision-a', 'subject-a', 'report-a', 'quarantined', 'reviewed', $1, $2::timestamptz)`,
+      [MODERATOR, new Date(NOW)]
+    )
+
+    await inspect.query(
+      `UPDATE actor_roles
+       SET revoked_at = $2::timestamptz
+       WHERE actor_address = $1
+         AND role = 'moderator'`,
+      [MODERATOR, new Date(NOW + 1)]
+    )
+
+    await expect(repository().exportFunnel(MODERATOR, RANGE, bucket(1), NOW + 2)).resolves.toEqual({
+      status: 'unauthorized'
+    })
+    const history = await inspect.query<{ decision_count: string; revoked_at: Date | null }>(
+      `SELECT count(decisions.id) AS decision_count, roles.revoked_at
+       FROM actor_roles AS roles
+       LEFT JOIN moderation_decisions AS decisions
+         ON decisions.moderator_address = roles.actor_address
+        AND decisions.moderator_role = roles.role
+       WHERE roles.actor_address = $1
+         AND roles.role = 'moderator'
+       GROUP BY roles.revoked_at`,
+      [MODERATOR]
+    )
+    expect(history.rows).toEqual([{ decision_count: '1', revoked_at: new Date(NOW + 1) }])
   })
 
   it('returns only configured-scene rows on the inclusive UTC range with exact bigint strings and no receipts', async () => {

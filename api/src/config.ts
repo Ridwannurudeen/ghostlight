@@ -9,6 +9,7 @@ export type RateConfig = Readonly<{
   publishPerHour: number
   decisionPerMinute: number
   exportPerHour: number
+  auditExportPerHour: number
 }>
 
 export const ACTOR_DIGEST_PURPOSES = [
@@ -19,6 +20,7 @@ export const ACTOR_DIGEST_PURPOSES = [
   'publish-rate',
   'decision-rate',
   'export-rate',
+  'moderation-audit-export-rate',
   'moderation-report',
   'moderation-audit'
 ] as const
@@ -159,7 +161,8 @@ export function parseConfig(env: Environment = process.env): AppConfig {
     reportGuestPerHour: parseInteger(env, 'RATE_REPORT_GUEST_PER_HOUR', 2, 1, MAX_RATE),
     publishPerHour: parseInteger(env, 'RATE_PUBLISH_PER_HOUR', 10, 1, MAX_RATE),
     decisionPerMinute: parseInteger(env, 'RATE_DECISION_PER_MINUTE', 60, 1, MAX_RATE),
-    exportPerHour: parseInteger(env, 'RATE_EXPORT_PER_HOUR', 6, 1, MAX_RATE)
+    exportPerHour: parseInteger(env, 'RATE_EXPORT_PER_HOUR', 6, 1, MAX_RATE),
+    auditExportPerHour: parseInteger(env, 'RATE_AUDIT_EXPORT_PER_HOUR', 6, 1, MAX_RATE)
   })
 
   return Object.freeze({

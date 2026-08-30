@@ -44,9 +44,10 @@ const ROLE_SQL = `SELECT 1
 FROM actor_roles
 WHERE actor_address = $1
   AND role IN ('analyst', 'moderator')
+  AND revoked_at IS NULL
 ORDER BY role ASC
 LIMIT 1
-FOR KEY SHARE`
+FOR SHARE`
 
 const RATE_SQL = `WITH rate_window AS (
   SELECT date_trunc('hour', $3::timestamptz) AS window_start
@@ -158,12 +159,7 @@ function sanitizeRow(
   }
 
   const sceneId = row.sceneId
-  if (
-    day < range.fromDay ||
-    day > range.toDay ||
-    typeof sceneId !== 'string' ||
-    !allowedSceneIds.has(sceneId)
-  ) {
+  if (day < range.fromDay || day > range.toDay || typeof sceneId !== 'string' || !allowedSceneIds.has(sceneId)) {
     throw new Error('Invalid analytics export row')
   }
 
@@ -258,9 +254,7 @@ export class AnalyticsExportRepository {
       if (aggregate.rows.length > canonicalRange.dayCount * this.allowedSceneIds.length) {
         throw new Error('Invalid analytics export row count')
       }
-      const rows = Object.freeze(
-        aggregate.rows.map((row) => sanitizeRow(row, canonicalRange, this.allowedSceneIdSet))
-      )
+      const rows = Object.freeze(aggregate.rows.map((row) => sanitizeRow(row, canonicalRange, this.allowedSceneIdSet)))
 
       await finishTransaction(client, 'COMMIT')
       transactionOpen = false

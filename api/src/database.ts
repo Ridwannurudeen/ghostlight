@@ -26,7 +26,10 @@ export interface DatabasePool extends DatabaseConnectionSource {
 const MIGRATION_LOCK_NAMESPACE = 1_195_912_019
 const MIGRATION_LOCK_ID = 1
 const CONNECTION_TIMEOUT_MILLISECONDS = 5_000
-const initialMigrationPath = fileURLToPath(new URL('../migrations/001_initial.sql', import.meta.url))
+const migrationPaths = Object.freeze([
+  fileURLToPath(new URL('../migrations/001_initial.sql', import.meta.url)),
+  fileURLToPath(new URL('../migrations/002_audit_export.sql', import.meta.url))
+])
 
 function resultOf(result: Readonly<{ rowCount: number | null; rows: readonly QueryResultRow[] }>): DatabaseQueryResult {
   return { rowCount: result.rowCount, rows: result.rows as readonly DatabaseRow[] }
@@ -72,7 +75,7 @@ export class Database implements DatabaseConnectionSource {
   }
 
   async migrate() {
-    const migration = await readFile(initialMigrationPath, 'utf8')
+    const migrations = await Promise.all(migrationPaths.map((migrationPath) => readFile(migrationPath, 'utf8')))
     const client = await this.pool.connect()
     let locked = false
     let failure: unknown
@@ -82,7 +85,7 @@ export class Database implements DatabaseConnectionSource {
       await client.query('SELECT pg_advisory_lock($1, $2)', [MIGRATION_LOCK_NAMESPACE, MIGRATION_LOCK_ID])
       locked = true
       try {
-        await client.query(migration)
+        for (const migration of migrations) await client.query(migration)
       } catch (migrationError) {
         failure = migrationError
         try {

@@ -134,9 +134,13 @@ const MODERATOR_LOCK_SQL = `SELECT 1
 FROM actor_roles
 WHERE actor_address = $1
   AND role = 'moderator'
-FOR KEY SHARE`
+  AND revoked_at IS NULL
+FOR SHARE`
 
 const AUTHOR_LOCK_SQL = `SELECT pg_advisory_xact_lock(hashtextextended('ghostlight:shadow:' || $1, 0))`
+
+const AUDIT_SEQUENCE_LOCK_SQL = `SELECT pg_advisory_xact_lock($1, $2)`
+const AUDIT_SEQUENCE_LOCK_VALUES = [1_195_912_019, 2] as const
 
 const ACTIVE_HIDE_SQL = `SELECT 1
 FROM shadow_hides
@@ -665,6 +669,7 @@ export class ModerationRepository {
         receivedAt
       ])
       if (inserted.rowCount === 1) {
+        await client.query(AUDIT_SEQUENCE_LOCK_SQL, AUDIT_SEQUENCE_LOCK_VALUES)
         await client.query(INSERT_AUDIT_SQL, [
           'published',
           null,
@@ -690,6 +695,7 @@ export class ModerationRepository {
           transactionOpen = false
           return Object.freeze({ status: 'replay', subject: replayed })
         }
+        await client.query(AUDIT_SEQUENCE_LOCK_SQL, AUDIT_SEQUENCE_LOCK_VALUES)
         await client.query(INSERT_AUDIT_SQL, [
           'publish-rejected',
           null,
@@ -709,6 +715,7 @@ export class ModerationRepository {
         throw new Error('Moderation subject insert conflict was not recoverable')
       }
       requireBoundedText(duplicateOf, 'duplicate moderation subject id', MAX_ID_BYTES)
+      await client.query(AUDIT_SEQUENCE_LOCK_SQL, AUDIT_SEQUENCE_LOCK_VALUES)
       await client.query(INSERT_AUDIT_SQL, [
         'publish-rejected',
         null,
@@ -855,6 +862,7 @@ export class ModerationRepository {
         receivedAt
       ])
       if (inserted.rowCount === 1) {
+        await client.query(AUDIT_SEQUENCE_LOCK_SQL, AUDIT_SEQUENCE_LOCK_VALUES)
         await client.query(INSERT_AUDIT_SQL, [
           'reported',
           null,
@@ -1164,6 +1172,7 @@ export class ModerationRepository {
         throw new Error('Invalid moderation report resolution count')
       }
 
+      await client.query(AUDIT_SEQUENCE_LOCK_SQL, AUDIT_SEQUENCE_LOCK_VALUES)
       await client.query(INSERT_AUDIT_SQL, [
         decision.action,
         actorAddress,

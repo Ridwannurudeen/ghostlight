@@ -39,6 +39,7 @@ import type {
   ModerationReportIdentity,
   ModerationReportResult
 } from './moderation-repository.js'
+import { parseModerationAuditCursor, type ModerationAuditExportResult } from './moderation-audit-export-repository.js'
 
 export const MAX_FUNNEL_BODY_BYTES = 1_024
 export const MAX_MODERATION_BODY_BYTES = 8_192
@@ -49,6 +50,7 @@ const MODERATION_SUBJECTS_PATH = '/v1/moderation/subjects'
 const MODERATION_REPORTS_PATH = '/v1/moderation/reports'
 const MODERATION_QUEUE_PATH = '/v1/moderation/queue'
 const MODERATION_DECISIONS_PATH = '/v1/moderation/decisions'
+const MODERATION_AUDIT_ROUTE = '/v1/moderation/audit/:afterSequence'
 
 export interface FunnelRepository {
   recordFunnel(sceneId: string, event: FunnelAnalyticsEvent, rate: AnalyticsRateIdentity): Promise<FunnelIngestResult>
@@ -73,6 +75,10 @@ export interface ModerationHttpRepository {
   decide(decision: ModerationDecisionInput, identity: ModerationDecisionIdentity): Promise<ModerationDecisionResult>
 }
 
+export interface ModerationAuditExportHttpRepository {
+  exportAudit(actorAddress: string, afterSequence: string, bucketHash: Buffer): Promise<ModerationAuditExportResult>
+}
+
 type FunnelHttpConfig = Pick<AppConfig, 'allowedSceneIds' | 'trustedCatalystUrl' | 'digestActor'>
 
 type HttpBaseOptions = Readonly<{
@@ -95,11 +101,17 @@ export type ModerationHandlerOptions = HttpBaseOptions &
     moderationRepository: ModerationHttpRepository
   }>
 
+export type ModerationAuditExportHandlerOptions = HttpBaseOptions &
+  Readonly<{
+    moderationAuditExportRepository: ModerationAuditExportHttpRepository
+  }>
+
 export type HttpRouterOptions = HttpBaseOptions &
   Readonly<{
     repository: FunnelRepository
     exportRepository: FunnelExportRepository
     moderationRepository: ModerationHttpRepository
+    moderationAuditExportRepository: ModerationAuditExportHttpRepository
     isReady: () => Promise<boolean>
   }>
 
@@ -627,6 +639,70 @@ export function createFunnelExportHandler(
   }
 }
 
+type ModerationAuditExportRouteContext = IHttpServerComponent.PathAwareContext<
+  ApiAuthContext,
+  typeof MODERATION_AUDIT_ROUTE
+>
+
+export function createModerationAuditExportHandler(
+  options: ModerationAuditExportHandlerOptions
+): IHttpServerComponent.IRequestHandler<ModerationAuditExportRouteContext> {
+  return async (context) => {
+    const afterSequence: unknown = context.params.afterSequence
+    if (
+      typeof afterSequence !== 'string' ||
+      context.url.pathname !== `/v1/moderation/audit/${afterSequence}` ||
+      context.url.search !== ''
+    ) {
+      return moderationInvalidRequest()
+    }
+
+    let cursor: string
+    try {
+      cursor = parseModerationAuditCursor(afterSequence)
+    } catch {
+      return moderationInvalidRequest()
+    }
+
+    const verification = context.verification
+    if (verification === undefined || !isEmptyWalletMetadata(verification.authMetadata)) {
+      return moderationJson(401, { error: 'unauthorized' })
+    }
+
+    let actor: string
+    try {
+      actor = normalizeAddress(verification.auth)
+    } catch {
+      return moderationJson(401, { error: 'unauthorized' })
+    }
+
+    let result: ModerationAuditExportResult
+    try {
+      result = await options.moderationAuditExportRepository.exportAudit(
+        actor,
+        cursor,
+        options.config.digestActor('moderation-audit-export-rate', actor)
+      )
+    } catch (error) {
+      reportUnexpected(options, error)
+      return moderationJson(503, { error: 'service-unavailable' })
+    }
+
+    switch (result.status) {
+      case 'unauthorized':
+        return moderationJson(403, { error: 'forbidden' })
+      case 'rate-limited':
+        return moderationJson(429, { error: 'rate-limited' }, { 'Retry-After': '3600' })
+      case 'data':
+        return moderationJson(200, {
+          afterSequence: result.afterSequence,
+          nextCursor: result.nextCursor,
+          items: result.items
+        })
+    }
+  }
+}
+
 export function createHttpRouter(options: HttpRouterOptions) {
   const router = new Router<ApiAuthContext>()
   let readiness: Readonly<{ ready: boolean; expiresAt: number }> | undefined
@@ -698,6 +774,12 @@ export function createHttpRouter(options: HttpRouterOptions) {
     noStore,
     createDecisionAuthMiddleware({ trustedCatalystUrl: options.config.trustedCatalystUrl }),
     createModerationDecisionHandler(options)
+  )
+  router.get(
+    MODERATION_AUDIT_ROUTE,
+    noStore,
+    createQueueAuthMiddleware({ trustedCatalystUrl: options.config.trustedCatalystUrl }),
+    createModerationAuditExportHandler(options)
   )
   return router
 }

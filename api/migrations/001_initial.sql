@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS actor_roles (
   actor_address text NOT NULL,
   role text NOT NULL,
   granted_at timestamptz NOT NULL DEFAULT now(),
+  revoked_at timestamptz,
   PRIMARY KEY (actor_address, role),
   CHECK (actor_address ~ '^0x[0-9a-f]{40}$'),
   CHECK (role IN ('moderator', 'analyst', 'trusted-creator'))
@@ -137,7 +138,7 @@ CREATE TABLE IF NOT EXISTS rate_buckets (
   request_count integer NOT NULL,
   expires_at timestamptz NOT NULL,
   PRIMARY KEY (scope, bucket_hash, window_start),
-  CHECK (scope IN ('analytics-wallet', 'analytics-guest', 'report-wallet', 'report-guest', 'publish', 'decision', 'export')),
+  CHECK (scope IN ('analytics-wallet', 'analytics-guest', 'report-wallet', 'report-guest', 'publish', 'decision', 'export', 'moderation-audit-export')),
   CHECK (octet_length(bucket_hash) = 32),
   CHECK (request_count BETWEEN 0 AND 100000),
   CHECK (expires_at > window_start)

@@ -17,14 +17,17 @@ import {
   createFunnelExportHandler,
   createFunnelHandler,
   createHttpRouter,
+  createModerationAuditExportHandler,
   createModerationDecisionHandler,
   createModerationPublishHandler,
   createModerationQueueHandler,
   createModerationReportHandler,
   type FunnelExportRepository,
   type FunnelRepository,
+  type ModerationAuditExportHttpRepository,
   type ModerationHttpRepository
 } from '../src/http.js'
+import type { ModerationAuditExportResult } from '../src/moderation-audit-export-repository.js'
 import type {
   ModerationDecisionIdentity,
   ModerationDecisionResult,
@@ -40,10 +43,14 @@ const NOW = Date.parse('2026-10-01T12:00:00.000Z')
 const address = `0x${'1'.repeat(40)}`
 const sceneId = 'bafkrei-ghostlight'
 const exportPath = '/v1/analytics/funnel/2026-08-01/2026-08-30'
+const auditExportPath = '/v1/moderation/audit/0'
 const validWalletSignatureAddress = '0x5a78743a6917825631ee3a6df74532d57e57daa0'
 const validWalletSignature =
   '0x26831b9a8d8f287957b0618bdc45c90e848ac3cbaf2157e7ed48a050c5d8b82a458f33a4c9b401e8d25aea2b43e4f739602f57773e7d981a2a47f134b22c9fd31c'
 const validWalletSignatureTimestamp = '1790856000000'
+const moderationAuditWalletAddress = '0xd00fc03ed527ca31039cd837c978da40fb2cef19'
+const moderationAuditWalletSignature =
+  '0x9d4aec9c4ff42b2d9ff735f0319f355fd61a6ae7a5a28f2f0f6a7321026939d53ad3cfa60860427f1ddd850fca57463f81aff0b3f5deac6c27fa26aa1fca788a1b'
 const config = parseConfig({
   DATABASE_URL: 'postgresql://ghostlight:password@db.internal:5432/ghostlight',
   ALLOWED_SCENE_IDS: sceneId,
@@ -60,6 +67,12 @@ type FunnelCall = Readonly<{
 type ExportCall = Readonly<{
   actorAddress: string
   range: AnalyticsExportRange
+  bucketHash: Buffer
+}>
+
+type ModerationAuditExportCall = Readonly<{
+  actorAddress: string
+  afterSequence: string
   bucketHash: Buffer
 }>
 
@@ -109,6 +122,12 @@ const moderationSubject: ModerationSubjectRow = Object.freeze({
 
 const noAccessExportRepository: FunnelExportRepository = {
   async exportFunnel() {
+    return { status: 'unauthorized' }
+  }
+}
+
+const noAccessModerationAuditExportRepository: ModerationAuditExportHttpRepository = {
+  async exportAudit() {
     return { status: 'unauthorized' }
   }
 }
@@ -268,6 +287,61 @@ function exportHandlerServer(
           onUnexpectedError: (error) => errors.push(error)
         })
       : createFunnelExportHandler({ config, exportRepository })
+  )
+  server.use(router.middleware())
+  return { server, calls, errors }
+}
+
+function moderationAuditExportHandlerServer(
+  outcome: ModerationAuditExportResult | Error = {
+    status: 'data',
+    afterSequence: '0',
+    nextCursor: null,
+    items: [
+      {
+        sequence: '1',
+        action: 'reported',
+        moderatorAddress: null,
+        subjectId: 'subject-1',
+        createdAt: NOW,
+        details: {
+          clientCreatedAt: NOW - 1,
+          reason: 'abuse',
+          reportId: 'report-1',
+          reportingSceneId: sceneId
+        }
+      }
+    ]
+  },
+  actor = address,
+  authMetadata: Record<string, unknown> = {},
+  captureErrors = true
+) {
+  const calls: ModerationAuditExportCall[] = []
+  const errors: unknown[] = []
+  const moderationAuditExportRepository: ModerationAuditExportHttpRepository = {
+    async exportAudit(actorAddress, afterSequence, bucketHash) {
+      calls.push({ actorAddress, afterSequence, bucketHash })
+      if (outcome instanceof Error) throw outcome
+      return outcome
+    }
+  }
+  const server = createTestServerComponent<ApiAuthContext>()
+  const router = new Router<ApiAuthContext>()
+  server.setContext({})
+  server.use(async (context, next) => {
+    context.verification = { auth: actor, authMetadata }
+    return next()
+  })
+  router.get(
+    '/v1/moderation/audit/:afterSequence',
+    captureErrors
+      ? createModerationAuditExportHandler({
+          config,
+          moderationAuditExportRepository,
+          onUnexpectedError: (error) => errors.push(error)
+        })
+      : createModerationAuditExportHandler({ config, moderationAuditExportRepository })
   )
   server.use(router.middleware())
   return { server, calls, errors }
@@ -1034,6 +1108,140 @@ describe('aggregate funnel export HTTP', () => {
   })
 })
 
+describe('moderation audit export HTTP', () => {
+  it('returns the sanitized page and derives only the dedicated normalized moderator identity', async () => {
+    const fixture = moderationAuditExportHandlerServer(undefined, address.toUpperCase())
+
+    const response = await fixture.server.fetch(auditExportPath)
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    const responseText = await response.text()
+    expect(JSON.parse(responseText)).toEqual({
+      afterSequence: '0',
+      nextCursor: null,
+      items: [
+        {
+          sequence: '1',
+          action: 'reported',
+          moderatorAddress: null,
+          subjectId: 'subject-1',
+          createdAt: NOW,
+          details: {
+            clientCreatedAt: NOW - 1,
+            reason: 'abuse',
+            reportId: 'report-1',
+            reportingSceneId: sceneId
+          }
+        }
+      ]
+    })
+    expect(responseText).not.toContain(address)
+    expect(responseText).not.toContain('digest')
+    expect(responseText).not.toContain('reporter')
+    expect(responseText).not.toContain('content')
+    expect(fixture.calls).toEqual([
+      {
+        actorAddress: address,
+        afterSequence: '0',
+        bucketHash: config.digestActor('moderation-audit-export-rate', address)
+      }
+    ])
+  })
+
+  it('accepts the exact PostgreSQL bigint ceiling and rejects every noncanonical cursor or path before export', async () => {
+    const maximum = moderationAuditExportHandlerServer({
+      status: 'data',
+      afterSequence: '9223372036854775807',
+      nextCursor: null,
+      items: []
+    })
+    expect((await maximum.server.fetch('/v1/moderation/audit/9223372036854775807')).status).toBe(200)
+    expect(maximum.calls[0]?.afterSequence).toBe('9223372036854775807')
+
+    for (const path of [
+      '/v1/moderation/audit/00',
+      '/v1/moderation/audit/01',
+      '/v1/moderation/audit/-1',
+      '/v1/moderation/audit/+1',
+      '/v1/moderation/audit/1.0',
+      '/v1/moderation/audit/9223372036854775808',
+      '/v1/moderation/audit/%30',
+      '/v1/moderation/audit/0/',
+      '/V1/MODERATION/AUDIT/0',
+      '/v1/moderation/audit/0?format=raw'
+    ]) {
+      const fixture = moderationAuditExportHandlerServer()
+      const response = await fixture.server.fetch(path)
+      expect(response.status, path).toBe(400)
+      expect(response.headers.get('cache-control'), path).toBe('no-store')
+      expect(await response.json(), path).toEqual({ error: 'invalid-request' })
+      expect(fixture.calls, path).toEqual([])
+    }
+  })
+
+  it('rejects absent or malformed direct-wallet verification before export', async () => {
+    const invalidMetadata = moderationAuditExportHandlerServer(undefined, address, { unexpected: true })
+    const invalidMetadataResponse = await invalidMetadata.server.fetch(auditExportPath)
+    expect(invalidMetadataResponse.status).toBe(401)
+    expect(invalidMetadataResponse.headers.get('cache-control')).toBe('no-store')
+    expect(await invalidMetadataResponse.json()).toEqual({ error: 'unauthorized' })
+    expect(invalidMetadata.calls).toEqual([])
+
+    const invalidAddress = moderationAuditExportHandlerServer(undefined, 'wallet')
+    const invalidAddressResponse = await invalidAddress.server.fetch(auditExportPath)
+    expect(invalidAddressResponse.status).toBe(401)
+    expect(invalidAddressResponse.headers.get('cache-control')).toBe('no-store')
+    expect(await invalidAddressResponse.json()).toEqual({ error: 'unauthorized' })
+    expect(invalidAddress.calls).toEqual([])
+
+    const server = createTestServerComponent<ApiAuthContext>()
+    const router = new Router<ApiAuthContext>()
+    server.setContext({})
+    router.get(
+      '/v1/moderation/audit/:afterSequence',
+      createModerationAuditExportHandler({
+        config,
+        moderationAuditExportRepository: noAccessModerationAuditExportRepository
+      })
+    )
+    server.use(router.middleware())
+    const missing = await server.fetch(auditExportPath)
+    expect(missing.status).toBe(401)
+    expect(missing.headers.get('cache-control')).toBe('no-store')
+    expect(await missing.json()).toEqual({ error: 'unauthorized' })
+  })
+
+  it('maps role denial and its separate hourly rate limit to stable responses', async () => {
+    const forbidden = moderationAuditExportHandlerServer({ status: 'unauthorized' })
+    const forbiddenResponse = await forbidden.server.fetch(auditExportPath)
+    expect(forbiddenResponse.status).toBe(403)
+    expect(forbiddenResponse.headers.get('cache-control')).toBe('no-store')
+    expect(await forbiddenResponse.json()).toEqual({ error: 'forbidden' })
+
+    const limited = moderationAuditExportHandlerServer({ status: 'rate-limited' })
+    const limitedResponse = await limited.server.fetch(auditExportPath)
+    expect(limitedResponse.status).toBe(429)
+    expect(limitedResponse.headers.get('cache-control')).toBe('no-store')
+    expect(limitedResponse.headers.get('retry-after')).toBe('3600')
+    expect(await limitedResponse.json()).toEqual({ error: 'rate-limited' })
+  })
+
+  it('sanitizes and reports repository failures as unavailable', async () => {
+    const failure = new Error('postgresql://moderator:secret@db.internal leaked')
+    const fixture = moderationAuditExportHandlerServer(failure)
+
+    const response = await fixture.server.fetch(auditExportPath)
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    const responseText = await response.text()
+    expect(JSON.parse(responseText)).toEqual({ error: 'service-unavailable' })
+    expect(responseText).not.toContain('secret')
+    expect(fixture.errors).toEqual([failure])
+  })
+})
+
 describe('HTTP router boundaries', () => {
   it('keeps liveness public and makes readiness fail closed without exposing probe errors', async () => {
     vi.useFakeTimers()
@@ -1050,6 +1258,7 @@ describe('HTTP router boundaries', () => {
       repository,
       exportRepository: noAccessExportRepository,
       moderationRepository: noAccessModerationRepository,
+      moderationAuditExportRepository: noAccessModerationAuditExportRepository,
       isReady: async () => {
         readinessProbes += 1
         if (readiness === 'error') throw new Error('database credentials leaked')
@@ -1104,6 +1313,7 @@ describe('HTTP router boundaries', () => {
       },
       exportRepository: noAccessExportRepository,
       moderationRepository: noAccessModerationRepository,
+      moderationAuditExportRepository: noAccessModerationAuditExportRepository,
       isReady: async () => true
     })
     const server = createTestServerComponent<SceneAuthContext>()
@@ -1128,6 +1338,7 @@ describe('HTTP router boundaries', () => {
       },
       exportRepository: noAccessExportRepository,
       moderationRepository: mock.repository,
+      moderationAuditExportRepository: noAccessModerationAuditExportRepository,
       isReady: async () => true
     })
     const server = createTestServerComponent<ApiAuthContext>()
@@ -1192,6 +1403,7 @@ describe('HTTP router boundaries', () => {
         }
       },
       moderationRepository: noAccessModerationRepository,
+      moderationAuditExportRepository: noAccessModerationAuditExportRepository,
       isReady: async () => true
     })
     const server = createTestServerComponent<ApiAuthContext>()
@@ -1265,6 +1477,77 @@ describe('HTTP router boundaries', () => {
           actorAddress: validWalletSignatureAddress,
           range: { fromDay: '2026-08-01', toDay: '2026-08-30', dayCount: 30 },
           bucketHash: config.digestActor('export-rate', validWalletSignatureAddress)
+        }
+      ])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('binds production moderator audit authentication to the exact cursor path and empty metadata', async () => {
+    const calls: ModerationAuditExportCall[] = []
+    const router = createHttpRouter({
+      config,
+      repository: {
+        async recordFunnel() {
+          return 'recorded'
+        }
+      },
+      exportRepository: noAccessExportRepository,
+      moderationRepository: noAccessModerationRepository,
+      moderationAuditExportRepository: {
+        async exportAudit(actorAddress, afterSequence, bucketHash) {
+          calls.push({ actorAddress, afterSequence, bucketHash })
+          return { status: 'data', afterSequence, nextCursor: null, items: [] }
+        }
+      },
+      isReady: async () => true
+    })
+    const server = createTestServerComponent<ApiAuthContext>()
+    server.setContext({})
+    server.use(router.middleware())
+
+    const unsigned = await server.fetch(auditExportPath)
+    expect(unsigned.status).toBe(400)
+    expect(unsigned.headers.get('cache-control')).toBe('no-store')
+    expect(await unsigned.json()).toEqual({ error: 'invalid-request' })
+    expect(calls).toEqual([])
+
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(Number(validWalletSignatureTimestamp))
+      const rawMetadata = '{}'
+      const payload = createPayload('GET', auditExportPath, validWalletSignatureTimestamp, rawMetadata)
+      const walletHeaders = {
+        'x-identity-auth-chain-0': JSON.stringify({
+          type: 'SIGNER',
+          payload: moderationAuditWalletAddress,
+          signature: ''
+        }),
+        'x-identity-auth-chain-1': JSON.stringify({
+          type: 'ECDSA_SIGNED_ENTITY',
+          payload,
+          signature: moderationAuditWalletSignature
+        }),
+        'x-identity-timestamp': validWalletSignatureTimestamp,
+        'x-identity-metadata': rawMetadata
+      }
+
+      const differentCursor = await server.fetch('/v1/moderation/audit/1', { headers: walletHeaders })
+      expect(differentCursor.status).toBe(401)
+      expect(differentCursor.headers.get('cache-control')).toBe('no-store')
+      expect(await differentCursor.json()).toEqual({ error: 'unauthorized' })
+      expect(calls).toEqual([])
+
+      const authorized = await server.fetch(auditExportPath, { headers: walletHeaders })
+      expect(authorized.status).toBe(200)
+      expect(authorized.headers.get('cache-control')).toBe('no-store')
+      expect(await authorized.json()).toEqual({ afterSequence: '0', nextCursor: null, items: [] })
+      expect(calls).toEqual([
+        {
+          actorAddress: moderationAuditWalletAddress,
+          afterSequence: '0',
+          bucketHash: config.digestActor('moderation-audit-export-rate', moderationAuditWalletAddress)
         }
       ])
     } finally {

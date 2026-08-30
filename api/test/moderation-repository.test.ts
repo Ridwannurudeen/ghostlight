@@ -88,6 +88,18 @@ class ScriptedDatabase implements DatabaseConnectionSource {
   }
 }
 
+function expectSerializedAuditWrites(calls: readonly QueryCall[]) {
+  const auditInsertIndexes = calls
+    .map(({ text }, index) => (text.includes('INSERT INTO moderation_audit') ? index : -1))
+    .filter((index) => index !== -1)
+
+  expect(auditInsertIndexes.length).toBeGreaterThan(0)
+  for (const index of auditInsertIndexes) {
+    expect(calls[index - 1]?.text.trim()).toBe('SELECT pg_advisory_xact_lock($1, $2)')
+    expect(calls[index - 1]?.values).toEqual([1_195_912_019, 2])
+  }
+}
+
 function repository(database: DatabaseConnectionSource, allowedSceneIds: readonly string[] = ['scene-a']) {
   return new ModerationRepository(database, {
     allowedSceneIds,
@@ -185,6 +197,7 @@ describe('moderation repository configuration and boundaries', () => {
       { result: oneRow() },
       { result: oneRow() },
       { result: oneRow(subjectRow()) },
+      { result: emptyResult() },
       { result: emptyResult() },
       { result: emptyResult() }
     ])
@@ -296,6 +309,7 @@ describe('transactional untrusted publishing', () => {
       { result: oneRow({ request_count: 1 }) },
       { result: oneRow(subjectRow({ content: canonicalInput.content })) },
       { result: emptyResult() },
+      { result: emptyResult() },
       { result: emptyResult() }
     ])
     const moderation = repository(new ScriptedDatabase([client]))
@@ -307,6 +321,7 @@ describe('transactional untrusted publishing', () => {
       expect.stringContaining('FROM scene_allowlist'),
       expect.stringContaining('INSERT INTO rate_buckets'),
       expect.stringContaining('INSERT INTO moderation_subjects'),
+      'SELECT pg_advisory_xact_lock($1, $2)',
       expect.stringContaining('INSERT INTO moderation_audit'),
       'COMMIT'
     ])
@@ -324,7 +339,7 @@ describe('transactional untrusted publishing', () => {
       true,
       new Date(NOW)
     ])
-    expect(client.calls[4]?.values).toEqual([
+    expect(client.calls[5]?.values).toEqual([
       'published',
       null,
       AUDIT_DIGEST,
@@ -332,7 +347,8 @@ describe('transactional untrusted publishing', () => {
       new Date(NOW),
       JSON.stringify({ clientCreatedAt: NOW })
     ])
-    expect(client.calls[4]?.values[2]).not.toBe(AUDIT_DIGEST)
+    expect(client.calls[5]?.values[2]).not.toBe(AUDIT_DIGEST)
+    expectSerializedAuditWrites(client.calls)
     expect(result).toEqual({
       status: 'published',
       subject: {
@@ -415,6 +431,7 @@ describe('transactional untrusted publishing', () => {
       { result: emptyResult() },
       { result: oneRow(subjectRow({ fingerprint, exactClientTimestamp: false })) },
       { result: emptyResult() },
+      { result: emptyResult() },
       { result: emptyResult() }
     ])
     const moderation = repository(new ScriptedDatabase([replay, conflict]))
@@ -428,7 +445,7 @@ describe('transactional untrusted publishing', () => {
 
     expect(replay.calls[2]?.text).toContain('INSERT INTO rate_buckets')
     expect(replay.calls.at(-1)?.text).toBe('COMMIT')
-    expect(conflict.calls[5]?.values).toEqual([
+    expect(conflict.calls[6]?.values).toEqual([
       'publish-rejected',
       null,
       AUDIT_DIGEST,
@@ -436,6 +453,7 @@ describe('transactional untrusted publishing', () => {
       new Date(NOW),
       JSON.stringify({ clientCreatedAt: NOW, reason: 'id-conflict', requestedSubjectId: 'subject-1' })
     ])
+    expectSerializedAuditWrites(conflict.calls)
     expect(conflict.calls.at(-1)?.text).toBe('COMMIT')
     replay.assertComplete()
     conflict.assertComplete()
@@ -452,6 +470,7 @@ describe('transactional untrusted publishing', () => {
       { result: emptyResult() },
       { result: oneRow({ id: 'subject-1' }) },
       { result: emptyResult() },
+      { result: emptyResult() },
       { result: emptyResult() }
     ])
     const moderation = repository(new ScriptedDatabase([client]))
@@ -464,9 +483,9 @@ describe('transactional untrusted publishing', () => {
     expect(client.calls[3]?.values?.[4]).toBe(fingerprint)
     expect(client.calls[5]?.text).toContain("status <> 'tombstoned'")
     expect(client.calls[5]?.text).not.toContain('scene_id')
-    expect(client.calls[6]?.values?.[1]).toBeNull()
-    expect(client.calls[6]?.values?.[3]).toBeNull()
-    expect(client.calls[6]?.values?.[5]).toBe(
+    expect(client.calls[7]?.values?.[1]).toBeNull()
+    expect(client.calls[7]?.values?.[3]).toBeNull()
+    expect(client.calls[7]?.values?.[5]).toBe(
       JSON.stringify({
         clientCreatedAt: NOW,
         duplicateOf: 'subject-1',
@@ -474,6 +493,7 @@ describe('transactional untrusted publishing', () => {
         requestedSubjectId: 'subject-2'
       })
     )
+    expectSerializedAuditWrites(client.calls)
     expect(client.calls.at(-1)?.text).toBe('COMMIT')
     client.assertComplete()
   })
@@ -524,6 +544,7 @@ describe('transactional pseudonymous reporting', () => {
       { result: emptyResult() },
       { result: oneRow({ id: 'report-1' }) },
       { result: emptyResult() },
+      { result: emptyResult() },
       { result: emptyResult() }
     ])
     const moderation = repository(new ScriptedDatabase([client]))
@@ -541,6 +562,7 @@ describe('transactional pseudonymous reporting', () => {
       expect.stringContaining('pg_advisory_xact_lock'),
       expect.stringContaining('FROM shadow_hides'),
       expect.stringContaining('INSERT INTO moderation_reports'),
+      'SELECT pg_advisory_xact_lock($1, $2)',
       expect.stringContaining('INSERT INTO moderation_audit'),
       'COMMIT'
     ])
@@ -549,7 +571,7 @@ describe('transactional pseudonymous reporting', () => {
     expect(client.calls[5]?.values).toEqual([ACTOR])
     expect(client.calls[6]?.values).toEqual([ACTOR])
     expect(client.calls[7]?.values).toEqual(['report-1', 'subject-1', REPORTER_DIGEST, 'abuse', new Date(NOW)])
-    expect(client.calls[8]?.values).toEqual([
+    expect(client.calls[9]?.values).toEqual([
       'reported',
       null,
       AUDIT_DIGEST,
@@ -563,7 +585,8 @@ describe('transactional pseudonymous reporting', () => {
       })
     ])
     expect(client.calls[7]?.values[2]).not.toBe(REPORTER_DIGEST)
-    expect(client.calls[8]?.values[2]).not.toBe(AUDIT_DIGEST)
+    expect(client.calls[9]?.values[2]).not.toBe(AUDIT_DIGEST)
+    expectSerializedAuditWrites(client.calls)
     expect(client.releases).toEqual([undefined])
     client.assertComplete()
   })
@@ -768,7 +791,9 @@ describe('moderator queue and public eligibility', () => {
       'COMMIT'
     ])
     expect(client.calls[1]?.text).toContain("role = 'moderator'")
-    expect(client.calls[1]?.text).toContain('FOR KEY SHARE')
+    expect(client.calls[1]?.text).toContain('revoked_at IS NULL')
+    expect(client.calls[1]?.text).toContain('FOR SHARE')
+    expect(client.calls[1]?.text).not.toContain('FOR KEY SHARE')
     expect(client.calls[2]?.text).toContain("WHERE reports.status = 'open'")
     expect(client.calls[2]?.text).toContain('FROM shadow_hides')
     expect(client.calls[2]?.text).toContain('hides.lifted_at IS NULL')
@@ -942,6 +967,7 @@ describe('transactional moderator decisions', () => {
       },
       { result: emptyResult(2) },
       { result: emptyResult() },
+      { result: emptyResult() },
       { result: emptyResult() }
     ])
     const moderation = repository(new ScriptedDatabase([client]))
@@ -972,6 +998,7 @@ describe('transactional moderator decisions', () => {
       expect.stringContaining('INSERT INTO moderation_decisions'),
       expect.stringContaining(scenario.transition),
       expect.stringContaining('UPDATE moderation_reports'),
+      'SELECT pg_advisory_xact_lock($1, $2)',
       expect.stringContaining('INSERT INTO moderation_audit'),
       'COMMIT'
     ])
@@ -986,7 +1013,7 @@ describe('transactional moderator decisions', () => {
       new Date(NOW)
     ])
     expect(client.calls[decisionInsertIndex + 2]?.text).toContain("status = 'open'")
-    expect(client.calls[decisionInsertIndex + 3]?.values).toEqual([
+    expect(client.calls[decisionInsertIndex + 4]?.values).toEqual([
       scenario.action,
       MODERATOR,
       AUDIT_DIGEST,
@@ -994,6 +1021,7 @@ describe('transactional moderator decisions', () => {
       new Date(NOW),
       JSON.stringify({ clientCreatedAt: NOW, decisionId: input.id, reason: input.reason })
     ])
+    expectSerializedAuditWrites(client.calls)
     expect(client.calls.at(-1)?.text).toBe('COMMIT')
     expect(client.releases).toEqual([undefined])
     client.assertComplete()

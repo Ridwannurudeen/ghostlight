@@ -106,9 +106,7 @@ describe('analytics export UTC range parsing', () => {
     expect(sameDay).toEqual({ fromDay: '2026-08-30', toDay: '2026-08-30', dayCount: 1 })
     expect(maximumRange).toEqual({ fromDay: '2026-01-01', toDay: '2026-01-31', dayCount: 31 })
     expect(Object.isFrozen(maximumRange)).toBe(true)
-    expect(() => parseAnalyticsExportRange('2026-08-31', '2026-08-30')).toThrow(
-      'Invalid analytics export range'
-    )
+    expect(() => parseAnalyticsExportRange('2026-08-31', '2026-08-30')).toThrow('Invalid analytics export range')
     expect(() => parseAnalyticsExportRange('2026-01-01', '2026-02-01')).toThrow(
       'Analytics export range cannot exceed 31 days'
     )
@@ -145,8 +143,9 @@ describe('transactional analytics export repository', () => {
 
     const roleCall = client.calls[1]
     expect(roleCall?.text).toContain("role IN ('analyst', 'moderator')")
+    expect(roleCall?.text).toContain('revoked_at IS NULL')
     expect(roleCall?.text).not.toContain('trusted-creator')
-    expect(roleCall?.text).toMatch(/ORDER BY role ASC\s+LIMIT 1\s+FOR KEY SHARE/u)
+    expect(roleCall?.text).toMatch(/ORDER BY role ASC\s+LIMIT 1\s+FOR SHARE/u)
     expect(roleCall?.values).toEqual([ACTOR_ADDRESS])
 
     const rateCall = client.calls[2]
@@ -188,20 +187,11 @@ describe('transactional analytics export repository', () => {
   })
 
   it('denies callers without an analyst or moderator role before consuming rate', async () => {
-    const client = new ScriptedClient([
-      { result: emptyResult() },
-      { result: emptyResult() },
-      { result: emptyResult() }
-    ])
+    const client = new ScriptedClient([{ result: emptyResult() }, { result: emptyResult() }, { result: emptyResult() }])
     const analytics = repository(new ScriptedDatabase([client]))
 
     await expect(
-      analytics.exportFunnel(
-        ACTOR_ADDRESS,
-        parseAnalyticsExportRange('2026-08-30', '2026-08-30'),
-        BUCKET_HASH,
-        NOW
-      )
+      analytics.exportFunnel(ACTOR_ADDRESS, parseAnalyticsExportRange('2026-08-30', '2026-08-30'), BUCKET_HASH, NOW)
     ).resolves.toEqual({ status: 'unauthorized' })
 
     expect(client.calls.map(({ text }) => text.trim())).toEqual([
@@ -224,16 +214,11 @@ describe('transactional analytics export repository', () => {
     const analytics = repository(new ScriptedDatabase([client]))
 
     await expect(
-      analytics.exportFunnel(
-        ACTOR_ADDRESS,
-        parseAnalyticsExportRange('2026-08-30', '2026-08-30'),
-        BUCKET_HASH,
-        NOW
-      )
+      analytics.exportFunnel(ACTOR_ADDRESS, parseAnalyticsExportRange('2026-08-30', '2026-08-30'), BUCKET_HASH, NOW)
     ).resolves.toEqual({ status: 'data', rows: [] })
 
     expect(client.calls[1]?.text).toMatch(
-      /role IN \('analyst', 'moderator'\)\s+ORDER BY role ASC\s+LIMIT 1\s+FOR KEY SHARE/u
+      /role IN \('analyst', 'moderator'\)\s+AND revoked_at IS NULL\s+ORDER BY role ASC\s+LIMIT 1\s+FOR SHARE/u
     )
     expect(client.calls[2]?.text).toContain('INSERT INTO rate_buckets')
     expect(client.calls[3]?.text).toContain('FROM daily_funnel_aggregates')
@@ -251,12 +236,7 @@ describe('transactional analytics export repository', () => {
     const analytics = repository(new ScriptedDatabase([client]))
 
     await expect(
-      analytics.exportFunnel(
-        ACTOR_ADDRESS,
-        parseAnalyticsExportRange('2026-08-30', '2026-08-30'),
-        BUCKET_HASH,
-        NOW
-      )
+      analytics.exportFunnel(ACTOR_ADDRESS, parseAnalyticsExportRange('2026-08-30', '2026-08-30'), BUCKET_HASH, NOW)
     ).resolves.toEqual({ status: 'rate-limited' })
 
     expect(client.calls.map(({ text }) => text.trim())).toEqual([
@@ -305,12 +285,7 @@ describe('transactional analytics export repository', () => {
     const analytics = repository(new ScriptedDatabase([client]))
 
     await expect(
-      analytics.exportFunnel(
-        ACTOR_ADDRESS,
-        parseAnalyticsExportRange('2026-08-30', '2026-08-30'),
-        BUCKET_HASH,
-        NOW
-      )
+      analytics.exportFunnel(ACTOR_ADDRESS, parseAnalyticsExportRange('2026-08-30', '2026-08-30'), BUCKET_HASH, NOW)
     ).rejects.toThrow('Invalid analytics export row')
 
     expect(client.calls.at(-1)?.text).toBe('ROLLBACK')
@@ -329,12 +304,7 @@ describe('transactional analytics export repository', () => {
     const analytics = repository(new ScriptedDatabase([client]))
 
     await expect(
-      analytics.exportFunnel(
-        ACTOR_ADDRESS,
-        parseAnalyticsExportRange('2026-08-30', '2026-08-30'),
-        BUCKET_HASH,
-        NOW
-      )
+      analytics.exportFunnel(ACTOR_ADDRESS, parseAnalyticsExportRange('2026-08-30', '2026-08-30'), BUCKET_HASH, NOW)
     ).rejects.toThrow('Invalid analytics export row count')
 
     expect(client.calls.at(-1)?.text).toBe('ROLLBACK')
@@ -354,12 +324,7 @@ describe('transactional analytics export repository', () => {
     const analytics = repository(new ScriptedDatabase([client]))
 
     await expect(
-      analytics.exportFunnel(
-        ACTOR_ADDRESS,
-        parseAnalyticsExportRange('2026-08-30', '2026-08-30'),
-        BUCKET_HASH,
-        NOW
-      )
+      analytics.exportFunnel(ACTOR_ADDRESS, parseAnalyticsExportRange('2026-08-30', '2026-08-30'), BUCKET_HASH, NOW)
     ).rejects.toBe(queryFailure)
 
     expect(client.calls.at(-1)?.text).toBe('ROLLBACK')
@@ -380,12 +345,7 @@ describe('transactional analytics export repository', () => {
     const analytics = repository(new ScriptedDatabase([client]))
 
     const failure = await analytics
-      .exportFunnel(
-        ACTOR_ADDRESS,
-        parseAnalyticsExportRange('2026-08-30', '2026-08-30'),
-        BUCKET_HASH,
-        NOW
-      )
+      .exportFunnel(ACTOR_ADDRESS, parseAnalyticsExportRange('2026-08-30', '2026-08-30'), BUCKET_HASH, NOW)
       .catch((error: unknown) => error)
 
     expect(failure).toBeInstanceOf(AggregateError)

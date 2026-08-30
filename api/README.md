@@ -8,6 +8,7 @@ funnel analytics and persistent moderation staging. It currently provides:
 - an analyst/moderator-only aggregate export endpoint that never exposes receipts, addresses, or actor digests;
 - direct-wallet, body-bound publishing into an isolated `untrusted` channel;
 - scene-shaped wallet-signed reporting plus a direct-wallet moderator queue and one-way moderation decisions;
+- a moderator-only, cursor-paginated audit export with a dedicated hourly quota and sanitized action details;
 - public liveness and database-backed readiness probes;
 - JSON application logs, graceful lifecycle shutdown, strict type-checking, an emitted runtime build, and focused
   unit and PostgreSQL integration tests.
@@ -40,8 +41,10 @@ metadata keys, World `sceneId`, chain length, raw-body hash, and v6 signature co
 Moderation publishing uses a direct wallet signature with exact `{ "sceneId", "hashPayload" }` metadata. Reports
 use the exact scene-shaped metadata above, with the same limitation: it proves wallet control but not that the caller
 was running inside Explorer. Queue reads require a direct wallet signature with empty metadata; decisions use exact
-`{ "hashPayload" }` metadata. The publish, report, and decision hashes bind the lowercase SHA-256 of the exact raw
-request body. All authenticated analytics and moderation responses, including auth failures, are marked
+`{ "hashPayload" }` metadata. Audit export also requires empty metadata. Its wallet signature includes the
+cursor-bearing pathname, while the handler separately requires its exact canonical lowercase representation. The
+publish, report, and decision hashes bind the lowercase SHA-256 of the exact raw request body. All authenticated
+analytics and moderation responses, including auth failures, are marked
 `Cache-Control: no-store`.
 
 Every HTTP publish is staged as `channel = 'untrusted'`. The repository's eligibility check accepts only `curated`
@@ -52,9 +55,9 @@ promotion endpoint in this slice; role provisioning and any future positive revi
 
 ### Health
 
-| Route | Result |
-| --- | --- |
-| `GET /health/live` | `200` while the HTTP process is serving |
+| Route               | Result                                                                                        |
+| ------------------- | --------------------------------------------------------------------------------------------- |
+| `GET /health/live`  | `200` while the HTTP process is serving                                                       |
 | `GET /health/ready` | `200` only when the one-second coalesced PostgreSQL probe is ready; otherwise sanitized `503` |
 
 ### Funnel ingestion
@@ -155,6 +158,41 @@ The current workflow is intentionally one-way. It has no report dismissal, unqua
 or positive approval operation. A reporter also cannot repeat the same subject/reason report after it has been
 resolved. Tombstones retain evidence, including subject content and author address; true personal-data erasure needs
 a separately designed retention migration. Moderator and analyst roles must be provisioned out-of-band before use.
+Setting `actor_roles.revoked_at` revokes access without deleting historical decision relationships; every protected
+read rechecks that the role remains active while holding a shared row lock.
+
+### Moderation audit export
+
+`GET /v1/moderation/audit/{afterSequence}` requires a direct wallet with an active `moderator` role. The cursor is a
+canonical decimal PostgreSQL `bigint` from `0` through `9223372036854775807`; it is included in the signed pathname,
+and the handler separately rejects query strings, leading zeroes, encoded cursors, case variants, and trailing
+slashes. A page contains at most 50 records in ascending sequence order:
+
+```json
+{
+  "afterSequence": "0",
+  "nextCursor": null,
+  "items": []
+}
+```
+
+`nextCursor` is the last returned sequence only when another row exists; otherwise it is `null`. Clients pass that
+cursor unchanged to fetch the next page. Each item contains only `sequence`, `action`, `moderatorAddress`,
+`subjectId`, `createdAt`, and an exact action-specific `details` object:
+
+- `published`: `clientCreatedAt`;
+- `publish-rejected`: `clientCreatedAt`, `reason`, `requestedSubjectId`, and `duplicateOf` only for duplicates;
+- `reported`: `clientCreatedAt`, `reason`, `reportId`, and `reportingSceneId`;
+- `quarantined`, `shadow-hidden`, or `tombstoned`: `clientCreatedAt`, `decisionId`, and `reason`.
+
+Only decision actions identify the acting moderator; automated publish/report events return `moderatorAddress: null`.
+The export never returns actor digests, reporter digests, rate-bucket hashes, subject content, author addresses, or raw
+audit JSON. Unexpected or malformed stored audit data fails the whole request as a sanitized `503`.
+
+Audit export has its own atomic hourly moderator quota, separate from aggregate analytics export. Revocation is
+serialized against protected reads. Every application audit writer also takes the same transaction-scoped advisory
+lock before allocating a sequence, so cursor order follows commit order and a later committed page cannot permanently
+skip an earlier application transaction.
 
 ## Configuration
 
@@ -167,18 +205,19 @@ Required environment variables:
 
 Optional settings and defaults:
 
-| Variable | Default | Bound |
-| --- | ---: | ---: |
-| `HTTP_SERVER_HOST` | `127.0.0.1` | hostname or IP, at most 253 characters |
-| `HTTP_SERVER_PORT` | `3100` | 1–65535 |
-| `ANALYTICS_RETENTION_DAYS` | `31` | 1–366 |
-| `RATE_ANALYTICS_WALLET_PER_MINUTE` | `120` | 1–100000 |
-| `RATE_ANALYTICS_GUEST_PER_MINUTE` | `30` | 1–100000 |
-| `RATE_REPORT_WALLET_PER_HOUR` | `5` | 1–100000 |
-| `RATE_REPORT_GUEST_PER_HOUR` | `2` | 1–100000 |
-| `RATE_PUBLISH_PER_HOUR` | `10` | 1–100000 |
-| `RATE_DECISION_PER_MINUTE` | `60` | 1–100000 |
-| `RATE_EXPORT_PER_HOUR` | `6` | 1–100000 |
+| Variable                           |     Default |                                  Bound |
+| ---------------------------------- | ----------: | -------------------------------------: |
+| `HTTP_SERVER_HOST`                 | `127.0.0.1` | hostname or IP, at most 253 characters |
+| `HTTP_SERVER_PORT`                 |      `3100` |                                1–65535 |
+| `ANALYTICS_RETENTION_DAYS`         |        `31` |                                  1–366 |
+| `RATE_ANALYTICS_WALLET_PER_MINUTE` |       `120` |                               1–100000 |
+| `RATE_ANALYTICS_GUEST_PER_MINUTE`  |        `30` |                               1–100000 |
+| `RATE_REPORT_WALLET_PER_HOUR`      |         `5` |                               1–100000 |
+| `RATE_REPORT_GUEST_PER_HOUR`       |         `2` |                               1–100000 |
+| `RATE_PUBLISH_PER_HOUR`            |        `10` |                               1–100000 |
+| `RATE_DECISION_PER_MINUTE`         |        `60` |                               1–100000 |
+| `RATE_EXPORT_PER_HOUR`             |         `6` |                               1–100000 |
+| `RATE_AUDIT_EXPORT_PER_HOUR`       |         `6` |                               1–100000 |
 
 No secret file is included. Every actor digest uses a fixed purpose domain, and Ethereum addresses are canonicalized
 before hashing so casing cannot split one actor into multiple buckets. `ANALYTICS_RETENTION_DAYS` currently defines
@@ -189,8 +228,9 @@ Connections to the configured Catalyst for contract-wallet signature verificatio
 requests, a three-second full-response deadline, and a 16 KiB response body. Excess work fails closed as `503`.
 
 Configured scenes are upserted at startup without deleting historical allowlist rows. The service applies the
-rerunnable `migrations/001_initial.sql` behind a session advisory lock before it starts listening. PostgreSQL
-connections have a five-second acquisition timeout, and shutdown closes the HTTP listener before the pool.
+ordered, rerunnable `001_initial.sql` and `002_audit_export.sql` migrations behind a session advisory lock before it
+starts listening. PostgreSQL connections have a five-second acquisition timeout, and shutdown closes the HTTP
+listener before the pool.
 
 ## Build and verification
 
@@ -209,9 +249,10 @@ npm start
 
 The PostgreSQL tests create isolated random schemas and cover rerunnable migrations, allowlist seeding, UTC grouping,
 all eight counters, analytics and moderation replay/conflict behavior, privacy, role authorization, exact bigint
-export, rollback/retry, concurrent rate limits, decision monotonicity, and report races against shadow-hide and
-tombstone transitions. They execute only when `TEST_DATABASE_URL` is explicitly supplied; otherwise Vitest marks them
-skipped. CI supplies PostgreSQL 17 and Node 22. A local skip is never reported as PostgreSQL execution.
+export, audit pagination and sanitization, revocation, rollback/retry, concurrent rate limits, decision monotonicity,
+and report races against shadow-hide and tombstone transitions. They execute only when `TEST_DATABASE_URL` is
+explicitly supplied; otherwise Vitest marks them skipped. CI supplies PostgreSQL 17 and Node 22. A local skip is never
+reported as PostgreSQL execution.
 
 Per-actor database limits do not stop wallet rotation or prove Explorer provenance. Before exposing reporting, a
 production deployment needs bounded proxy/IP and global request limits plus a per-scene ceiling. It also still needs

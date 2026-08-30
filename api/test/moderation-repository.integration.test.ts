@@ -311,6 +311,59 @@ describeDatabase('moderation repository against PostgreSQL', () => {
     expect(persisted.rows).toEqual([{ created_at: String(NOW) }, { created_at: String(NOW + 1_000) }])
   })
 
+  it('revokes queue and decision authority without deleting historical moderator records', async () => {
+    const moderation = repository()
+    await moderation.publish('scene-a', subject('subject-1', 'Historical decision'), publishIdentity(ACTOR_A, 1), NOW)
+    await moderation.publish(
+      'scene-b',
+      subject('subject-2', 'Post-revocation target'),
+      publishIdentity(ACTOR_B, 2),
+      NOW
+    )
+    await moderation.report('scene-a', report('report-1', 'subject-1'), reportIdentity(3), NOW)
+    await moderation.report('scene-b', report('report-2', 'subject-2'), reportIdentity(4), NOW)
+    await expect(
+      moderation.decide(decision('decision-1', 'subject-1', 'quarantined'), decisionIdentity(5), NOW)
+    ).resolves.toMatchObject({ status: 'applied', action: 'quarantined' })
+
+    await expect(
+      inspect.query(
+        `UPDATE actor_roles
+         SET revoked_at = $2
+         WHERE actor_address = $1
+           AND role = 'moderator'`,
+        [MODERATOR, new Date(NOW + 500)]
+      )
+    ).resolves.toMatchObject({ rowCount: 1 })
+
+    await expect(moderation.queue(MODERATOR)).resolves.toEqual({ status: 'unauthorized' })
+    await expect(
+      moderation.decide(
+        decision('decision-2', 'subject-2', 'tombstoned', NOW + 1_000),
+        decisionIdentity(6),
+        NOW + 1_000
+      )
+    ).resolves.toEqual({ status: 'unauthorized' })
+
+    const state = await inspect.query<{
+      revoked: boolean
+      decisions: string
+      open_reports: string
+      decision_rates: string
+    }>(
+      `SELECT
+         roles.revoked_at IS NOT NULL AS revoked,
+         (SELECT count(*) FROM moderation_decisions) AS decisions,
+         (SELECT count(*) FROM moderation_reports WHERE status = 'open') AS open_reports,
+         (SELECT count(*) FROM rate_buckets WHERE scope = 'decision') AS decision_rates
+       FROM actor_roles AS roles
+       WHERE roles.actor_address = $1
+         AND roles.role = 'moderator'`,
+      [MODERATOR]
+    )
+    expect(state.rows).toEqual([{ revoked: true, decisions: '1', open_reports: '1', decision_rates: '1' }])
+  })
+
   it('admits exact concurrent publish and report limits with atomic fixed windows', async () => {
     const moderation = repository(database, { publishPerHour: 3, reportWalletPerHour: 2 })
     const publishRate = publishIdentity(ACTOR_A, 1)

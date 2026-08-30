@@ -30,7 +30,8 @@ describe('startup config', () => {
       reportGuestPerHour: 2,
       publishPerHour: 10,
       decisionPerMinute: 60,
-      exportPerHour: 6
+      exportPerHour: 6,
+      auditExportPerHour: 6
     })
     expect(JSON.stringify(config)).not.toContain(actorDigestKey)
     expect(Object.keys(config)).not.toContain('actorDigestKey')
@@ -39,6 +40,7 @@ describe('startup config', () => {
     expect(digest).toHaveLength(32)
     expect(config.digestActor('analytics-wallet-rate', address.toUpperCase())).toEqual(digest)
     expect(config.digestActor('report-wallet-rate', address)).not.toEqual(digest)
+    expect(config.digestActor('moderation-audit-export-rate', address)).not.toEqual(digest)
     expect(config.digestActor('analytics-wallet-rate', `0x${'b'.repeat(40)}`)).not.toEqual(digest)
     expect(() => (config.digestActor as (purpose: string, actorId: string) => Buffer)('unknown', address)).toThrow(
       'Actor digest purpose'
@@ -87,9 +89,9 @@ describe('startup config', () => {
     expect(parseConfig(validEnv({ TRUSTED_CATALYST_URL: 'https://[2001:db8::1]:8443' })).trustedCatalystUrl).toBe(
       'https://[2001:db8::1]:8443'
     )
-    expect(() =>
-      parseConfig(validEnv({ TRUSTED_CATALYST_URL: `https://${'a'.repeat(2_040)}.org` }))
-    ).toThrow('TRUSTED_CATALYST_URL')
+    expect(() => parseConfig(validEnv({ TRUSTED_CATALYST_URL: `https://${'a'.repeat(2_040)}.org` }))).toThrow(
+      'TRUSTED_CATALYST_URL'
+    )
   })
 
   it('validates every retention and rate integer against its exact bound', () => {
@@ -102,7 +104,8 @@ describe('startup config', () => {
       'RATE_REPORT_GUEST_PER_HOUR',
       'RATE_PUBLISH_PER_HOUR',
       'RATE_DECISION_PER_MINUTE',
-      'RATE_EXPORT_PER_HOUR'
+      'RATE_EXPORT_PER_HOUR',
+      'RATE_AUDIT_EXPORT_PER_HOUR'
     ]) {
       expect(() => parseConfig(validEnv({ [key]: '0' }))).toThrow(key)
       expect(() => parseConfig(validEnv({ [key]: '100001' }))).toThrow(key)
