@@ -7,9 +7,11 @@ import { AnalyticsRepository } from './analytics-repository.js'
 import type { ApiAuthContext } from './auth.js'
 import { parseConfig } from './config.js'
 import { createDatabase } from './database.js'
+import { ExpiredRowMaintenance } from './expired-row-maintenance.js'
 import { createHttpRouter } from './http.js'
 import { ModerationAuditExportRepository } from './moderation-audit-export-repository.js'
 import { ModerationRepository } from './moderation-repository.js'
+import { RetentionRepository } from './retention-repository.js'
 
 async function initComponents() {
   const appConfig = parseConfig()
@@ -51,7 +53,24 @@ async function initComponents() {
   const moderationAuditExportRepository = new ModerationAuditExportRepository(databaseStore, {
     auditExportPerHour: appConfig.rates.auditExportPerHour
   })
+  const retentionRepository = new RetentionRepository(databaseStore, {
+    analyticsRetentionDays: appConfig.analyticsRetentionDays
+  })
   const requestLogger = logs.getLogger('ghostlight-api')
+  const maintenanceLogger = logs.getLogger('ghostlight-api-retention')
+  const maintenance = new ExpiredRowMaintenance(retentionRepository, {
+    onPruned(result) {
+      maintenanceLogger.info('Expired-row maintenance pruned rows', {
+        rateBucketsDeleted: result.rateBuckets.deleted,
+        rateBucketsPossiblyBacklogged: result.rateBuckets.possiblyBacklogged ? 1 : 0,
+        analyticsReceiptsDeleted: result.analyticsReceipts.deleted,
+        analyticsReceiptsPossiblyBacklogged: result.analyticsReceipts.possiblyBacklogged ? 1 : 0
+      })
+    },
+    onUnexpectedError() {
+      maintenanceLogger.error(new Error('Expired-row maintenance failed'))
+    }
+  })
   const router = createHttpRouter({
     config: appConfig,
     repository,
@@ -79,7 +98,7 @@ async function initComponents() {
   )
   server.use(router.middleware())
   server.use(router.allowedMethods())
-  return { config, logs, database, server }
+  return { config, logs, database, maintenance, server }
 }
 
 Lifecycle.run({

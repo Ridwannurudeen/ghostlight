@@ -8,12 +8,14 @@ import {
 } from '../src/analytics-repository.js'
 import { FUNNEL_EVENTS, type FunnelEvent } from '../src/contracts.js'
 import { createDatabase, type Database } from '../src/database.js'
+import { RetentionRepository } from '../src/retention-repository.js'
 
 const databaseUrl = process.env.TEST_DATABASE_URL
 const describeDatabase = databaseUrl === undefined ? describe.skip : describe
 const schema = `ghostlight_analytics_${randomUUID().replaceAll('-', '')}`
 const CATALYST = 'https://peer.decentraland.org'
 const NOW = Date.parse('2026-10-01T12:00:00.000Z')
+const DAY = 24 * 60 * 60 * 1_000
 
 function event(value: number, name: FunnelEvent = 'wake', occurredAt = NOW): FunnelAnalyticsEvent {
   return Object.freeze({
@@ -41,10 +43,7 @@ describeDatabase('transactional funnel analytics against PostgreSQL', () => {
     await admin.query(`CREATE SCHEMA "${schema}"`)
 
     const isolatedUrl = new URL(databaseUrl)
-    isolatedUrl.searchParams.set(
-      'options',
-      `-c search_path=${schema} -c timezone=America/Los_Angeles`
-    )
+    isolatedUrl.searchParams.set('options', `-c search_path=${schema} -c timezone=America/Los_Angeles`)
     const connectionString = isolatedUrl.toString()
     database = createDatabase(connectionString)
     concurrentDatabase = createDatabase(connectionString)
@@ -208,6 +207,36 @@ describeDatabase('transactional funnel analytics against PostgreSQL', () => {
     const aggregate = await inspect.query<{ wake_count: string }>('SELECT wake_count FROM daily_funnel_aggregates')
     expect(bucket.rows).toEqual([{ request_count: 10 }])
     expect(aggregate.rows).toEqual([{ wake_count: '1' }])
+  })
+
+  it('keeps replay protection in the application clock domain while the event day remains accepted', async () => {
+    const retentionDays = 2
+    const analytics = repository({ retentionDays })
+    const cleanup = new RetentionRepository(database, { analyticsRetentionDays: retentionDays })
+    const earliestAcceptedDay = Math.floor(NOW / DAY) * DAY - DAY
+    const retainedEvent = event(1, 'wake', earliestAcceptedDay)
+    const identity = rate(1)
+    await inspect.query(
+      "ALTER TABLE analytics_receipts ALTER COLUMN received_at SET DEFAULT '2020-01-01T00:00:00.000Z'::timestamptz"
+    )
+
+    try {
+      await expect(analytics.recordFunnel('scene-a', retainedEvent, identity, NOW)).resolves.toBe('recorded')
+      const receipt = await inspect.query<{ received_at: Date }>(
+        'SELECT received_at FROM analytics_receipts WHERE event_id = $1',
+        [retainedEvent.eventId]
+      )
+      expect(receipt.rows).toEqual([{ received_at: new Date(NOW) }])
+
+      const pruned = await cleanup.pruneExpired(NOW)
+      expect(pruned.analyticsReceipts).toEqual({ deleted: 0, possiblyBacklogged: false })
+      await expect(analytics.recordFunnel('scene-a', retainedEvent, identity, NOW)).resolves.toBe('duplicate')
+
+      const aggregate = await inspect.query<{ wake_count: string }>('SELECT wake_count FROM daily_funnel_aggregates')
+      expect(aggregate.rows).toEqual([{ wake_count: '1' }])
+    } finally {
+      await inspect.query('ALTER TABLE analytics_receipts ALTER COLUMN received_at SET DEFAULT now()')
+    }
   })
 
   it('rolls back rate and receipt when the aggregate write fails, then permits a retry', async () => {

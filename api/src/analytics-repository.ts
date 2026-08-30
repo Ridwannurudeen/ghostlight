@@ -60,9 +60,10 @@ const INSERT_FUNNEL_SQL = `WITH inserted_receipt AS (
     scene_id,
     campaign,
     source,
-    occurred_at
+    occurred_at,
+    received_at
   )
-  VALUES ($1, 'funnel', $2, $3, NULL, NULL, $4)
+  VALUES ($1, 'funnel', $2, $3, NULL, NULL, $4, $5)
   ON CONFLICT (event_id) DO NOTHING
   RETURNING event_name, scene_id, occurred_at
 )
@@ -184,7 +185,13 @@ export class AnalyticsRepository {
         return 'rate-limited'
       }
 
-      const inserted = await client.query(INSERT_FUNNEL_SQL, [event.eventId, event.event, sceneId, occurredAt])
+      const inserted = await client.query(INSERT_FUNNEL_SQL, [
+        event.eventId,
+        event.event,
+        sceneId,
+        occurredAt,
+        receivedAt
+      ])
       if (inserted.rowCount === 1) {
         await finishTransaction(client, 'COMMIT')
         transactionOpen = false

@@ -9,6 +9,7 @@ funnel analytics and persistent moderation staging. It currently provides:
 - direct-wallet, body-bound publishing into an isolated `untrusted` channel;
 - scene-shaped wallet-signed reporting plus a direct-wallet moderator queue and one-way moderation decisions;
 - a moderator-only, cursor-paginated audit export with a dedicated hourly quota and sanitized action details;
+- bounded startup and 15-minute pruning of expired rate buckets and analytics receipts;
 - public liveness and database-backed readiness probes;
 - JSON application logs, graceful lifecycle shutdown, strict type-checking, an emitted runtime build, and focused
   unit and PostgreSQL integration tests.
@@ -220,9 +221,21 @@ Optional settings and defaults:
 | `RATE_AUDIT_EXPORT_PER_HOUR`       |         `6` |                               1–100000 |
 
 No secret file is included. Every actor digest uses a fixed purpose domain, and Ethereum addresses are canonicalized
-before hashing so casing cannot split one actor into multiple buckets. `ANALYTICS_RETENTION_DAYS` currently defines
-which inbound UTC event days are accepted; automated receipt/rate-row pruning is a separate operational task and is
-not claimed here.
+before hashing so casing cannot split one actor into multiple buckets. `ANALYTICS_RETENTION_DAYS` defines both which
+inbound UTC event days are accepted and when their idempotency receipts become eligible for deletion.
+
+## Expired-row maintenance
+
+After migrations and allowlist seeding, startup performs one bounded maintenance run before the HTTP listener starts.
+Later runs occur every 15 minutes without overlap. Each run deletes at most 10 batches of 1,000 rows from each table:
+rate buckets whose `expires_at` is at or before the run time, and analytics receipts whose server `received_at` is
+older than `ANALYTICS_RETENTION_DAYS`. A full ten-batch pass is reported as possibly backlogged and retried on the next
+interval. Periodic failures are logged without database details and retried; a startup failure prevents the service
+from listening. Shutdown stops the timer and waits for an in-flight pass before closing PostgreSQL.
+
+Receipt pruning is conservative relative to the UTC-day ingestion window, so an event ID remains protected while its
+event day can still be accepted. Daily aggregates are already materialized and are never pruned by this component.
+Moderation subjects, reports, decisions, audit evidence, roles, and the scene allowlist are also outside its scope.
 
 Connections to the configured Catalyst for contract-wallet signature verification are limited to eight concurrent
 requests, a three-second full-response deadline, and a 16 KiB response body. Excess work fails closed as `503`.
@@ -249,11 +262,11 @@ npm start
 
 The PostgreSQL tests create isolated random schemas and cover rerunnable migrations, allowlist seeding, UTC grouping,
 all eight counters, analytics and moderation replay/conflict behavior, privacy, role authorization, exact bigint
-export, audit pagination and sanitization, revocation, rollback/retry, concurrent rate limits, decision monotonicity,
-and report races against shadow-hide and tombstone transitions. They execute only when `TEST_DATABASE_URL` is
-explicitly supplied; otherwise Vitest marks them skipped. CI supplies PostgreSQL 17 and Node 22. A local skip is never
-reported as PostgreSQL execution.
+export, audit pagination and sanitization, revocation, bounded retention, rollback/retry, concurrent rate limits,
+decision monotonicity, and report races against shadow-hide and tombstone transitions. They execute only when
+`TEST_DATABASE_URL` is explicitly supplied; otherwise Vitest marks them skipped. CI supplies PostgreSQL 17 and Node
+22. A local skip is never reported as PostgreSQL execution.
 
 Per-actor database limits do not stop wallet rotation or prove Explorer provenance. Before exposing reporting, a
 production deployment needs bounded proxy/IP and global request limits plus a per-scene ceiling. It also still needs
-expired-row maintenance, production scene IDs, and owner-approved VPS/TLS configuration.
+production scene IDs and owner-approved VPS/TLS configuration.
