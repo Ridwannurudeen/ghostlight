@@ -36,7 +36,7 @@ wearables, emotes), and its touring runtime is open-source infrastructure other 
 | Emote/wearable publishing: **$100/item today**; DAO-passed reform to $25 (effectively $5 for 6 months) is **not yet enacted** | Phase 3 drops wait for enactment. |
 | Platform scale: 33 concurrent users across the top 100 places (sample 2026-08-23); Regenesis's featured Cozy Farm ≈ 500 registered players; DCL Kickoff ≈ 250 | Targets below are calibrated to this, not to app-store fantasies. |
 | Regenesis builds the mobile client (June: 65 PRs); paid acquisition paused "until there is content worth arriving to"; guest flow shipped July; iOS IAP built | Our pitch to them is literally "we are the content worth arriving to." |
-| Mobile has no gestures, no particles, no dynamic lights, no scene chat; SDK 7.27+ recommended for UI scaling parity (we are pinned to a 7.26.1 auth-server build) | Re-pin to a 7.27 auth-server build in Phase 1, on a branch, with the device checklist. |
+| Mobile has no gestures, no particles, no dynamic lights, no scene chat; SDK 7.27+ is recommended for UI scaling parity | The compatibility candidate pins `7.27.1-33086747846.commit-824d240`; same-commit device acceptance remains open before merge or release. |
 
 ## 2. Phase 0 — Opening Night (Aug 24 → Sep 2 lock)
 
@@ -81,7 +81,8 @@ performances, seven consecutive days without a progression-loss or session-block
 - **Ghost Mail v1 (Sep 20):** send a charade to a specific person; they decode it on their next visit and
   answer back in emotes. The mobile client has no DMs — this is the feature that makes the product a
   conversation layer, and it is the headline of every application that follows.
-- **SDK re-pin** to a 7.27 auth-server build on a branch, validated against the device checklist.
+- **SDK re-pin candidate:** `7.27.1-33086747846.commit-824d240` is pinned for compatibility testing. Automated
+  checks do not complete its device merge gate or approve a release.
 - **Grant readiness (by Sep 25):** a public-proposal-quality packet — playable World, trailer, clean repo and
   tests, architecture diagram, Creator Hub funnel and D7 data, creator testimonials, moderation design,
   90-day milestones, itemised USD budget ($4–6K), and one proposed open-source contribution (the touring
@@ -139,8 +140,8 @@ months of runway, and the core loop still free.
 - **Phase 0:** reviewed core frozen; presentation layer (choreography, sound, assets, UI) added beside it;
   real-device smoke tests added to the 113 unit tests; asset budget per GLB; CI blocks on build, tests,
   asset budget.
-- **Phase 1:** funnel, persistence, reconnect, and server-sleep tests; SDK 7.27 re-pin on a branch; Ghost
-  Mail data model (`v2` records with recipient, lineage, consent).
+- **Phase 1:** funnel, persistence, reconnect, and server-sleep tests; SDK 7.27 compatibility candidate and
+  same-commit device merge gate; Ghost Mail data model (`v2` records with recipient, lineage, consent).
 - **Phase 2:** the VPS API (Node + Postgres; p95 < 250 ms; error rate < 1 %); versioned records for
   performance, author, venue, pack, sequence, eligibility window, moderation state, touring consent, duet
   lineage, season, outcomes; contract tests across every World and API version; load tests; moderation

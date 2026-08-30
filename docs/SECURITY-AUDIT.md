@@ -4,6 +4,10 @@ Audit baseline: `main` at `e05bb9af64ac945ee5753113cdf6022dc66a2bff`, with 245 t
 reported locations below are the reviewers' baseline coordinates. Duplicate or overlapping findings remain separate
 rows so every finding in all three reports has an explicit disposition.
 
+This ledger remains historical evidence for the audited `7.26.1-32239895147.commit-3c77d90` SDK tree. It does not
+certify the current `7.27.1-33086747846.commit-824d240` compatibility candidate; its Storage behavior and dependency
+tree require the current checks below.
+
 Source report abbreviations:
 
 - **MV** — Message Validation and Access Control Review
@@ -95,8 +99,9 @@ the owner must move to a patched authoritative-multiplayer SDK release in a sepa
 
 1. Do not roll back a deployed binary across storage schema versions. If a rollback is ever required, stop and design
    a new namespace/copy-forward migration first.
-2. On the exact candidate commit, require a clean worktree, the unchanged
-   `7.26.1-32239895147.commit-3c77d90` SDK/runtime pins, `npm ci`, `npm run build`, and `npm test` all green.
+2. On the exact candidate commit, require a clean worktree, the
+   `7.27.1-33086747846.commit-824d240` SDK/runtime pins, `npm ci`, `npm run build`, and `npm test` all green; complete
+   the SDK compatibility merge gate in `docs/DEVICE-CHECKLIST.md`.
 3. Complete `docs/DEVICE-CHECKLIST.md` on the target Android device and a supported iPhone. Include duplicate display
    names, control/bidi-heavy names, the wallet-backed Ghost Mail confirmation, maximal valid looks, and guest controls.
 4. In a live World with at least three wallets, verify recipient-only Ghost Mail delivery, private-mail exclusion from
@@ -105,7 +110,8 @@ the owner must move to a patched authoritative-multiplayer SDK release in a sepa
    writable empty defaults. Repeat while observing a controlled transient Storage failure and recovery.
 6. Run bounded production load probes within platform policy and confirm no payload exceeds 4 KB, no host-call rejection
    escapes the handler boundary, and the server remains responsive to other players.
-7. Review `npm audit` again without changing the SDK tree. Track a patched authoritative-multiplayer SDK release for a
-   separate branch/device-validation cycle; do not apply npm's suggested downgrade, overrides, or resolutions here.
+7. On the exact candidate, review `npm audit`, the installed Storage error semantics, and the dependency tree again.
+   Treat RI-01, RF-11, and RF-12 as historical dispositions, not candidate proof; do not apply npm's suggested
+   downgrade, overrides, or resolutions here.
 8. Obtain the owner's explicit approval before deployment, repository publication/push, or submission. This hardening
    pass did not start, deploy, push, or submit anything.

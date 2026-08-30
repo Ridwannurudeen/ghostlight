@@ -194,7 +194,7 @@ owner warnings before requesting deployment approval; the command does not deplo
 
 ## Run from scratch
 
-Requirements: Node.js 20.x, 22.x, or 24+ and npm 10+. From a fresh checkout:
+Requirements: Node.js `^22.12.0` or `>=24.0.0`, and npm `>=10.0.0`. From a fresh checkout:
 
 ```bash
 npm ci
@@ -204,8 +204,10 @@ npm run start
 ```
 
 The final command launches the local Decentraland preview. The generated assets are already committed. The
-Decentraland packages are pinned to `7.26.1-32239895147.commit-3c77d90`; changing that pin requires a new build,
-test, and real-device validation pass.
+Decentraland SDK and runtime are pinned to `7.27.1-33086747846.commit-824d240` as an auth-server compatibility
+candidate. It is not device-accepted or release-approved: release-branch merge and deployment remain blocked on the
+exact-commit SDK gate in [`docs/DEVICE-CHECKLIST.md`](docs/DEVICE-CHECKLIST.md). Any later pin change restarts that
+gate.
 
 ## Device testing and release state
 

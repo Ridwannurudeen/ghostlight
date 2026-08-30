@@ -13,6 +13,32 @@ run note names the failure and the owner explicitly accepts it.
       tested platform, language, inset, frame-time proxy, Transform-entity proxy, avatar count, asset totals, server
       timings, and session loop counts remain one attributable evidence record.
 
+## SDK 7.27 compatibility-candidate merge gate
+
+The `7.27.1-33086747846.commit-824d240` SDK/runtime pin is a candidate only. Do not merge it into the release branch
+until every item below is checked on the same commit.
+
+- [ ] From a clean checkout, run `npm ci`, `npm ls @dcl/sdk @dcl/js-runtime --depth=0`, `npm run build`, and
+      `npm test`. Both Decentraland packages must resolve to the exact candidate version.
+- [ ] Record the commit, resolved package versions, and released Decentraland app versions used on Galaxy A54 High
+      and a currently supported iPhone.
+- [ ] SDK Commands 7.27 defaults local previews to `@dcl-regenesislabs/bevy-headless-server@latest`, replacing the
+      earlier `@dcl/hammurabi-server@next` default. For this gate, select `bevy` with the environment-only
+      `DCL_SERVER_ENGINE` control and pin `DCL_SERVER_PACKAGE` to
+      `@dcl-regenesislabs/bevy-headless-server@0.1.0-32423386171.commit-d18de13`; record the startup output. Exercise
+      authenticated sender identity, enter/leave delivery, and Storage host reads and writes on that engine. Mocked
+      tests do not satisfy this check, and the local override does not pin the deployed mobile host.
+- [ ] On both devices, record cold authoritative-server wake through `ready`, one decode -> reveal -> author -> post
+      loop, full leave and re-entry, and genuine Storage rehydration after server sleep.
+- [ ] Record a two-phone shared round, Answer-Back duet, recipient-only Ghost Mail, remote avatar/reward rendering,
+      touch-safe controls, camera and audio behavior, and the documented performance pass without an SDK-linked
+      regression.
+- [ ] The owner reviews the complete evidence and explicitly approves the merge. Desktop preview, automation, or one
+      mobile OS cannot substitute for this evidence.
+
+Any failure blocks the merge and retains the prior release pin. Any later pin change restarts this gate. Merge
+approval does not authorize deployment.
+
 ## Hard pre-deploy gates
 
 Do not deploy, record final media, or submit until every item in this section is checked. The House ghost is an

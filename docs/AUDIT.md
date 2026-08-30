@@ -83,10 +83,11 @@ By report: CLIENT 16 fixed; SERVER/SHARED 11 fixed and 1 accepted; ASSETS/TESTS/
    `authoritativeMultiplayer: true`, parcels `0,0` and `1,0`, and no `fixedAdapter` or `placesConfig.optOut`.
 2. Publish this repository, verify its public HTTPS repository and `LICENSE` URLs, and replace the preparation note
    in `docs/SUBMISSION.md`. Do not invent or retain relative links.
-3. On the exact candidate commit, run `npm run build` and `npm test`; require a clean worktree and the pinned
-   `7.26.1-32239895147.commit-3c77d90` SDK/runtime versions.
-4. Obtain the owner's explicit approval before deployment. Do not start a second preview server and do not use
-   `fixedAdapter`, opt out of Places, or change the SDK pin.
+3. On the exact candidate commit, require a clean worktree, the pinned
+   `7.27.1-33086747846.commit-824d240` SDK/runtime versions, `npm ci`, `npm run build`, and `npm test` all green;
+   complete the SDK compatibility merge gate in `docs/DEVICE-CHECKLIST.md`.
+4. Obtain the owner's explicit approval before merge or deployment. Do not start a second preview server and do not
+   use `fixedAdapter` or opt out of Places. Any later SDK pin change invalidates the evidence and restarts acceptance.
 5. In the deployed World, create at least three genuine current-theme charades less than 14 days old from distinct
    real accounts other than the fresh judge, plus at least one genuine Answer-Back duet. Never fabricate activity.
 6. Let the server sleep, then use a fresh named account to prove that production Storage rehydrates and serves the

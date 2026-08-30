@@ -24,13 +24,14 @@ const harness = vi.hoisted(() => {
     effects: null as Record<string, (...args: unknown[]) => unknown> | null,
     enterPerformer: null as (() => void) | null,
     showDecode: null as (() => void) | null,
+    isServer: false,
     openingRunning: true,
     openingPlayed: false
   }
 })
 
 vi.mock('@dcl/sdk/ecs', () => ({ engine: { addSystem: vi.fn() } }))
-vi.mock('@dcl/sdk/network', () => ({ isServer: vi.fn(() => false) }))
+vi.mock('@dcl/sdk/network', () => ({ isServer: vi.fn(() => harness.isServer) }))
 vi.mock('@dcl/sdk/src/players', () => ({ onLeaveScene: vi.fn() }))
 
 const flow = vi.hoisted(() => ({
@@ -115,7 +116,8 @@ vi.mock('../src/client/theater', () => ({
 }))
 vi.mock('../src/client/sound', () => sound)
 vi.mock('../src/client/ui', () => ({ uiComponent: vi.fn() }))
-vi.mock('../src/server/server', () => ({ startServer: vi.fn() }))
+const server = vi.hoisted(() => ({ startServer: vi.fn() }))
+vi.mock('../src/server/server', () => server)
 
 import { engine } from '@dcl/sdk/ecs'
 import { main } from '../src/index'
@@ -146,7 +148,23 @@ describe('client presentation integration', () => {
   })
 
   afterEach(() => {
+    harness.isServer = false
     vi.restoreAllMocks()
+  })
+
+  it('starts only the authoritative server path in the server runtime', () => {
+    harness.isServer = true
+    server.startServer.mockClear()
+    setup.startClientSetup.mockClear()
+    flow.startClientFlow.mockClear()
+    vi.mocked(engine.addSystem).mockClear()
+
+    main()
+
+    expect(server.startServer).toHaveBeenCalledOnce()
+    expect(setup.startClientSetup).not.toHaveBeenCalled()
+    expect(flow.startClientFlow).not.toHaveBeenCalled()
+    expect(engine.addSystem).not.toHaveBeenCalled()
   })
 
   it('wires cold-open staging, reveal effects, setup, and the automatic first charade', () => {
