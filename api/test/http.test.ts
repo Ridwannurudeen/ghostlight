@@ -375,7 +375,7 @@ function moderationMock(outcomes: ModerationOutcomes = {}) {
     },
     async queue(moderatorAddress) {
       queueCalls.push(moderatorAddress)
-      const outcome = outcomes.queue ?? { status: 'data', rows: [] }
+      const outcome = outcomes.queue ?? { status: 'data', rows: [], queueDepth: '0' }
       if (outcome instanceof Error) throw outcome
       return outcome
     },
@@ -822,7 +822,7 @@ describe('moderation reporting HTTP', () => {
 })
 
 describe('moderation queue and decisions HTTP', () => {
-  it('returns the fixed repository queue without accepting a limit or exposing digests', async () => {
+  it('returns the fixed repository queue with its exact string depth without accepting a limit or exposing digests', async () => {
     const row = Object.freeze({
       reportId: 'report-1',
       subjectId: 'subject-1',
@@ -835,20 +835,24 @@ describe('moderation queue and decisions HTTP', () => {
       reason: 'abuse' as const,
       reportedAt: NOW
     })
-    const { server, queueCalls } = queueHandlerServer({ status: 'data', rows: [row] }, address.toUpperCase())
+    const { server, queueCalls } = queueHandlerServer(
+      { status: 'data', rows: [row], queueDepth: '9223372036854775807' },
+      address.toUpperCase()
+    )
 
     const response = await server.fetch('/v1/moderation/queue')
 
     expect(response.status).toBe(200)
     expect(response.headers.get('cache-control')).toBe('no-store')
     const responseText = await response.text()
-    expect(JSON.parse(responseText)).toEqual({ items: [row] })
+    expect(JSON.parse(responseText)).toEqual({ items: [row], queueDepth: '9223372036854775807' })
     expect(responseText).not.toContain('digest')
     expect(queueCalls).toEqual([address])
 
     const withLimit = await server.fetch('/v1/moderation/queue?limit=1')
     expect(withLimit.status).toBe(400)
     expect(withLimit.headers.get('cache-control')).toBe('no-store')
+    expect(await withLimit.json()).toEqual({ error: 'invalid-request' })
     expect(queueCalls).toEqual([address])
   })
 

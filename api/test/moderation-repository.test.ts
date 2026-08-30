@@ -174,6 +174,7 @@ function queueRow(overrides: DatabaseRow = {}): DatabaseRow {
     subjectStatus: 'published',
     reason: 'abuse',
     reportedAt: new Date(NOW),
+    queueDepth: '2',
     ...overrides
   }
 }
@@ -799,9 +800,11 @@ describe('moderator queue and public eligibility', () => {
     expect(client.calls[2]?.text).toContain('hides.lifted_at IS NULL')
     expect(client.calls[2]?.text).toContain('ORDER BY reports.created_at ASC, reports.id ASC')
     expect(client.calls[2]?.text).toContain('LIMIT 50')
+    expect(client.calls[2]?.text).toContain('count(*) OVER()::text AS "queueDepth"')
     expect(client.calls[2]?.text).not.toContain('reporter_digest')
     expect(result).toEqual({
       status: 'data',
+      queueDepth: '2',
       rows: [
         {
           reportId: 'report-1',
@@ -830,6 +833,7 @@ describe('moderator queue and public eligibility', () => {
       ]
     })
     expect(result.status === 'data' && Object.isFrozen(result.rows)).toBe(true)
+    expect(Object.isFrozen(result)).toBe(true)
     client.assertComplete()
   })
 
@@ -859,6 +863,65 @@ describe('moderator queue and public eligibility', () => {
     expect(malformed.releases).toEqual([undefined])
     unauthorized.assertComplete()
     malformed.assertComplete()
+  })
+
+  it('returns zero for an empty queue and rolls back malformed, mismatched, or impossible queue depths', async () => {
+    const empty = new ScriptedClient([
+      { result: emptyResult() },
+      { result: oneRow() },
+      { result: emptyResult() },
+      { result: emptyResult() }
+    ])
+    const malformed = new ScriptedClient([
+      { result: emptyResult() },
+      { result: oneRow() },
+      { result: oneRow(queueRow({ queueDepth: '02' })) },
+      { result: emptyResult() }
+    ])
+    const missing = new ScriptedClient([
+      { result: emptyResult() },
+      { result: oneRow() },
+      { result: oneRow(queueRow({ queueDepth: undefined })) },
+      { result: emptyResult() }
+    ])
+    const outOfRange = new ScriptedClient([
+      { result: emptyResult() },
+      { result: oneRow() },
+      { result: oneRow(queueRow({ queueDepth: '9223372036854775808' })) },
+      { result: emptyResult() }
+    ])
+    const mismatched = new ScriptedClient([
+      { result: emptyResult() },
+      { result: oneRow() },
+      {
+        result: rowsResult([queueRow({ queueDepth: '2' }), queueRow({ reportId: 'report-2', queueDepth: '3' })])
+      },
+      { result: emptyResult() }
+    ])
+    const impossible = new ScriptedClient([
+      { result: emptyResult() },
+      { result: oneRow() },
+      {
+        result: rowsResult([queueRow({ queueDepth: '1' }), queueRow({ reportId: 'report-2', queueDepth: '1' })])
+      },
+      { result: emptyResult() }
+    ])
+    const moderation = repository(new ScriptedDatabase([empty, malformed, missing, outOfRange, mismatched, impossible]))
+
+    await expect(moderation.queue(MODERATOR)).resolves.toEqual({ status: 'data', rows: [], queueDepth: '0' })
+    await expect(moderation.queue(MODERATOR)).rejects.toThrow('Invalid moderation queue depth')
+    await expect(moderation.queue(MODERATOR)).rejects.toThrow('Invalid moderation queue depth')
+    await expect(moderation.queue(MODERATOR)).rejects.toThrow('Invalid moderation queue depth')
+    await expect(moderation.queue(MODERATOR)).rejects.toThrow('Inconsistent moderation queue depth')
+    await expect(moderation.queue(MODERATOR)).rejects.toThrow('Invalid moderation queue depth')
+
+    expect(empty.calls.at(-1)?.text).toBe('COMMIT')
+    for (const client of [malformed, missing, outOfRange, mismatched, impossible]) {
+      expect(client.calls.at(-1)?.text).toBe('ROLLBACK')
+      expect(client.releases).toEqual([undefined])
+      client.assertComplete()
+    }
+    empty.assertComplete()
   })
 
   it('requires touring consent and maps only eligible trusted subjects while collapsing unavailable results', async () => {

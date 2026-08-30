@@ -146,9 +146,11 @@ subjects return the same `404` response.
 
 ### Moderator queue and decisions
 
-`GET /v1/moderation/queue` requires a direct wallet with a `moderator` row in `actor_roles`. It returns at most 50
-open reports, oldest first, with subject context but no reporter address or digest. Reports for actively hidden
-authors are suppressed defensively.
+`GET /v1/moderation/queue` requires a direct wallet with a `moderator` row in `actor_roles`. Its `items` contain at
+most 50 visible open reports, oldest first, with subject context but no reporter address or digest. `queueDepth` is
+the canonical decimal string count of visible open reports after all queue visibility filters and before that
+50-item cap. It is not a global report count; filtered reports, including reports for actively hidden authors, are
+excluded.
 
 `POST /v1/moderation/decisions` requires the same role and a body such as:
 

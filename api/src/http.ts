@@ -518,7 +518,7 @@ export function createModerationQueueHandler(
       return moderationJson(503, { error: 'service-unavailable' })
     }
     if (result.status === 'unauthorized') return moderationJson(403, { error: 'forbidden' })
-    return moderationJson(200, { items: result.rows })
+    return moderationJson(200, { items: result.rows, queueDepth: result.queueDepth })
   }
 }
 

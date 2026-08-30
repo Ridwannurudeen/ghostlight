@@ -290,6 +290,7 @@ describeDatabase('moderation repository against PostgreSQL', () => {
     const queue = await moderation.queue(MODERATOR)
     expect(queue.status).toBe('data')
     if (queue.status !== 'data') throw new Error('Expected moderation queue data')
+    expect(queue.queueDepth).toBe('2')
     expect(queue.rows.map(({ reportId, reportedAt }) => ({ reportId, reportedAt }))).toEqual([
       { reportId: 'report-1', reportedAt: NOW },
       { reportId: 'report-2', reportedAt: NOW + 1_000 }
@@ -309,6 +310,103 @@ describeDatabase('moderation repository against PostgreSQL', () => {
        ORDER BY created_at`
     )
     expect(persisted.rows).toEqual([{ created_at: String(NOW) }, { created_at: String(NOW + 1_000) }])
+  })
+
+  it('reports the full visible queue depth before the 50-row cap and excludes actively hidden authors', async () => {
+    await inspect.query(
+      `INSERT INTO moderation_subjects (
+         id,
+         scene_id,
+         author_address,
+         content,
+         fingerprint,
+         channel,
+         status,
+         touring_consent,
+         created_at,
+         deleted_at
+       )
+       SELECT
+         'queue-visible-' || lpad(ordinal::text, 2, '0'),
+         'scene-a',
+         $1,
+         'Visible queue performance ' || ordinal,
+         'queue-visible-fingerprint-' || ordinal,
+         'untrusted',
+         'published',
+         TRUE,
+         $3::timestamptz + ordinal * INTERVAL '1 millisecond',
+         NULL
+       FROM generate_series(1, 55) AS visible(ordinal)
+       UNION ALL
+       SELECT
+         'queue-hidden-' || lpad(ordinal::text, 2, '0'),
+         'scene-b',
+         $2,
+         'Hidden queue performance ' || ordinal,
+         'queue-hidden-fingerprint-' || ordinal,
+         'untrusted',
+         'published',
+         TRUE,
+         $3::timestamptz + (100 + ordinal) * INTERVAL '1 millisecond',
+         NULL
+       FROM generate_series(1, 3) AS hidden(ordinal)`,
+      [ACTOR_A, ACTOR_B, new Date(NOW)]
+    )
+    await inspect.query(
+      `INSERT INTO moderation_reports (
+         id,
+         subject_id,
+         reporter_digest,
+         reason,
+         status,
+         created_at,
+         resolved_at
+       )
+       SELECT
+         'report-' || subjects.id,
+         subjects.id,
+         decode(repeat('ab', 32), 'hex'),
+         'abuse',
+         'open',
+         subjects.created_at,
+         NULL
+       FROM moderation_subjects AS subjects
+       WHERE subjects.id LIKE 'queue-%'`
+    )
+    await inspect.query(
+      `INSERT INTO shadow_hides (
+         author_address,
+         moderator_address,
+         moderator_role,
+         reason,
+         created_at,
+         lifted_at
+       )
+       VALUES ($1, $2, 'moderator', 'Active queue suppression', $3, NULL)`,
+      [ACTOR_B, MODERATOR, new Date(NOW)]
+    )
+
+    const queue = await repository().queue(MODERATOR)
+
+    expect(queue.status).toBe('data')
+    if (queue.status !== 'data') throw new Error('Expected moderation queue data')
+    expect(queue.queueDepth).toBe('55')
+    expect(queue.rows).toHaveLength(50)
+    expect(queue.rows[0]?.reportId).toBe('report-queue-visible-01')
+    expect(queue.rows.at(-1)?.reportId).toBe('report-queue-visible-50')
+    expect(new Set(queue.rows.map(({ authorAddress }) => authorAddress))).toEqual(new Set([ACTOR_A]))
+
+    const openReports = await inspect.query<{ total: string; hidden: string }>(
+      `SELECT
+         count(*) AS total,
+         count(*) FILTER (WHERE subjects.author_address = $1) AS hidden
+       FROM moderation_reports AS reports
+       JOIN moderation_subjects AS subjects ON subjects.id = reports.subject_id
+       WHERE reports.status = 'open'`,
+      [ACTOR_B]
+    )
+    expect(openReports.rows).toEqual([{ total: '58', hidden: '3' }])
   })
 
   it('revokes queue and decision authority without deleting historical moderator records', async () => {
@@ -497,7 +595,7 @@ describeDatabase('moderation repository against PostgreSQL', () => {
        VALUES ('legacy-shadow-report', 'subject-2', $1, 'other', 'open', $2, NULL)`,
       [digest(99), new Date(NOW + 500)]
     )
-    await expect(moderation.queue(MODERATOR)).resolves.toEqual({ status: 'data', rows: [] })
+    await expect(moderation.queue(MODERATOR)).resolves.toEqual({ status: 'data', rows: [], queueDepth: '0' })
 
     const duplicateHideResults = await Promise.all([
       moderation.decide(decision('shadow-2', 'subject-1', 'shadow-hidden'), decisionIdentity(5), NOW + 1_000),
@@ -651,7 +749,7 @@ describeDatabase('moderation repository against PostgreSQL', () => {
     expect(invariant.rows).toEqual([
       { active_hides: '1', shadow_decisions: '1', shadow_audits: '1', open_reports: '0' }
     ])
-    await expect(moderation.queue(MODERATOR)).resolves.toEqual({ status: 'data', rows: [] })
+    await expect(moderation.queue(MODERATOR)).resolves.toEqual({ status: 'data', rows: [], queueDepth: '0' })
   })
 
   it('serializes a report racing a tombstone so no open report survives unavailable content', async () => {

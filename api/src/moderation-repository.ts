@@ -74,7 +74,7 @@ export type ModerationQueueRow = Readonly<{
 
 export type ModerationQueueResult =
   | Readonly<{ status: 'unauthorized' }>
-  | Readonly<{ status: 'data'; rows: readonly ModerationQueueRow[] }>
+  | Readonly<{ status: 'data'; rows: readonly ModerationQueueRow[]; queueDepth: string }>
 
 export type ModerationEligibilityResult =
   | Readonly<{ status: 'eligible'; subject: ModerationSubjectRow }>
@@ -116,8 +116,10 @@ const MAX_SCENE_ID_BYTES = 128
 const MAX_CATALYST_ORIGIN_BYTES = 2_048
 const MAX_CLIENT_PAST_SKEW_MILLISECONDS = 5 * 60 * 1_000
 const MAX_CLIENT_FUTURE_SKEW_MILLISECONDS = 60 * 1_000
+const MAX_POSTGRES_BIGINT = 9_223_372_036_854_775_807n
 const MODERATION_QUEUE_LIMIT = 50
 const ADDRESS_PATTERN = /^0x[0-9a-f]{40}$/u
+const CANONICAL_QUEUE_DEPTH_PATTERN = /^(?:0|[1-9]\d*)$/u
 const DUPLICATE_SEPARATORS = /[^\p{L}\p{N}]+/gu
 const SUBJECT_CHANNELS = new Set(['untrusted', 'curated', 'trusted'])
 const SUBJECT_STATUSES = new Set(['published', 'quarantined', 'tombstoned'])
@@ -298,7 +300,8 @@ const QUEUE_SQL = `SELECT
   subjects.touring_consent AS "touringConsent",
   subjects.status AS "subjectStatus",
   reports.reason,
-  reports.created_at AS "reportedAt"
+  reports.created_at AS "reportedAt",
+  count(*) OVER()::text AS "queueDepth"
 FROM moderation_reports AS reports
 JOIN moderation_subjects AS subjects ON subjects.id = reports.subject_id
 WHERE reports.status = 'open'
@@ -467,6 +470,18 @@ function requireDate(value: unknown, label: string) {
     throw new Error(`Invalid ${label}`)
   }
   return timestamp
+}
+
+function requireQueueDepth(value: unknown) {
+  if (
+    typeof value !== 'string' ||
+    value.length > 19 ||
+    !CANONICAL_QUEUE_DEPTH_PATTERN.test(value) ||
+    BigInt(value) > MAX_POSTGRES_BIGINT
+  ) {
+    throw new Error('Invalid moderation queue depth')
+  }
+  return value
 }
 
 function requireRowText(row: DatabaseRow, key: string, maximumBytes: number) {
@@ -933,11 +948,19 @@ export class ModerationRepository {
 
       const queue = await client.query(QUEUE_SQL)
       if (queue.rows.length > MODERATION_QUEUE_LIMIT) throw new Error('Invalid moderation queue row count')
+      let queueDepth: string | undefined
+      for (const row of queue.rows) {
+        const rowDepth = requireQueueDepth(row.queueDepth)
+        if (queueDepth === undefined) queueDepth = rowDepth
+        else if (rowDepth !== queueDepth) throw new Error('Inconsistent moderation queue depth')
+      }
+      queueDepth ??= '0'
+      if (BigInt(queueDepth) < BigInt(queue.rows.length)) throw new Error('Invalid moderation queue depth')
       const rows = Object.freeze(queue.rows.map(mapQueueRow))
 
       await finishTransaction(client, 'COMMIT')
       transactionOpen = false
-      return Object.freeze({ status: 'data', rows })
+      return Object.freeze({ status: 'data', rows, queueDepth })
     } catch (error) {
       if (!transactionOpen) throw error
       try {
