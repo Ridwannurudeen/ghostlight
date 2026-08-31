@@ -336,7 +336,7 @@ describeDatabase('moderation repository against PostgreSQL', () => {
          'published',
          TRUE,
          $3::timestamptz + ordinal * INTERVAL '1 millisecond',
-         NULL
+         NULL::timestamptz
        FROM generate_series(1, 55) AS visible(ordinal)
        UNION ALL
        SELECT

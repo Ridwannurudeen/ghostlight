@@ -162,7 +162,7 @@ describe('transactional moderation audit export repository', () => {
     expect(client.calls[2]?.values).toEqual([BUCKET_HASH, 2, new Date(NOW)])
     expect(client.calls[2]?.values[0]).not.toBe(BUCKET_HASH)
     expect(client.calls[3]?.text).toContain('sequence > $1::bigint')
-    expect(client.calls[3]?.text).toContain('ORDER BY sequence ASC')
+    expect(client.calls[3]?.text).toContain('ORDER BY moderation_audit.sequence ASC')
     expect(client.calls[3]?.text).toContain('LIMIT 51')
     expect(client.calls[3]?.text).not.toContain('actor_digest')
     expect(client.calls[3]?.values).toEqual(['7'])

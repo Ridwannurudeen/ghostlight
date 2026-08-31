@@ -96,13 +96,13 @@ describeDatabase('moderation audit export against PostgreSQL', () => {
          NULL,
          decode(repeat('ab', 32), 'hex'),
          NULL,
-         $1::timestamptz + generated.offset * INTERVAL '1 millisecond',
+         $1::timestamptz + generated.ordinal * INTERVAL '1 millisecond',
          jsonb_build_object(
-           'clientCreatedAt', $2::bigint + generated.offset,
+           'clientCreatedAt', $2::bigint + generated.ordinal,
            'reason', 'id-conflict',
-           'requestedSubjectId', 'subject-' || generated.offset::text
+           'requestedSubjectId', 'subject-' || generated.ordinal::text
          )
-       FROM generate_series(1, $3) AS generated(offset)`,
+       FROM generate_series(1, $3) AS generated(ordinal)`,
       [new Date(NOW), NOW - 1_000, count]
     )
   }

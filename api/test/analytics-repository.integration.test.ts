@@ -135,7 +135,18 @@ describeDatabase('transactional funnel analytics against PostgreSQL', () => {
       post_count: string
       invite_count: string
       mail_count: string
-    }>('SELECT * FROM daily_funnel_aggregates')
+    }>(`SELECT
+          to_char(day, 'YYYY-MM-DD') AS day,
+          scene_id,
+          wake_count,
+          ready_count,
+          decode_count,
+          reveal_count,
+          author_count,
+          post_count,
+          invite_count,
+          mail_count
+        FROM daily_funnel_aggregates`)
     expect(aggregate.rows).toEqual([
       {
         day: '2026-10-01',

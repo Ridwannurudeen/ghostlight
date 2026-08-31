@@ -132,7 +132,7 @@ const AUDIT_SQL = `SELECT
   details
 FROM moderation_audit
 WHERE sequence > $1::bigint
-ORDER BY sequence ASC
+ORDER BY moderation_audit.sequence ASC
 LIMIT 51`
 
 function requireBoundedInteger(value: number, maximum: number, label: string) {

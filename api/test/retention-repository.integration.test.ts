@@ -183,10 +183,10 @@ describeDatabase('bounded retention pruning against PostgreSQL', () => {
        SELECT
          'analytics-wallet',
          $1,
-         $2::timestamptz - generated.offset * INTERVAL '1 second',
+         $2::timestamptz - generated.ordinal * INTERVAL '1 second',
          1,
-         $2::timestamptz - generated.offset * INTERVAL '1 second' + INTERVAL '1 millisecond'
-       FROM generate_series(1, 10001) AS generated(offset)`,
+         $2::timestamptz - generated.ordinal * INTERVAL '1 second' + INTERVAL '1 millisecond'
+       FROM generate_series(1, 10001) AS generated(ordinal)`,
       [Buffer.alloc(32, 3), new Date(NOW - DAY)]
     )
 
