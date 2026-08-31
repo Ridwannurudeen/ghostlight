@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { THEMES, themeForTimestamp } from '../src/shared/config'
-import { DECK, HOUSE_CHARADES } from '../src/shared/deck'
+import { HOUSE_CHARADES, PLAYABLE_DECK } from '../src/shared/deck'
 import {
   SEASON_ZERO_END_AT,
   SEASON_ZERO_START_AT,
@@ -56,58 +56,24 @@ describe('Season Zero schedule', () => {
     }
   })
 
-  it('uses 30 unique canonical curated candidates per week', () => {
-    const canonicalIds = new Set(DECK.map((phrase) => phrase.id))
+  it('uses 28 unique reviewed playable candidates per week', () => {
+    const playableIds = new Set(PLAYABLE_DECK.map((phrase) => phrase.id))
 
     for (const week of SEASON_ZERO_WEEKS) {
       const phraseIds = week.references.map((reference) => reference.phraseId)
-      expect(phraseIds).toHaveLength(30)
+      expect(phraseIds).toHaveLength(28)
       expect(new Set(phraseIds).size, week.id).toBe(phraseIds.length)
-      expect(phraseIds.every((phraseId) => canonicalIds.has(phraseId)), week.id).toBe(true)
+      expect(phraseIds.every((phraseId) => playableIds.has(phraseId)), week.id).toBe(true)
       expect(week.references.every((reference) => reference.curationStatus === 'curated'), week.id).toBe(true)
     }
   })
 
-  it('uses the strict-audit replacement references and excludes every superseded candidate', () => {
-    const replacements = {
-      'first-impressions': [
-        ['feelings-calm-your-nerves', 'awkward-hold-door-too-long'],
-        ['feelings-suspect-a-surprise', 'feelings-fall-in-love'],
-        ['feelings-hold-in-a-laugh', 'dcl-life-dance-at-the-plaza'],
-        ['awkward-wear-shirt-backwards', 'everyday-dodge-the-rain'],
-        ['awkward-sit-in-wrong-chair', 'awkward-trip-on-stage']
-      ],
-      'main-character-energy': [
-        ['dcl-life-trade-digital-art', 'pop-sing-into-a-microphone'],
-        ['pop-ride-a-space-rocket', 'pop-dodge-a-laser'],
-        ['pop-direct-a-blockbuster', 'everyday-take-a-selfie'],
-        ['pop-time-travel', 'pop-meet-an-alien'],
-        ['pop-survive-a-dinosaur', 'pop-escape-a-zombie'],
-        ['pop-summon-a-dragon', 'dcl-life-vote-in-the-dao']
-      ],
-      'fashionably-haunted': [
-        ['everyday-dance-in-elevator', 'pop-become-a-superhero'],
-        ['feelings-fall-in-love', 'feelings-fear-a-spider'],
-        ['pop-summon-a-dragon', 'pop-fight-an-invisible-villain'],
-        ['awkward-wear-shirt-backwards', 'pop-meet-an-alien'],
-        ['awkward-get-caught-singing', 'pop-sing-into-a-microphone'],
-        ['awkward-pretend-to-know-song', 'awkward-trip-on-stage']
-      ],
-      'final-encore': [
-        ['feelings-hold-in-a-laugh', 'pop-become-a-superhero'],
-        ['food-bake-a-cake', 'pop-cast-a-magic-spell'],
-        ['food-share-the-popcorn', 'pop-dodge-a-laser'],
-        ['food-serve-breakfast', 'dcl-life-vote-in-the-dao'],
-        ['pop-direct-a-blockbuster', 'pop-fight-an-invisible-villain']
-      ]
-    } as const
-
-    for (const week of SEASON_ZERO_WEEKS) {
-      const phraseIds = new Set(week.references.map((reference) => reference.phraseId))
-      for (const [superseded, replacement] of replacements[week.id]) {
-        expect(phraseIds.has(superseded), `${week.id}:${superseded}`).toBe(false)
-        expect(phraseIds.has(replacement), `${week.id}:${replacement}`).toBe(true)
-      }
+  it('rotates at least two playable phrases at every weekly boundary', () => {
+    for (let index = 1; index < SEASON_ZERO_WEEKS.length; index += 1) {
+      const previous = new Set(SEASON_ZERO_WEEKS[index - 1].references.map((reference) => reference.phraseId))
+      const current = new Set(SEASON_ZERO_WEEKS[index].references.map((reference) => reference.phraseId))
+      expect([...previous].filter((phraseId) => !current.has(phraseId)), SEASON_ZERO_WEEKS[index].id).toHaveLength(2)
+      expect([...current].filter((phraseId) => !previous.has(phraseId)), SEASON_ZERO_WEEKS[index].id).toHaveLength(2)
     }
   })
 
@@ -168,10 +134,10 @@ describe('Season Zero schedule', () => {
   it('does not tautologically pass moderation or launch gates without measured decisions', () => {
     const emptySummary = seasonModerationSummary({})
     expect(emptySummary).toMatchObject({
-      total: 120,
+      total: 112,
       approved: 0,
       quarantined: 0,
-      pending: 120,
+      pending: 112,
       quarantineRate: null,
       reviewComplete: false,
       launchReady: false
@@ -180,8 +146,8 @@ describe('Season Zero schedule', () => {
 
     const allApproved = decisionsForEveryReference('approved')
     expect(seasonModerationSummary(allApproved)).toMatchObject({
-      total: 120,
-      approved: 120,
+      total: 112,
+      approved: 112,
       quarantined: 0,
       pending: 0,
       quarantineRate: 0,
@@ -195,16 +161,16 @@ describe('Season Zero schedule', () => {
       [seasonReferenceKey(firstWeek.id, firstWeek.references[0].phraseId)]: 'quarantined' as const
     }
     expect(weekModerationSummary(firstWeek, oneQuarantined)).toMatchObject({
-      approved: 29,
+      approved: 27,
       quarantined: 1,
       pending: 0,
       promptRangeReady: true
     })
     expect(seasonModerationSummary(oneQuarantined)).toMatchObject({
-      approved: 119,
+      approved: 111,
       quarantined: 1,
       pending: 0,
-      quarantineRate: 1 / 120,
+      quarantineRate: 1 / 112,
       launchReady: true
     })
 
@@ -214,7 +180,7 @@ describe('Season Zero schedule', () => {
     }
     expect(weekModerationSummary(firstWeek, sixQuarantined).promptRangeReady).toBe(false)
     expect(seasonModerationSummary(sixQuarantined)).toMatchObject({
-      quarantineRate: 6 / 120,
+      quarantineRate: 6 / 112,
       launchReady: false
     })
   })
@@ -321,7 +287,7 @@ describe('Season Zero moderation records', () => {
 
   it('accepts at most all known keys and rejects unknown keys or decision values', () => {
     const allApproved = decisionsForEveryReference('approved')
-    expect(Object.keys(allApproved)).toHaveLength(120)
+    expect(Object.keys(allApproved)).toHaveLength(112)
     expect(parseSeasonModerationRecord(moderationRecord(allApproved))).not.toBeNull()
     expect(parseSeasonModerationRecord(moderationRecord({ ...allApproved, unknown: 'approved' }))).toBeNull()
 
@@ -389,14 +355,14 @@ describe('Season Zero moderation records', () => {
     const secondWeek = SEASON_ZERO_WEEKS[1]
     const withoutSecondWeekFallback: Record<string, 'approved' | 'quarantined'> = { ...allApproved }
     const secondWeekHouseReferences = secondWeek.references.filter((reference) => housePhraseIds.has(reference.phraseId))
-    expect(secondWeekHouseReferences).toHaveLength(2)
+    expect(secondWeekHouseReferences).toHaveLength(4)
     for (const reference of secondWeekHouseReferences) {
       withoutSecondWeekFallback[seasonReferenceKey(secondWeek.id, reference.phraseId)] = 'quarantined'
     }
 
     const noFallbackRecord = parseSeasonModerationRecord(moderationRecord(withoutSecondWeekFallback))!
     const noFallback = evaluateSeasonModerationRecord(noFallbackRecord)
-    expect(noFallback.moderation.launchReady).toBe(true)
+    expect(noFallback.moderation.launchReady).toBe(false)
     expect(noFallback.houseFallbackCoverage.find((week) => week.weekId === secondWeek.id)).toEqual({
       weekId: secondWeek.id,
       approvedPhraseIds: [],

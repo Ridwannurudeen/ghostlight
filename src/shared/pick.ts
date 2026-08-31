@@ -1,5 +1,17 @@
 import type { ThemeId } from './config'
-import { CATEGORIES, DECK, HOUSE_CHARADE, HOUSE_CHARADES, type Emote, type Phrase } from './deck'
+import {
+  authorBeatChoices,
+  CATEGORIES,
+  DECK,
+  HOUSE_CHARADE,
+  HOUSE_CHARADES,
+  isAllowedPerformance,
+  performanceMatchCount,
+  PLAYABLE_DECK,
+  playablePhrase,
+  type Emote,
+  type Phrase
+} from './deck'
 import type { Charade } from './types'
 
 export type Seed = string | number
@@ -102,64 +114,50 @@ function firstWord(text: string) {
   return text.trim().split(/\s+/u)[0].toLowerCase()
 }
 
-function tripletKey(emotes: readonly string[]) {
-  return [...emotes].sort().join(':')
-}
-
-function emoteOverlap(suggested: readonly Emote[], performed: ReadonlySet<string>) {
-  return suggested.reduce((overlap, emote) => overlap + (performed.has(emote) ? 1 : 0), 0)
-}
-
 export function pickDecoys(
   phraseId: string,
   performedEmotes: readonly string[],
   deck: readonly Phrase[],
   seed: Seed
 ): Phrase[] {
-  const phrase = deck.find((candidate) => candidate.id === phraseId)
-  if (!phrase) return []
+  const phrase = playablePhrase(phraseId)
+  if (!phrase || !deck.some((candidate) => candidate.id === phrase.id) || !isAllowedPerformance(phrase, performedEmotes)) {
+    return []
+  }
 
   const sourceFirstWord = firstWord(phrase.text)
-  const sourceTriplet = tripletKey(phrase.suggested)
-  const performedTriplet = tripletKey(performedEmotes)
-  const performed = new Set(performedEmotes)
   const candidates = shuffleSeeded(
     deck.filter(
       (candidate) =>
         candidate.id !== phrase.id &&
         candidate.category === phrase.category &&
         firstWord(candidate.text) !== sourceFirstWord &&
-        tripletKey(candidate.suggested) !== sourceTriplet &&
-        tripletKey(candidate.suggested) !== performedTriplet
+        playablePhrase(candidate) !== null &&
+        performanceMatchCount(candidate, performedEmotes) <= 1
     ),
     `${typeof seed}:${seed}:decoys`
   ).map((candidate) => ({
     phrase: candidate,
     firstWord: firstWord(candidate.text),
-    triplet: tripletKey(candidate.suggested),
-    overlap: emoteOverlap(candidate.suggested, performed)
+    matches: performanceMatchCount(candidate, performedEmotes)
   }))
-  let best: { close: Phrase; distant: Phrase; closeOverlap: number; distantOverlap: number } | null = null
+  let best: { close: Phrase; distant: Phrase; closeMatches: number; distantMatches: number } | null = null
 
   for (const close of candidates) {
     for (const distant of candidates) {
-      if (
-        distant.phrase.id === close.phrase.id ||
-        distant.firstWord === close.firstWord ||
-        distant.triplet === close.triplet
-      ) {
+      if (distant.phrase.id === close.phrase.id || distant.firstWord === close.firstWord) {
         continue
       }
       if (
         !best ||
-        close.overlap > best.closeOverlap ||
-        (close.overlap === best.closeOverlap && distant.overlap < best.distantOverlap)
+        close.matches > best.closeMatches ||
+        (close.matches === best.closeMatches && distant.matches < best.distantMatches)
       ) {
         best = {
           close: close.phrase,
           distant: distant.phrase,
-          closeOverlap: close.overlap,
-          distantOverlap: distant.overlap
+          closeMatches: close.matches,
+          distantMatches: distant.matches
         }
       }
     }
@@ -173,13 +171,13 @@ export function chooseRetryBeat(
   answerIds: readonly string[],
   removedAnswerIndex: number,
   seed: Seed,
-  deck: readonly Phrase[] = DECK
+  deck: readonly Phrase[] = PLAYABLE_DECK
 ) {
   const remaining = answerIds.filter((_answerId, index) => index !== removedAnswerIndex)
   const ranked = performedEmotes.map((emote, index) => {
     const frequency = remaining.reduce((count, answerId) => {
       const phrase = deck.find((candidate) => candidate.id === answerId)
-      return count + (phrase?.suggested.includes(emote as Emote) ? 1 : 0)
+      return count + (phrase && authorBeatChoices(phrase, index).includes(emote as Emote) ? 1 : 0)
     }, 0)
     return { index, rank: frequency === 1 ? 0 : frequency === 0 ? 1 : 2 }
   })

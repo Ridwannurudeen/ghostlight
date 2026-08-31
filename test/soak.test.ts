@@ -52,8 +52,8 @@ import {
   type OutboundMessage,
   type ServerMessage
 } from '../src/client/flow'
-import { HYDRATION_DAYS, MAX_GHOSTS, themeForTimestamp } from '../src/shared/config'
-import { DECK } from '../src/shared/deck'
+import { EMOTE_STEP_SECONDS, HYDRATION_DAYS, MAX_GHOSTS, themeForTimestamp } from '../src/shared/config'
+import { DECK, canonicalPerformance } from '../src/shared/deck'
 import type { Look } from '../src/shared/types'
 import { createServerProtocol, type ProtocolSend } from '../src/server/server'
 import { GhostlightState, computeTitle, dayKey } from '../src/server/state'
@@ -70,6 +70,8 @@ type SimulatedPlayer = {
   runtime: FlowRuntime
   connected: boolean
   transportReady: boolean
+  performanceComplete: boolean
+  previewComplete: (() => void) | null
   outbound: OutboundMessage[]
   cursor: number
 }
@@ -82,6 +84,7 @@ type PayloadMeasurement = {
 
 const DAY_MILLISECONDS = 24 * 60 * 60 * 1000
 const PLAYER_COUNT = 6
+const FIRST_GUESS_DELAY_MILLISECONDS = EMOTE_STEP_SECONDS * 3 * 1_000
 
 function payloadBytes(value: unknown) {
   return new TextEncoder().encode(JSON.stringify(value)).byteLength
@@ -308,9 +311,20 @@ function assertClientBoards(state: ClientFlowState, serverState: GhostlightState
 function selectDraftEmotes(player: SimulatedPlayer) {
   const draft = player.runtime.getState().author
   expect(draft).not.toBeNull()
-  for (const emote of draft!.offeredEmotes.slice(0, 3)) {
+  const performance = canonicalPerformance(draft!.phrase)
+  expect(performance).not.toBeNull()
+  for (const emote of performance!) {
     expect(player.runtime.selectAuthorEmote(emote)).toBe(true)
   }
+}
+
+function completeDraftPreview(player: SimulatedPlayer) {
+  expect(player.runtime.previewAuthor()).toBe(true)
+  expect(player.runtime.postAuthor()).toBe(false)
+  const complete = player.previewComplete
+  expect(complete).not.toBeNull()
+  player.previewComplete = null
+  complete!()
 }
 
 describe('deterministic headless soak simulation', () => {
@@ -334,12 +348,26 @@ describe('deterministic headless soak simulation', () => {
         name,
         connected: false,
         transportReady: false,
+        performanceComplete: false,
+        previewComplete: null,
         outbound: [],
         cursor: 0
       } as SimulatedPlayer
       const effects: FlowEffects = {
-        showPerformer: () => avatarBudget.showPerformer(),
-        showDuet: () => avatarBudget.showDuet(),
+        showPerformer: () => {
+          player.performanceComplete = false
+          avatarBudget.showPerformer()
+        },
+        showDuet: () => {
+          player.performanceComplete = false
+          avatarBudget.showDuet()
+        },
+        showPreview: (_look, _emotes, onComplete) => {
+          player.previewComplete = onComplete
+        },
+        clearPreview: () => {
+          player.previewComplete = null
+        },
         showGhostOfNight: (ghost) => avatarBudget.showGhostOfNight(ghost !== null)
       }
       player.runtime = createFlowRuntime({
@@ -349,6 +377,7 @@ describe('deterministic headless soak simulation', () => {
         getProfile: () => ({ address, name, isGuest: false }),
         getLook: () => makeLook(address, name),
         isTransportReady: () => player.transportReady,
+        canGuess: () => player.performanceComplete,
         effects
       })
       player.runtime.subscribe((nextState) => avatarBudget.showAudience(nextState.audience))
@@ -380,6 +409,11 @@ describe('deterministic headless soak simulation', () => {
 
     let protocol = await bootServer('soak-server-a')
 
+    const completeFirstPerformance = (player: SimulatedPlayer) => {
+      now += FIRST_GUESS_DELAY_MILLISECONDS
+      player.performanceComplete = true
+    }
+
     const connect = async (player: SimulatedPlayer) => {
       player.connected = true
       await protocol.handleEnter(player.address)
@@ -402,7 +436,7 @@ describe('deterministic headless soak simulation', () => {
       await connect(author)
       expect(author.runtime.beginAuthoring()).toBe(true)
       selectDraftEmotes(author)
-      expect(author.runtime.previewAuthor()).toBe(true)
+      completeDraftPreview(author)
       expect(author.runtime.postAuthor()).toBe(true)
       await room.pump(author.address)
       const charadeId = author.runtime.getState().postedCharadeId
@@ -419,6 +453,8 @@ describe('deterministic headless soak simulation', () => {
     const firstServed = decoder.runtime.getState().charade!
     expect(authoredIds).toContain(firstServed.id)
     const firstPhrase = DECK.find((phrase) => phrase.id === state.getCharade(firstServed.id)?.phraseId)!
+    expect(decoder.runtime.guess(firstServed.answers.indexOf(firstPhrase.text))).toBe(false)
+    completeFirstPerformance(decoder)
     expect(decoder.runtime.guess(firstServed.answers.indexOf(firstPhrase.text))).toBe(true)
     await room.pump(decoder.address)
     expect(decoder.runtime.getState()).toMatchObject({
@@ -429,7 +465,7 @@ describe('deterministic headless soak simulation', () => {
     expect(decoder.runtime.canAnswerBack()).toBe(true)
     expect(decoder.runtime.beginAnswerBack()).toBe(true)
     selectDraftEmotes(decoder)
-    expect(decoder.runtime.previewAuthor()).toBe(true)
+    completeDraftPreview(decoder)
     expect(decoder.runtime.postAuthor()).toBe(true)
     await room.pump(decoder.address)
     expect(state.getCharade(firstServed.id)?.reply).toMatchObject({ address: decoder.address })
@@ -454,6 +490,8 @@ describe('deterministic headless soak simulation', () => {
       .filter((index) => index !== secondCorrectIndex)
     const secondStatsBefore = structuredClone(state.playerStats.get(secondDecoder.address.toLowerCase())!)
     const secondCharadeGuessesBefore = structuredClone(state.getCharade(secondServed.id)!.guesses)
+    expect(secondDecoder.runtime.guess(secondWrongIndexes[0])).toBe(false)
+    completeFirstPerformance(secondDecoder)
     expect(secondDecoder.runtime.guess(secondWrongIndexes[0])).toBe(true)
     await room.pump(secondDecoder.address)
     expect(secondDecoder.runtime.getState()).toMatchObject({
@@ -465,6 +503,7 @@ describe('deterministic headless soak simulation', () => {
     expect(state.getCharade(secondServed.id)?.guesses).toEqual(secondCharadeGuessesBefore)
     expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 1, retryStates: 1 })
 
+    secondDecoder.performanceComplete = false
     expect(secondDecoder.runtime.guess(secondWrongIndexes[0])).toBe(false)
     expect(secondDecoder.runtime.guess(secondWrongIndexes[1])).toBe(true)
     await room.pump(secondDecoder.address)
@@ -483,7 +522,7 @@ describe('deterministic headless soak simulation', () => {
     expect(mailSender.runtime.selectGhostMailRecipient(mailRecipient.address)).toBe(true)
     expect(mailSender.runtime.beginGhostMail()).toBe(true)
     selectDraftEmotes(mailSender)
-    expect(mailSender.runtime.previewAuthor()).toBe(true)
+    completeDraftPreview(mailSender)
     expect(mailSender.runtime.postAuthor()).toBe(true)
     await room.pump(mailSender.address)
     expect(mailSender.runtime.getState().postedRecipient).toBe(mailRecipient.address)
@@ -517,13 +556,15 @@ describe('deterministic headless soak simulation', () => {
     expect(deliveredMail.id).toBe(mailedCharade!.id)
     expect(deliveredMail.recipient).toBe(mailRecipient.address)
     const deliveredPhrase = DECK.find((phrase) => phrase.id === mailedCharade!.phraseId)!
+    expect(mailRecipient.runtime.guess(deliveredMail.answers.indexOf(deliveredPhrase.text))).toBe(false)
+    completeFirstPerformance(mailRecipient)
     expect(mailRecipient.runtime.guess(deliveredMail.answers.indexOf(deliveredPhrase.text))).toBe(true)
     await room.pump(mailRecipient.address)
     expect(mailRecipient.runtime.getState().reveal?.correct).toBe(true)
     expect(mailRecipient.runtime.canAnswerBack()).toBe(true)
     expect(mailRecipient.runtime.beginAnswerBack()).toBe(true)
     selectDraftEmotes(mailRecipient)
-    expect(mailRecipient.runtime.previewAuthor()).toBe(true)
+    completeDraftPreview(mailRecipient)
     expect(mailRecipient.runtime.postAuthor()).toBe(true)
     await room.pump(mailRecipient.address)
     expect(state.getCharade(mailedCharade!.id)?.reply).toMatchObject({ address: mailRecipient.address })
@@ -620,7 +661,7 @@ describe('deterministic headless soak simulation', () => {
       charade: payloadMaxima.get('server:charade'),
       retry: payloadMaxima.get('server:retry'),
       since: payloadMaxima.get('server:since')
-    }).toEqual({ post: 186, posted: 369, charade: 836, retry: 104, since: 263 })
+    }).toEqual({ post: 182, posted: 369, charade: 833, retry: 104, since: 263 })
     expect(avatarBudget.peak).toBeLessThanOrEqual(MAX_GHOSTS)
   })
 })

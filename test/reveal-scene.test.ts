@@ -158,6 +158,61 @@ describe('scene reveal adapter', () => {
     expect(audio.restore).toHaveBeenCalledTimes(1)
   })
 
+  it('restores an authoritative completed reveal without replaying choreography, audio, or stats', () => {
+    updateClientSettings({ reducedMotion: true })
+    const audio = { play: vi.fn(), duck: vi.fn(), restore: vi.fn() }
+    const controller = createSceneRevealController(audio)
+    const reveal = {
+      charadeId: charade.id,
+      correct: true,
+      phrase: 'Flying a kite',
+      stats: { correct: 7, total: 11 },
+      yourScore: 2,
+      daily: { day: '2026-08-23', decoded: 10, authored: 1, stamped: true },
+      stampAwarded: true,
+      title: 'Scene Stealer' as const,
+      nextUnlock: {
+        nextTitle: 'Ghostlight Legend' as const,
+        requirement: '3 daily stamps and 25 correct decodes',
+        progress: 0.4
+      },
+      titleUnlocked: true
+    }
+    controller.begin(charade, 1)
+    controller.resolve(reveal, charade)
+    vi.advanceTimersByTime(3_000)
+    expect(controller.canAdvance()).toBe(true)
+    controller.cancel()
+    expect(getRevealViewState()).toMatchObject({ active: false, answerRevealed: false })
+    vi.clearAllMocks()
+
+    expect(controller.restore(reveal, charade)).toBe(true)
+
+    expect(controller.canAdvance()).toBe(true)
+    expect(getRevealViewState()).toMatchObject({
+      active: true,
+      answersLocked: true,
+      selectedAnswerIndex: 1,
+      phrase: 'Flying a kite',
+      answerRevealed: true,
+      correct: true,
+      verdict: 'hit',
+      verdictText: 'YOU GOT IT',
+      stats: { correct: 7, total: 11 },
+      titleProgress: 0.4,
+      unlockedTitle: 'Scene Stealer',
+      stampAwarded: true,
+      complete: true
+    })
+    expect(audio.play).not.toHaveBeenCalled()
+    expect(audio.duck).not.toHaveBeenCalled()
+    expect(audio.restore).not.toHaveBeenCalled()
+    expect(playPerformerEmote).not.toHaveBeenCalled()
+    expect(react).not.toHaveBeenCalled()
+    expect(switchTheaterCamera).not.toHaveBeenCalled()
+    expect(lights.set).not.toHaveBeenCalled()
+  })
+
   it.each([
     { correct: true, scoreDelta: 175, verdict: 'hit', text: 'SPOTLIGHT PAID OFF · +175' },
     { correct: false, scoreDelta: -75, verdict: 'miss', text: 'SPOTLIGHT MISSED · −75' }

@@ -60,6 +60,8 @@ let wantedAudience: Look[] = []
 let ghostOfNightActive = false
 let duet: DuetState | null = null
 let previewActive = false
+let previewCompleted: (() => void) | null = null
+let performerSequenceCompleted = false
 
 export function initializeGhosts() {
   if (initialized) return
@@ -81,12 +83,15 @@ export function showPerformer(look: Look, emotes: GhostEmotes) {
   initializeGhosts()
   cancelDuet()
   clearAuthorPreview()
+  performerSequenceCompleted = false
   showGhost(slots[0], look, emotes)
 }
 
 export function showDuet(author: DuetPerformer, reply: DuetPerformer) {
   initializeGhosts()
   cancelDuet()
+  clearAuthorPreview()
+  performerSequenceCompleted = false
   showGhost(slots[0], author.look, null)
   showGhost(slots[PREVIEW_INDEX], reply.look, null)
   duet = {
@@ -160,6 +165,7 @@ export function clearPerformer() {
   initializeGhosts()
   cancelDuet()
   clearAuthorPreview()
+  performerSequenceCompleted = false
   hideGhost(slots[0])
 }
 
@@ -241,11 +247,21 @@ export function clearGhostOfNight() {
   syncAudience()
 }
 
-export function showPreview(look: Look, emotes: GhostEmotes) {
+export function showPreview(look: Look, emotes: GhostEmotes, onComplete: () => void) {
   initializeGhosts()
   cancelDuet()
   clearAuthorPreview()
   showGhost(slots[PREVIEW_INDEX], look, emotes)
+  previewActive = true
+  previewCompleted = onComplete
+}
+
+export function showAuthorBeat(look: Look, emote: string) {
+  initializeGhosts()
+  cancelDuet()
+  clearAuthorPreview()
+  showGhost(slots[PREVIEW_INDEX], look, null)
+  trigger(slots[PREVIEW_INDEX], emote)
   previewActive = true
 }
 
@@ -273,6 +289,10 @@ export function getPerformerBeatIndex(): PerformerBeatIndex | null {
   return slots[0].sequence === null ? null : slots[0].emoteIndex
 }
 
+export function hasPerformerCompletedSequence() {
+  return performerSequenceCompleted
+}
+
 function ghostSystem(dt: number) {
   spawnNextAudienceGhost(dt)
   advanceDuet(dt)
@@ -281,6 +301,12 @@ function ghostSystem(dt: number) {
     slot.elapsed += dt
     if (slot.elapsed < EMOTE_STEP_SECONDS) continue
     slot.elapsed = 0
+    if (slot === slots[0] && slot.emoteIndex === 2) performerSequenceCompleted = true
+    if (slot === slots[PREVIEW_INDEX] && slot.emoteIndex === 2 && previewCompleted) {
+      const onComplete = previewCompleted
+      previewCompleted = null
+      onComplete()
+    }
     slot.emoteIndex = slot.emoteIndex === 0 ? 1 : slot.emoteIndex === 1 ? 2 : 0
     trigger(slot, slot.sequence[slot.emoteIndex])
   }
@@ -292,6 +318,7 @@ function advanceDuet(dt: number) {
   if (duet.elapsed < EMOTE_STEP_SECONDS) return
 
   duet.elapsed = 0
+  if (duet.performerIndex === 0 && duet.emoteIndex === 2) performerSequenceCompleted = true
   if (duet.emoteIndex < duet.sequences[duet.performerIndex].length - 1) {
     duet.emoteIndex = duet.emoteIndex === 0 ? 1 : 2
   } else {
@@ -355,6 +382,7 @@ function cancelDuet() {
 }
 
 function clearAuthorPreview() {
+  previewCompleted = null
   if (!previewActive) return
   previewActive = false
   hideGhost(slots[PREVIEW_INDEX])

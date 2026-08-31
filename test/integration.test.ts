@@ -89,11 +89,18 @@ import {
   type OutboundMessage,
   type ServerMessage
 } from '../src/client/flow'
-import { setAudience, showDuet, showGhostOfNight, showPerformer, showPreview } from '../src/client/ghosts'
-import { createOpeningController, type OpeningEffects } from '../src/client/opening'
+import {
+  hasPerformerCompletedSequence,
+  setAudience,
+  showDuet,
+  showGhostOfNight,
+  showPerformer,
+  showPreview
+} from '../src/client/ghosts'
+import { OPENING_INSTRUCTION, createOpeningController, type OpeningEffects } from '../src/client/opening'
 import { createRevealController, type RevealClock, type RevealEffects, type RevealOutcome } from '../src/client/reveal'
-import { INVITE_URL, MAX_GHOSTS, themeForTimestamp } from '../src/shared/config'
-import { DECK } from '../src/shared/deck'
+import { EMOTE_STEP_SECONDS, INVITE_URL, MAX_GHOSTS, themeForTimestamp } from '../src/shared/config'
+import { DECK, PLAYABLE_DECK, canonicalPerformance } from '../src/shared/deck'
 import { SEASON_ZERO_END_AT, SEASON_ZERO_WEEKS } from '../src/shared/seasons'
 import { showPolicyForTimestamp } from '../src/shared/show-policy'
 import { createServerProtocol, type ProtocolSend } from '../src/server/server'
@@ -148,6 +155,7 @@ class FakeRoom {
   readonly serverMessages: ServerEnvelope[] = []
 
   private readonly clients = new Map<string, FakeRoomClient>()
+  private readonly droppedServerMessageTypes = new Set<string>()
   private protocol: ServerProtocol | null = null
 
   connectProtocol(protocol: ServerProtocol) {
@@ -177,8 +185,13 @@ class FakeRoom {
     client.cursor = client.messages.length
   }
 
+  dropNextServerMessage(type: string) {
+    this.droppedServerMessageTypes.add(type)
+  }
+
   readonly sendFromServer: ProtocolSend = async (type, data, to) => {
     this.serverMessages.push({ type, data, to })
+    if (this.droppedServerMessageTypes.delete(type)) return
     const recipients = to ? to.map((address) => this.clients.get(address.toLowerCase())) : [...this.clients.values()]
     for (const client of recipients) {
       if (client) this.deliverToClient(client.runtime, type, data)
@@ -310,17 +323,38 @@ function createRevealHarness() {
   return { clock, events, controller: createRevealController(effects, clock) }
 }
 
+function selectCanonicalAuthorPerformance(runtime: FlowRuntime) {
+  const draft = runtime.getState().author
+  expect(draft).not.toBeNull()
+  const performance = canonicalPerformance(draft!.phrase)
+  expect(performance).not.toBeNull()
+  for (const emote of performance!) expect(runtime.selectAuthorEmote(emote)).toBe(true)
+}
+
+const FIRST_GUESS_DELAY_MILLISECONDS = EMOTE_STEP_SECONDS * 3 * 1_000
+
+function completeGhostSequence() {
+  const ghostSystem = ecsHarness.systems.get('ghostlight::ghosts')
+  if (!ghostSystem) throw new Error('Ghost system is not initialized')
+  ghostSystem(EMOTE_STEP_SECONDS)
+  ghostSystem(EMOTE_STEP_SECONDS)
+  ghostSystem(EMOTE_STEP_SECONDS)
+}
+
 describe('full experience integration', () => {
   it('closes opening through answer-back and invite while preserving cold-start and avatar budgets', async () => {
     const playerAddress = '0xDecoder'
     const replierAddress = '0xReplier'
+    let timestamp = FIXED_NOW
     const storage = new FakeStorage()
     const repository = createStorageRepository(storage)
-    const state = new GhostlightState(repository, () => FIXED_NOW)
+    const state = new GhostlightState(repository, () => timestamp)
     await state.hydrate()
+    const targetPhrase = PLAYABLE_DECK[0]
     const target = makeCharade('opening-target', {
       author: { address: '0xAuthor', name: 'Maya' },
-      phraseId: DECK[0].id
+      phraseId: targetPhrase.id,
+      emotes: canonicalPerformance(targetPhrase)!
     })
     state.upsertCharade(target)
 
@@ -365,11 +399,12 @@ describe('full experience integration', () => {
     }
     const runtime = createFlowRuntime({
       send: room.senderFor(playerAddress),
-      now: () => FIXED_NOW,
+      now: () => timestamp,
       createRequestId: () => `integration-${++requestSequence}`,
       getProfile: () => ({ address: playerAddress, name: 'Decoder', isGuest: false }),
       getLook: () => makeLook(playerAddress, 'Decoder'),
       isTransportReady: () => transportReady,
+      canGuess: hasPerformerCompletedSequence,
       effects: flowEffects
     })
 
@@ -415,7 +450,7 @@ describe('full experience integration', () => {
         ),
       ready: readyGate.promise,
       flush: repository.flushNow,
-      now: () => FIXED_NOW,
+      now: () => timestamp,
       instanceId: 'integration-server',
       lookAttempts: 1,
       lookRetryMilliseconds: 0,
@@ -450,14 +485,14 @@ describe('full experience integration', () => {
     expect(opening.isRunning()).toBe(true)
 
     opening.tick(10)
-    const theme = themeForTimestamp(FIXED_NOW)
+    const theme = themeForTimestamp(timestamp)
     expect(openingEvents).toEqual([
       'camera:foyer',
       `marquee:TONIGHT'S SHOW: ${theme.label}`,
       'doors:open',
       'camera:stage',
       'performer:enter',
-      "instruction:Guess what they're saying",
+      `instruction:${OPENING_INSTRUCTION}`,
       'decode'
     ])
     expect(opening.isRunning()).toBe(false)
@@ -466,9 +501,13 @@ describe('full experience integration', () => {
     const phrase = DECK.find((candidate) => candidate.id === target.phraseId)!
     const correctAnswerIndex = served.answers.indexOf(phrase.text)
     expect(correctAnswerIndex).toBeGreaterThanOrEqual(0)
+    expect(runtime.guess(correctAnswerIndex)).toBe(false)
+    timestamp += FIRST_GUESS_DELAY_MILLISECONDS
+    completeGhostSequence()
     expect(runtime.guess(correctAnswerIndex)).toBe(true)
     expect(reveal.controller.getStatus()).toBe('running')
     await room.pumpClient(playerAddress)
+    expect(runtime.getState().errorCode).toBe('')
     expect(runtime.getState()).toMatchObject({
       screen: 'reveal',
       reveal: { charadeId: target.id, correct: true, phraseId: target.phraseId }
@@ -483,10 +522,10 @@ describe('full experience integration', () => {
     expect(runtime.getState().screen).toBe('author')
     const authoredDraft = runtime.getState().author!
     expect(authoredDraft.replyTo).toBeUndefined()
-    for (const emote of authoredDraft.offeredEmotes.slice(0, 3)) {
-      expect(runtime.selectAuthorEmote(emote)).toBe(true)
-    }
+    selectCanonicalAuthorPerformance(runtime)
     expect(runtime.previewAuthor()).toBe(true)
+    expect(runtime.postAuthor()).toBe(false)
+    completeGhostSequence()
     expect(runtime.postAuthor()).toBe(true)
     await room.pumpClient(playerAddress)
 
@@ -524,11 +563,12 @@ describe('full experience integration', () => {
     let replierTransportReady = false
     const replierRuntime = createFlowRuntime({
       send: room.senderFor(replierAddress),
-      now: () => FIXED_NOW,
+      now: () => timestamp,
       createRequestId: () => `replier-${++replierRequestSequence}`,
       getProfile: () => ({ address: replierAddress, name: 'Replier', isGuest: false }),
       getLook: () => makeLook(replierAddress, 'Replier'),
       isTransportReady: () => replierTransportReady,
+      canGuess: hasPerformerCompletedSequence,
       effects: {
         showPerformer,
         showDuet,
@@ -566,6 +606,9 @@ describe('full experience integration', () => {
     const authoredPhrase = DECK.find((candidate) => candidate.id === authoredCharade.phraseId)!
     const authoredAnswerIndex = servedAuthoredCharade.answers.indexOf(authoredPhrase.text)
     expect(authoredAnswerIndex).toBeGreaterThanOrEqual(0)
+    expect(replierRuntime.guess(authoredAnswerIndex)).toBe(false)
+    timestamp += FIRST_GUESS_DELAY_MILLISECONDS
+    completeGhostSequence()
     expect(replierRuntime.guess(authoredAnswerIndex)).toBe(true)
     await room.pumpClient(replierAddress)
     expect(replierRuntime.getState()).toMatchObject({
@@ -582,10 +625,10 @@ describe('full experience integration', () => {
       author: { phrase: authoredPhrase, replyTo: authoredCharadeId }
     })
     const answerBackDraft = replierRuntime.getState().author!
-    for (const emote of answerBackDraft.offeredEmotes.slice(0, 3)) {
-      expect(replierRuntime.selectAuthorEmote(emote)).toBe(true)
-    }
+    selectCanonicalAuthorPerformance(replierRuntime)
     expect(replierRuntime.previewAuthor()).toBe(true)
+    expect(replierRuntime.postAuthor()).toBe(false)
+    completeGhostSequence()
     expect(replierRuntime.postAuthor()).toBe(true)
     await room.pumpClient(replierAddress)
     expect(replierRuntime.getState()).toMatchObject({
@@ -608,7 +651,7 @@ describe('full experience integration', () => {
 
     await repository.flushNow()
     const restartedRepository = createStorageRepository(storage)
-    const restartedState = new GhostlightState(restartedRepository, () => FIXED_NOW)
+    const restartedState = new GhostlightState(restartedRepository, () => timestamp)
     await restartedState.hydrate()
     const restored = restartedState.getCharade(authoredCharadeId)!
     expect(restored).toMatchObject({ author: { address: playerAddress, name: 'Decoder' } })
@@ -633,17 +676,104 @@ describe('full experience integration', () => {
     )
   })
 
-  it('runs recovery and stages the ghost victory before revealing a second-miss phrase', async () => {
-    const authorAddress = `0x${'a'.repeat(40)}`
-    const recoveryAddress = `0x${'1'.repeat(40)}`
-    const missAddress = `0x${'2'.repeat(40)}`
+  it('acknowledges one persisted ordinary post after its response is dropped and the server restarts', async () => {
+    const playerAddress = '0xRestartAuthor'
     const storage = new FakeStorage()
     const repository = createStorageRepository(storage)
     const state = new GhostlightState(repository, () => FIXED_NOW)
     await state.hydrate()
+    const room = new FakeRoom()
+    let transportReady = false
+    let requestSequence = 0
+    const runtime = createFlowRuntime({
+      send: room.senderFor(playerAddress),
+      now: () => FIXED_NOW,
+      createRequestId: () => `restart-${++requestSequence}`,
+      getProfile: () => ({ address: playerAddress, name: 'Restart Author', isGuest: false }),
+      getLook: () => makeLook(playerAddress, 'Restart Author'),
+      isTransportReady: () => transportReady,
+      effects: { showPreview }
+    })
+    const protocol = createServerProtocol({
+      state,
+      send: room.sendFromServer,
+      snapshotLook: async (address) => makeLook(address, 'Restart Author'),
+      flush: repository.flushNow,
+      now: () => FIXED_NOW,
+      instanceId: 'post-server-1',
+      lookAttempts: 1,
+      lookRetryMilliseconds: 0,
+      random: () => 0.5
+    })
+    room.connectProtocol(protocol)
+    room.connectClient(playerAddress, runtime)
+    await protocol.handleEnter(playerAddress)
+    transportReady = true
+    runtime.tick(0)
+    await room.pumpClient(playerAddress)
+
+    expect(runtime.beginAuthoring()).toBe(true)
+    selectCanonicalAuthorPerformance(runtime)
+    expect(runtime.previewAuthor()).toBe(true)
+    expect(runtime.postAuthor()).toBe(false)
+    completeGhostSequence()
+    room.dropNextServerMessage('posted')
+    expect(runtime.postAuthor()).toBe(true)
+    const originalPost = room.messagesFrom(playerAddress).findLast((message) => message.type === 'post')!
+    await room.pumpClient(playerAddress)
+
+    const droppedPosted = room.serverMessages.findLast((message) => message.type === 'posted')!
+    const charadeId = (droppedPosted.data as ServerData<'posted'>).charadeId
+    expect(runtime.getState()).toMatchObject({ screen: 'author', pending: [{ kind: 'post' }] })
+    expect(state.getCharade(charadeId)).not.toBeNull()
+    expect(state.playerStats.get(playerAddress.toLowerCase())).toMatchObject({
+      authoredCount: 1,
+      daily: { authored: 1 }
+    })
+
+    await repository.flushNow()
+    const restartedRepository = createStorageRepository(storage)
+    const restartedState = new GhostlightState(restartedRepository, () => FIXED_NOW)
+    await restartedState.hydrate()
+    const restartedProtocol = createServerProtocol({
+      state: restartedState,
+      send: room.sendFromServer,
+      snapshotLook: async (address) => makeLook(address, 'Restart Author'),
+      flush: restartedRepository.flushNow,
+      now: () => FIXED_NOW,
+      instanceId: 'post-server-2',
+      lookAttempts: 1,
+      lookRetryMilliseconds: 0,
+      random: () => 0.5
+    })
+    room.connectProtocol(restartedProtocol)
+    await restartedProtocol.handleEnter(playerAddress)
+    await room.pumpClient(playerAddress)
+
+    const posts = room.messagesFrom(playerAddress).filter((message) => message.type === 'post')
+    expect(posts).toEqual([originalPost, originalPost])
+    expect(runtime.getState()).toMatchObject({ screen: 'posted', postedCharadeId: charadeId, pending: [] })
+    expect(restartedState.getCharade(charadeId)).not.toBeNull()
+    expect(restartedState.playerStats.get(playerAddress.toLowerCase())).toMatchObject({
+      authoredCount: 1,
+      daily: { authored: 1 }
+    })
+  })
+
+  it('runs recovery and stages the ghost victory before revealing a second-miss phrase', async () => {
+    const authorAddress = `0x${'a'.repeat(40)}`
+    const recoveryAddress = `0x${'1'.repeat(40)}`
+    const missAddress = `0x${'2'.repeat(40)}`
+    let timestamp = FIXED_NOW
+    const storage = new FakeStorage()
+    const repository = createStorageRepository(storage)
+    const state = new GhostlightState(repository, () => timestamp)
+    await state.hydrate()
+    const targetPhrase = PLAYABLE_DECK[0]
     const target = makeCharade('retry-target', {
       author: { address: authorAddress, name: 'Maya' },
-      phraseId: DECK[0].id
+      phraseId: targetPhrase.id,
+      emotes: canonicalPerformance(targetPhrase)!
     })
     state.upsertCharade(target)
 
@@ -661,7 +791,7 @@ describe('full experience integration', () => {
               : 'Maya'
         ),
       flush: repository.flushNow,
-      now: () => FIXED_NOW,
+      now: () => timestamp,
       instanceId: 'retry-integration-server',
       lookAttempts: 1,
       lookRetryMilliseconds: 0,
@@ -676,12 +806,14 @@ describe('full experience integration', () => {
       let requestSequence = 0
       const runtime = createFlowRuntime({
         send: room.senderFor(address),
-        now: () => FIXED_NOW,
+        now: () => timestamp,
         createRequestId: () => `${name.toLowerCase().replaceAll(' ', '-')}-${++requestSequence}`,
         getProfile: () => ({ address, name, isGuest: false }),
         getLook: () => makeLook(address, name),
         isTransportReady: () => transportReady,
+        canGuess: hasPerformerCompletedSequence,
         effects: {
+          showPerformer,
           showRetryBeat: (beatIndex) => retryBeats.push(beatIndex),
           beginReveal: (_charade, _answerIndex, options) => reveal.controller.begin(options),
           resolveReveal: (result, charade) => {
@@ -722,6 +854,9 @@ describe('full experience integration', () => {
     const recoveryStatsBefore = structuredClone(state.playerStats.get(recoveryAddress.toLowerCase())!)
     const guessesBefore = structuredClone(state.getCharade(target.id)!.guesses)
 
+    expect(recovery.runtime.guess(recoveryWrongIndex)).toBe(false)
+    timestamp += FIRST_GUESS_DELAY_MILLISECONDS
+    completeGhostSequence()
     expect(recovery.runtime.guess(recoveryWrongIndex)).toBe(true)
     await room.pumpClient(recoveryAddress)
     expect(recovery.runtime.getState()).toMatchObject({
@@ -756,11 +891,11 @@ describe('full experience integration', () => {
     expect(recovery.reveal.events).toContain('2600:floating:SECOND CHANCE · +50')
     expect(state.playerStats.get(recoveryAddress.toLowerCase())).toMatchObject({
       decoded: 1,
-      correct: 1,
+      correct: 0,
       seen: [target.id],
       showSet: { round: 1, score: 50, streak: 0, bestStreak: 0, understood: 0 }
     })
-    expect(state.getCharade(target.id)?.guesses).toEqual({ total: 1, correct: 1 })
+    expect(state.getCharade(target.id)?.guesses).toEqual({ total: 1, correct: 0 })
     expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 0, retryStates: 0 })
     await protocol.handleLeave(recoveryAddress)
     room.disconnectClient(recoveryAddress)
@@ -769,6 +904,9 @@ describe('full experience integration', () => {
     const missCharade = miss.runtime.getState().charade!
     const missCorrectIndex = missCharade.answers.indexOf(phrase.text)
     const missWrongIndexes = missCharade.answers.map((_, index) => index).filter((index) => index !== missCorrectIndex)
+    expect(miss.runtime.guess(missWrongIndexes[0])).toBe(false)
+    timestamp += FIRST_GUESS_DELAY_MILLISECONDS
+    completeGhostSequence()
     expect(miss.runtime.guess(missWrongIndexes[0])).toBe(true)
     await room.pumpClient(missAddress)
     expect(miss.runtime.getState()).toMatchObject({
@@ -802,7 +940,7 @@ describe('full experience integration', () => {
       seen: [target.id],
       showSet: { round: 1, score: 0, streak: 0, bestStreak: 0, understood: 0 }
     })
-    expect(state.getCharade(target.id)?.guesses).toEqual({ total: 2, correct: 1 })
+    expect(state.getCharade(target.id)?.guesses).toEqual({ total: 2, correct: 0 })
     expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 0, retryStates: 0 })
     await protocol.handleLeave(missAddress)
     room.disconnectClient(missAddress)
@@ -817,7 +955,7 @@ describe('full experience integration', () => {
 
   it('crosses Season Zero shows without leaking stale work and hydrates the daily fallback after restart', async () => {
     const playerAddress = `0x${'3'.repeat(40)}`
-    const firstTimestamp = SEASON_ZERO_WEEKS[0].eligibility.endsAt - 1
+    const firstTimestamp = SEASON_ZERO_WEEKS[0].eligibility.endsAt - 60_000
     const secondTimestamp = SEASON_ZERO_WEEKS[1].eligibility.startsAt
     let timestamp = firstTimestamp
     const firstPolicy = showPolicyForTimestamp(firstTimestamp)
@@ -837,6 +975,7 @@ describe('full experience integration', () => {
       makeCharade(`season-boundary-${index + 1}`, {
         author: { address: `0x${String(index + 4).repeat(40)}`, name: `External ${index + 1}` },
         phraseId,
+        emotes: canonicalPerformance(phraseId)!,
         createdAt: firstTimestamp
       })
     )
@@ -851,7 +990,9 @@ describe('full experience integration', () => {
       createRequestId: () => `season-lifecycle-${++requestSequence}`,
       getProfile: () => ({ address: playerAddress, name: 'Season Decoder', isGuest: false }),
       getLook: () => makeLook(playerAddress, 'Season Decoder'),
-      isTransportReady: () => transportReady
+      isTransportReady: () => transportReady,
+      canGuess: hasPerformerCompletedSequence,
+      effects: { showPerformer, showPreview }
     })
     const protocol = createServerProtocol({
       state,
@@ -880,9 +1021,10 @@ describe('full experience integration', () => {
     expect(runtime.beginAuthoring()).toBe(true)
     const seasonDraft = runtime.getState().author!
     expect(firstPolicy.primaryPhraseIds).toContain(seasonDraft.phrase.id)
-    for (const emote of seasonDraft.offeredEmotes.slice(0, 3)) {
-      expect(runtime.selectAuthorEmote(emote)).toBe(true)
-    }
+    selectCanonicalAuthorPerformance(runtime)
+    expect(runtime.previewAuthor()).toBe(true)
+    expect(runtime.postAuthor()).toBe(false)
+    completeGhostSequence()
     expect(runtime.postAuthor()).toBe(true)
     await room.pumpClient(playerAddress)
     expect(runtime.getState()).toMatchObject({ screen: 'posted', postedCharadeId: expect.any(String) })
@@ -894,6 +1036,9 @@ describe('full experience integration', () => {
     const firstSource = externalCharades.find((charade) => charade.id === firstServed.id)!
     const firstCorrectIndex = firstServed.answerIds?.indexOf(firstSource.phraseId) ?? -1
     expect(firstCorrectIndex).toBeGreaterThanOrEqual(0)
+    expect(runtime.guess(firstCorrectIndex)).toBe(false)
+    timestamp += FIRST_GUESS_DELAY_MILLISECONDS
+    completeGhostSequence()
     expect(runtime.guess(firstCorrectIndex)).toBe(true)
     await room.pumpClient(playerAddress)
     expect(state.playerStats.get(playerAddress.toLowerCase())?.showSet).toMatchObject({
@@ -909,6 +1054,9 @@ describe('full experience integration', () => {
     const secondSource = externalCharades.find((charade) => charade.id === secondServed.id)!
     const secondCorrectIndex = secondServed.answerIds?.indexOf(secondSource.phraseId) ?? -1
     const secondWrongIndex = secondServed.answers.findIndex((_, index) => index !== secondCorrectIndex)
+    expect(runtime.guess(secondWrongIndex)).toBe(false)
+    timestamp += FIRST_GUESS_DELAY_MILLISECONDS
+    completeGhostSequence()
     expect(runtime.guess(secondWrongIndex)).toBe(true)
     await room.pumpClient(playerAddress)
     expect(runtime.getState()).toMatchObject({ retry: { charadeId: secondServed.id } })
@@ -945,13 +1093,13 @@ describe('full experience integration', () => {
     expect(
       room.serverMessages.find(
         (message) =>
-          message.type === 'requestError' &&
-          (message.data as { requestId: string }).requestId === staleGuessRequestId
+          message.type === 'requestError' && (message.data as { requestId: string }).requestId === staleGuessRequestId
       )?.data
     ).toEqual({ code: 'charade-not-served', requestId: staleGuessRequestId })
     expect(
       room.serverMessages.find(
-        (message) => message.type === 'charade' && (message.data as { requestId: string }).requestId === newWeekRequestId
+        (message) =>
+          message.type === 'charade' && (message.data as { requestId: string }).requestId === newWeekRequestId
       )
     ).toBeDefined()
     expect(runtime.getState()).toMatchObject({
@@ -972,7 +1120,9 @@ describe('full experience integration', () => {
     })
 
     await repository.flushNow()
-    expect(storage.readPlayerJSON<ReturnType<typeof makeStats>>(playerAddress.toLowerCase(), PLAYER_STATS_KEY)?.showSet).toEqual({
+    expect(
+      storage.readPlayerJSON<ReturnType<typeof makeStats>>(playerAddress.toLowerCase(), PLAYER_STATS_KEY)?.showSet
+    ).toEqual({
       showKey: secondPolicy.showKey,
       round: 0,
       score: 0,
@@ -1028,8 +1178,7 @@ describe('full experience integration', () => {
     const dailyShowKey = `daily:${new Date(timestamp).toISOString().slice(0, 10)}`
     expect(runtime.getState()).toMatchObject({ screen: 'foyer', showKey: dailyShowKey, season: null })
     const dailySchedule = room.serverMessages.findLast(
-      (message) =>
-        message.type === 'showSchedule' && (message.data as { serverTime: number }).serverTime === timestamp
+      (message) => message.type === 'showSchedule' && (message.data as { serverTime: number }).serverTime === timestamp
     )!.data as Record<string, unknown>
     expect(dailySchedule).toMatchObject({
       instanceId: 'season-lifecycle-restarted',
@@ -1040,9 +1189,10 @@ describe('full experience integration', () => {
 
     expect(runtime.beginAuthoring()).toBe(true)
     const dailyDraft = runtime.getState().author!
-    for (const emote of dailyDraft.offeredEmotes.slice(0, 3)) {
-      expect(runtime.selectAuthorEmote(emote)).toBe(true)
-    }
+    selectCanonicalAuthorPerformance(runtime)
+    expect(runtime.previewAuthor()).toBe(true)
+    expect(runtime.postAuthor()).toBe(false)
+    completeGhostSequence()
     expect(runtime.postAuthor()).toBe(true)
     await room.pumpClient(playerAddress)
     expect(runtime.getState()).toMatchObject({ screen: 'posted', postedCharadeId: expect.any(String) })

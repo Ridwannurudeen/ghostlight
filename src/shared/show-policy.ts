@@ -1,5 +1,5 @@
 import { themeForTimestamp, type ThemeId } from './config'
-import { DECK, HOUSE_CHARADES, type PhraseId } from './deck'
+import { HOUSE_CHARADES, PLAYABLE_DECK, type PhraseId } from './deck'
 import { SEASON_ZERO_DECOY_APPROVAL_RECORD, SEASON_ZERO_MODERATION_RECORD } from './season-zero-moderation'
 import {
   evaluateSeasonModerationRecord,
@@ -52,7 +52,7 @@ export type SeasonZeroShowPolicy = PolicyContent &
 export type ShowPolicy = DailyShowPolicy | SeasonZeroShowPolicy
 
 const MAX_DATE_TIMESTAMP = 8_640_000_000_000_000
-const ALL_PHRASE_IDS = Object.freeze(DECK.map((phrase) => phrase.id as PhraseId))
+const ALL_PHRASE_IDS = Object.freeze(PLAYABLE_DECK.map((phrase) => phrase.id as PhraseId))
 const ALL_HOUSE_PHRASE_IDS = Object.freeze(HOUSE_CHARADES.map((charade) => charade.phraseId as PhraseId))
 let cachedDefaultPolicy: { day: string; policy: ShowPolicy | null } | null = null
 

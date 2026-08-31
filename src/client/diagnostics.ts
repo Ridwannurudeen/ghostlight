@@ -46,9 +46,16 @@ export type DiagnosticsSnapshot = Readonly<{
     coldStartMilliseconds: number | null
     roundTripMilliseconds: number | null
   }
+  connection: {
+    disconnects: number
+    recoveries: number
+  }
   loop: {
     charades: number
     guesses: number
+    firstTry: number
+    recovered: number
+    finalMisses: number
     posts: number
     mailSent: number
     mailReceived: number
@@ -68,7 +75,17 @@ export class DiagnosticsTracker {
   private coldStartMilliseconds: number | null = null
   private roundTripMilliseconds: number | null = null
   private pingSentAt = new Map<number, number>()
-  private loop = { charades: 0, guesses: 0, posts: 0, mailSent: 0, mailReceived: 0 }
+  private connection = { disconnects: 0, recoveries: 0 }
+  private loop = {
+    charades: 0,
+    guesses: 0,
+    firstTry: 0,
+    recovered: 0,
+    finalMisses: 0,
+    posts: 0,
+    mailSent: 0,
+    mailReceived: 0
+  }
 
   setEnabled(enabled: boolean) {
     this.enabled = enabled
@@ -123,8 +140,20 @@ export class DiagnosticsTracker {
     if (mail) this.loop.mailReceived += 1
   }
 
-  recordGuess() {
-    if (this.enabled) this.loop.guesses += 1
+  recordGuess(correct: boolean, attempt?: 1 | 2) {
+    if (!this.enabled) return
+    this.loop.guesses += 1
+    if (correct && attempt === 2) this.loop.recovered += 1
+    else if (correct) this.loop.firstTry += 1
+    else this.loop.finalMisses += 1
+  }
+
+  recordDisconnect() {
+    if (this.enabled) this.connection.disconnects += 1
+  }
+
+  recordRecovery() {
+    if (this.enabled) this.connection.recoveries += 1
   }
 
   recordPost(mail: boolean) {
@@ -159,6 +188,7 @@ export class DiagnosticsTracker {
         coldStartMilliseconds: this.coldStartMilliseconds,
         roundTripMilliseconds: this.roundTripMilliseconds
       },
+      connection: { ...this.connection },
       loop: { ...this.loop }
     }
   }
@@ -205,8 +235,16 @@ export function recordDiagnosticsCharade(mail: boolean) {
   diagnosticsTracker.recordCharade(mail)
 }
 
-export function recordDiagnosticsGuess() {
-  diagnosticsTracker.recordGuess()
+export function recordDiagnosticsGuess(correct: boolean, attempt?: 1 | 2) {
+  diagnosticsTracker.recordGuess(correct, attempt)
+}
+
+export function recordDiagnosticsDisconnect() {
+  diagnosticsTracker.recordDisconnect()
+}
+
+export function recordDiagnosticsRecovery() {
+  diagnosticsTracker.recordRecovery()
 }
 
 export function recordDiagnosticsPost(mail: boolean) {
@@ -231,8 +269,8 @@ export function formatDiagnosticsLines(snapshot: DiagnosticsSnapshot) {
     `canvas.width=${formatNumber(canvas?.width)} canvas.height=${formatNumber(canvas?.height)} canvas.dpr=${formatNumber(canvas?.devicePixelRatio)} safe=${formatInsets(canvas?.safeArea)} interactable=${formatInsets(canvas?.interactableArea)}`,
     `frame.avg_ms=${formatNumber(snapshot.frame.averageMilliseconds)} frame.worst_ms=${formatNumber(snapshot.frame.worstMilliseconds)} frame.approx_fps=${formatNumber(snapshot.frame.approximateFps)} frame.samples=${snapshot.frame.samples}`,
     `scene.transform_entities=${formatNumber(snapshot.transformEntities, 0)} scene.avatar_shapes=${formatNumber(snapshot.avatarShapes, 0)} assets.triangles=${DIAGNOSTICS_ASSET_TOTALS.triangles} assets.materials=${DIAGNOSTICS_ASSET_TOTALS.materials}`,
-    `server.state=${snapshot.server.ready ? 'ready' : 'waking'} server.instance=${safeToken(snapshot.server.instanceId)} server.cold_start_ms=${formatNumber(snapshot.server.coldStartMilliseconds, 0)} server.rtt_ms=${formatNumber(snapshot.server.roundTripMilliseconds, 0)}`,
-    `loop.charades=${snapshot.loop.charades} loop.guesses=${snapshot.loop.guesses} loop.posts=${snapshot.loop.posts} loop.mail_sent=${snapshot.loop.mailSent} loop.mail_received=${snapshot.loop.mailReceived}`
+    `server.state=${snapshot.server.ready ? 'ready' : 'waking'} server.instance=${safeToken(snapshot.server.instanceId)} server.cold_start_ms=${formatNumber(snapshot.server.coldStartMilliseconds, 0)} server.rtt_ms=${formatNumber(snapshot.server.roundTripMilliseconds, 0)} connection.disconnects=${snapshot.connection.disconnects} connection.recoveries=${snapshot.connection.recoveries}`,
+    `loop.charades=${snapshot.loop.charades} loop.guesses=${snapshot.loop.guesses} outcome.first_try=${snapshot.loop.firstTry} outcome.recovered=${snapshot.loop.recovered} outcome.final_miss=${snapshot.loop.finalMisses} loop.posts=${snapshot.loop.posts} loop.mail_sent=${snapshot.loop.mailSent} loop.mail_received=${snapshot.loop.mailReceived}`
   ]
 }
 

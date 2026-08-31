@@ -1,9 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import { AUDIENCE_SEATS, HYDRATION_DAYS } from '../src/shared/config'
-import { HOUSE_CHARADE, HOUSE_CHARADES } from '../src/shared/deck'
+import { DECK, HOUSE_CHARADE, HOUSE_CHARADES } from '../src/shared/deck'
 import { STORAGE_SCHEMA_VERSION } from '../src/shared/types'
 import {
+  DURABLE_MUTATION_JOURNAL_KEY,
   GhostlightState,
+  MAX_DURABLE_COMPLETIONS,
+  MAX_DURABLE_JOURNAL_BYTES,
   MAX_DAILY_DECODERS,
   MAX_INDEX_IDS_PER_DAY,
   MAX_PLAYER_SEEN_IDS,
@@ -15,6 +18,7 @@ import {
   migrateLook,
   migratePlayerStats
 } from '../src/server/state'
+import type { DurableMutation } from '../src/server/state'
 import {
   MAX_DIRTY_ENTRIES,
   PLAYER_STATS_KEY,
@@ -44,6 +48,92 @@ function setup(now = FIXED_NOW) {
   const repository = createStorageRepository(storage)
   const state = new GhostlightState(repository, () => now)
   return { storage, repository, state }
+}
+
+function makeDurableMutation(overrides: Partial<DurableMutation> = {}): DurableMutation {
+  const owner = overrides.owner ?? 'player'
+  const requestId = overrides.requestId ?? 'request'
+  const fingerprint =
+    overrides.fingerprint ??
+    ({
+      kind: 'guess',
+      charadeId: 'journal-charade',
+      answerIndex: 1,
+      spotlight: false,
+      roundId: null
+    } satisfies DurableMutation['fingerprint'])
+  if (fingerprint.kind !== 'guess') throw new Error('State journal fixture expects a guess mutation')
+  const stats = overrides.stats ?? [
+    {
+      address: owner,
+      persistent: true,
+      after: {
+        name: 'Player',
+        decoded: 0,
+        correct: 0,
+        authoredCount: 0,
+        lastSeenAt: FIXED_NOW,
+        pending: { triedYou: 0, gotYou: 0, replies: 0, mail: 0 },
+        daily: { day: dayKey(FIXED_NOW), decoded: 0, authored: 0, stamped: false },
+        revision: 0,
+        title: '' as const,
+        showSet: {
+          showKey: `daily:${dayKey(FIXED_NOW)}`,
+          round: 1,
+          score: 100,
+          streak: 1,
+          bestStreak: 1,
+          understood: 1
+        }
+      }
+    }
+  ]
+  const ownerPatch = stats.find((patch) => patch.address.toLowerCase() === owner.toLowerCase())
+  const showSet = ownerPatch?.after.showSet
+  const phraseId = overrides.charade?.phraseId ?? HOUSE_CHARADE.phraseId
+  const phrase = DECK.find((candidate) => candidate.id === phraseId)!
+  const response =
+    overrides.response ??
+    ({
+      type: 'reveal',
+      data: {
+        requestId,
+        charadeId: fingerprint.charadeId,
+        correct: true,
+        phraseId,
+        phrase: phrase.text,
+        stats: { ...(overrides.charade?.guesses ?? { total: 0, correct: 0 }) },
+        yourScore: ownerPatch?.after.correct ?? 0,
+        daily: { ...(ownerPatch?.after.daily ?? { day: dayKey(FIXED_NOW), decoded: 0, authored: 0, stamped: false }) },
+        revision: ownerPatch?.after.revision ?? 0,
+        stampAwarded: ownerPatch?.stampedDayAdd !== undefined,
+        attempt: 1,
+        title: ownerPatch?.after.title ?? '',
+        nextUnlock: { nextTitle: 'Understudy', requirement: 'Post your first charade', progress: 0 },
+        titleUnlocked: false,
+        spotlight: false,
+        scoreDelta: 100,
+        setRound: showSet?.round ?? 1,
+        setSize: 5,
+        setScore: showSet?.score ?? 100,
+        setStreak: showSet?.streak ?? 1,
+        setBestStreak: showSet?.bestStreak ?? 1,
+        setUnderstood: showSet?.understood ?? 1,
+        setComplete: (showSet?.round ?? 1) === 5,
+        isFinale: (showSet?.round ?? 1) === 5
+      }
+    } satisfies DurableMutation['response'])
+  return {
+    v: 1,
+    id: overrides.id ?? `${owner}:guess:${requestId}`,
+    owner,
+    requestId,
+    createdAt: FIXED_NOW,
+    fingerprint,
+    response,
+    stats,
+    ...overrides
+  }
 }
 
 describe('state migrations', () => {
@@ -444,6 +534,803 @@ describe('state hydration', () => {
     expect(state.getPool()).toHaveLength(MAX_INDEX_IDS_PER_DAY - 1)
     expect(storage.sceneGets.filter((key) => key.startsWith('gc:v1:charade:'))).toHaveLength(MAX_INDEX_IDS_PER_DAY)
     expect(state.getCharade('removed-phrase')).toBeNull()
+  })
+})
+
+describe('durable mutation journal', () => {
+  it('recovers an active mutation before becoming ready and commits every derived target exactly once', async () => {
+    const owner = `0x${'1'.repeat(40)}`
+    const author = `0x${'2'.repeat(40)}`
+    const { storage, repository, state } = setup()
+    await state.hydrate()
+    storage.putPlayerJSON(owner, PLAYER_STATS_KEY, makeStats({ name: 'Decoder' }))
+    const charade = makeCharade('journal-charade', {
+      author: makeLook(author, 'Author'),
+      guesses: { total: 1, correct: 1 },
+      lastGuessAt: FIXED_NOW
+    })
+    const day = dayKey(FIXED_NOW)
+    const decoder = { address: owner, name: 'Decoder', correct: 1, total: 1 }
+    const active = makeDurableMutation({
+      owner,
+      notifiedAuthor: author,
+      charade,
+      stats: [
+        {
+          address: owner,
+          persistent: true,
+          seenAdd: charade.id,
+          stampedDayAdd: day,
+          after: {
+            name: 'Decoder',
+            decoded: 1,
+            correct: 1,
+            authoredCount: 0,
+            lastSeenAt: FIXED_NOW,
+            pending: { triedYou: 0, gotYou: 0, replies: 0, mail: 0 },
+            daily: { day, decoded: 1, authored: 1, stamped: true },
+            revision: 1,
+            title: '',
+            showSet: { showKey: `daily:${day}`, round: 1, score: 100, streak: 1, bestStreak: 1, understood: 1 }
+          }
+        },
+        {
+          address: author,
+          persistent: true,
+          after: {
+            name: 'Author',
+            decoded: 0,
+            correct: 0,
+            authoredCount: 0,
+            lastSeenAt: FIXED_NOW,
+            pending: { triedYou: 1, gotYou: 1, replies: 0, mail: 0 },
+            daily: { day, decoded: 0, authored: 0, stamped: false },
+            revision: 0,
+            title: ''
+          }
+        }
+      ],
+      decoder: { day, row: decoder },
+      boards: { day, value: { decoders: [decoder], hardest: [] } }
+    })
+    await state.beginDurableMutation(active)
+
+    const restartedRepository = createStorageRepository(storage)
+    const restarted = new GhostlightState(restartedRepository, () => FIXED_NOW)
+    await restarted.hydrate()
+
+    expect(restarted.getCharade(charade.id)).toEqual(charade)
+    expect(restarted.playerStats.get(owner)).toMatchObject({
+      decoded: 1,
+      correct: 1,
+      seen: [charade.id],
+      stampedDays: [day],
+      revision: 1,
+      showSet: { round: 1, score: 100 }
+    })
+    expect(restarted.boards).toEqual({ decoders: [decoder], hardest: [] })
+    expect(storage.readJSON(indexKey(day))).toEqual([charade.id])
+    expect(storage.readJSON(charadeKey(charade.id))).toEqual(charade)
+    expect(storage.readPlayerJSON(owner, PLAYER_STATS_KEY)).toMatchObject({ decoded: 1, correct: 1 })
+    expect(storage.readJSON(DURABLE_MUTATION_JOURNAL_KEY)).toMatchObject({
+      v: 1,
+      active: null,
+      completed: [expect.objectContaining({ id: active.id, response: active.response })]
+    })
+    expect(restarted.getDurableCompletion(owner, 'guess', active.requestId)).toMatchObject({ id: active.id })
+    expect(restartedRepository.getDirtyKeys()).toEqual([])
+  })
+
+  it.each([
+    { label: 'active record only', scene: [false, false, false, false], players: [false, false] },
+    { label: 'charade before index', scene: [true, false, false, false], players: [false, false] },
+    { label: 'index before charade', scene: [false, true, false, false], players: [false, false] },
+    { label: 'boards and decoder aggregate first', scene: [false, false, true, true], players: [false, false] },
+    { label: 'decoder stats before author stats', scene: [false, false, false, false], players: [true, false] },
+    { label: 'author stats before decoder stats', scene: [false, false, false, false], players: [false, true] },
+    { label: 'mixed scene and player subset', scene: [true, false, true, false], players: [true, false] },
+    { label: 'all targets before completion marker', scene: [true, true, true, true], players: [true, true] }
+  ])('reconciles $label after a crash cut without duplicating effects', async ({ scene, players }) => {
+    const owner = `0x${'1'.repeat(40)}`
+    const author = `0x${'2'.repeat(40)}`
+    const day = dayKey(FIXED_NOW)
+    const charade = makeCharade('journal-cut-charade', {
+      author: makeLook(author, 'Author'),
+      guesses: { total: 1, correct: 0 },
+      lastGuessAt: FIXED_NOW
+    })
+    const decoder = { address: owner, name: 'Player', correct: 0, total: 1 }
+    const mutation = makeDurableMutation({
+      owner,
+      fingerprint: {
+        kind: 'guess',
+        charadeId: charade.id,
+        answerIndex: 1,
+        spotlight: false,
+        roundId: null
+      },
+      notifiedAuthor: author,
+      charade,
+      decoder: { day, row: decoder },
+      boards: { day, value: { decoders: [decoder], hardest: [] } }
+    })
+    mutation.stats[0].seenAdd = charade.id
+    mutation.stats.push({
+      address: author,
+      persistent: true,
+      after: {
+        name: 'Author',
+        decoded: 0,
+        correct: 0,
+        authoredCount: 0,
+        lastSeenAt: FIXED_NOW,
+        pending: { triedYou: 1, gotYou: 0, replies: 0, mail: 0 },
+        daily: { day, decoded: 0, authored: 0, stamped: false },
+        revision: 0,
+        title: ''
+      }
+    })
+    const { storage, repository, state } = setup()
+    await state.hydrate()
+    await state.beginDurableMutation(mutation)
+    await state.applyDurableMutation(mutation)
+    storage.sceneWriteOutcomes = [...scene]
+    storage.playerWriteOutcomes = [...players]
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    await repository.flush()
+
+    logSpy.mockRestore()
+    const restartedRepository = createStorageRepository(storage)
+    const restarted = new GhostlightState(restartedRepository, () => FIXED_NOW)
+    await restarted.hydrate()
+
+    expect(storage.readJSON(charadeKey(charade.id))).toEqual(charade)
+    expect(storage.readJSON(indexKey(day))).toEqual([charade.id])
+    expect(storage.readJSON(boardsKey(day))).toEqual({ decoders: [decoder], hardest: [] })
+    expect(storage.readJSON(decoderAggregateKey(day))).toEqual([decoder])
+    expect(storage.readPlayerJSON(owner, PLAYER_STATS_KEY)).toMatchObject({
+      seen: [charade.id],
+      decoded: 0,
+      correct: 0
+    })
+    expect(storage.readPlayerJSON(author, PLAYER_STATS_KEY)).toMatchObject({
+      pending: { triedYou: 1, gotYou: 0, replies: 0, mail: 0 }
+    })
+    expect(storage.readJSON(DURABLE_MUTATION_JOURNAL_KEY)).toMatchObject({
+      active: null,
+      completed: [expect.objectContaining({ id: mutation.id })]
+    })
+    expect(restartedRepository.getDirtyKeys()).toEqual([])
+
+    const replayRepository = createStorageRepository(storage)
+    const replayed = new GhostlightState(replayRepository, () => FIXED_NOW)
+    await replayed.hydrate()
+    const replayedStats = await replayed.getOrCreateStats(owner, 'Player')
+    const replayedAuthorStats = await replayed.getOrCreateStats(author, 'Author')
+
+    expect(replayed.getCharade(charade.id)?.guesses).toEqual({ total: 1, correct: 0 })
+    expect(replayedStats.seen).toEqual([charade.id])
+    expect(replayedAuthorStats.pending).toEqual({ triedYou: 1, gotYou: 0, replies: 0, mail: 0 })
+    expect(replayed.boards).toEqual({ decoders: [decoder], hardest: [] })
+    expect(replayRepository.getDirtyKeys()).toEqual([])
+  })
+
+  it('recovers an index-first crash cut when the new charade already reserved the 128th daily slot', async () => {
+    const owner = `0x${'6'.repeat(40)}`
+    const day = dayKey(FIXED_NOW)
+    const existingIds = Array.from({ length: MAX_INDEX_IDS_PER_DAY - 1 }, (_, index) => `reserved-${index}`)
+    const { storage, repository, state } = setup()
+    storage.putJSON(indexKey(day), existingIds)
+    existingIds.forEach((id) => storage.putJSON(charadeKey(id), makeCharade(id)))
+    await state.hydrate()
+
+    const requestId = 'reserved-final-slot'
+    const charade = makeCharade('reserved-127', {
+      author: makeLook(owner, 'Poster'),
+      createdAt: FIXED_NOW,
+      lastGuessAt: 0
+    })
+    const ownerPatch = {
+      address: owner,
+      persistent: true,
+      authoredAdd: charade.id,
+      after: {
+        name: 'Poster',
+        decoded: 0,
+        correct: 0,
+        authoredCount: 1,
+        lastSeenAt: FIXED_NOW,
+        pending: { triedYou: 0, gotYou: 0, replies: 0, mail: 0 },
+        daily: { day, decoded: 0, authored: 1, stamped: false },
+        revision: 1,
+        title: '' as const
+      }
+    }
+    const mutation: DurableMutation = {
+      v: 1,
+      id: `${owner}:post:${requestId}`,
+      owner,
+      requestId,
+      createdAt: FIXED_NOW,
+      fingerprint: {
+        kind: 'post',
+        phraseId: charade.phraseId,
+        emotes: [...charade.emotes],
+        touringConsent: false
+      },
+      response: {
+        type: 'posted',
+        data: {
+          requestId,
+          charadeId: charade.id,
+          daily: { ...ownerPatch.after.daily },
+          revision: 1,
+          stampAwarded: false,
+          title: '',
+          nextUnlock: { nextTitle: 'Understudy', requirement: 'Post your first charade', progress: 1 },
+          titleUnlocked: true
+        }
+      },
+      charade,
+      stats: [ownerPatch]
+    }
+    await state.beginDurableMutation(mutation)
+    await state.applyDurableMutation(mutation)
+    storage.sceneWriteOutcomes = [false, true, false, false]
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    await repository.flush()
+    logSpy.mockRestore()
+
+    expect(storage.readJSON<string[]>(indexKey(day))).toEqual([...existingIds, charade.id])
+    expect(storage.readJSON(charadeKey(charade.id))).toBeNull()
+
+    const restartedRepository = createStorageRepository(storage)
+    const restarted = new GhostlightState(restartedRepository, () => FIXED_NOW)
+    await restarted.hydrate()
+
+    expect(restarted.getCharade(charade.id)).toEqual(charade)
+    expect(storage.readJSON<string[]>(indexKey(day))).toHaveLength(MAX_INDEX_IDS_PER_DAY)
+    expect(storage.readJSON(charadeKey(charade.id))).toEqual(charade)
+    expect(storage.readJSON<{ active: DurableMutation | null }>(DURABLE_MUTATION_JOURNAL_KEY)?.active).toBeNull()
+    expect(restartedRepository.getDirtyKeys()).toEqual([])
+  })
+
+  it('recovers an active reply after its target ages beyond the ordinary hydration window', async () => {
+    const owner = `0x${'7'.repeat(40)}`
+    const author = `0x${'8'.repeat(40)}`
+    const targetDay = FIXED_NOW - (HYDRATION_DAYS - 1) * 86_400_000
+    const day = dayKey(FIXED_NOW)
+    const requestId = 'aged-reply-request'
+    const { storage, repository, state } = setup()
+    await state.hydrate()
+    const target = makeCharade('aged-reply-target', {
+      author: makeLook(author, 'Author'),
+      createdAt: targetDay,
+      touringConsent: true
+    })
+    state.upsertCharade(target)
+    await repository.flushNow()
+    const updated = {
+      ...target,
+      reply: makeReply(owner, 'Replier', { requestId, createdAt: FIXED_NOW })
+    }
+    const mutation: DurableMutation = {
+      v: 1,
+      id: `${owner}:post:${requestId}`,
+      owner,
+      requestId,
+      createdAt: FIXED_NOW,
+      fingerprint: {
+        kind: 'post',
+        phraseId: target.phraseId,
+        emotes: [...updated.reply.emotes],
+        touringConsent: false,
+        replyTo: target.id
+      },
+      response: {
+        type: 'posted',
+        data: {
+          requestId,
+          charadeId: target.id,
+          replyTo: target.id,
+          daily: { day, decoded: 0, authored: 0, stamped: false },
+          revision: 0,
+          stampAwarded: false,
+          title: '',
+          nextUnlock: { nextTitle: 'Understudy', requirement: 'Post your first charade', progress: 0 },
+          titleUnlocked: false
+        }
+      },
+      charade: updated,
+      stats: [
+        {
+          address: author,
+          persistent: true,
+          after: {
+            name: 'Author',
+            decoded: 0,
+            correct: 0,
+            authoredCount: 0,
+            lastSeenAt: FIXED_NOW,
+            pending: { triedYou: 0, gotYou: 0, replies: 1, mail: 0 },
+            daily: { day, decoded: 0, authored: 0, stamped: false },
+            revision: 0,
+            title: ''
+          }
+        }
+      ]
+    }
+    await state.beginDurableMutation(mutation)
+
+    const restartedRepository = createStorageRepository(storage)
+    const restarted = new GhostlightState(restartedRepository, () => FIXED_NOW + 86_400_000)
+    await restarted.hydrate()
+
+    expect(restarted.getCharade(target.id)).toBeNull()
+    expect(restarted.getPool().some((charade) => charade.id === target.id)).toBe(false)
+    expect(storage.readJSON(charadeKey(target.id))).toEqual(updated)
+    expect(storage.readJSON<{ active: DurableMutation | null }>(DURABLE_MUTATION_JOURNAL_KEY)?.active).toBeNull()
+    expect(restartedRepository.getDirtyKeys()).toEqual([])
+  })
+
+  it.each(['direct post', 'countable guess'] as const)(
+    'preserves the historical index and excludes an expired $kind target after recovery',
+    async (kind) => {
+      const owner = `0x${'9'.repeat(40)}`
+      const author = `0x${'a'.repeat(40)}`
+      const day = dayKey(FIXED_NOW)
+      const target = makeCharade(`aged-${kind.replace(' ', '-')}`, {
+        author: makeLook(kind === 'direct post' ? owner : author, kind === 'direct post' ? 'Poster' : 'Author'),
+        createdAt: FIXED_NOW,
+        lastGuessAt: kind === 'direct post' ? 0 : FIXED_NOW,
+        guesses: kind === 'direct post' ? { total: 0, correct: 0 } : { total: 1, correct: 1 }
+      })
+      const siblings = ['historical-sibling-a', 'historical-sibling-b']
+      const { storage, state } = setup()
+      storage.putJSON(indexKey(day), [...siblings, ...(kind === 'countable guess' ? [target.id] : [])])
+      siblings.forEach((id) => storage.putJSON(charadeKey(id), makeCharade(id)))
+      if (kind === 'countable guess')
+        storage.putJSON(charadeKey(target.id), { ...target, guesses: { total: 0, correct: 0 } })
+      await state.hydrate()
+
+      let mutation: DurableMutation
+      if (kind === 'direct post') {
+        const ownerPatch = {
+          address: owner,
+          persistent: true,
+          authoredAdd: target.id,
+          after: {
+            name: 'Poster',
+            decoded: 0,
+            correct: 0,
+            authoredCount: 1,
+            lastSeenAt: FIXED_NOW,
+            pending: { triedYou: 0, gotYou: 0, replies: 0, mail: 0 },
+            daily: { day, decoded: 0, authored: 1, stamped: false },
+            revision: 1,
+            title: '' as const
+          }
+        }
+        mutation = {
+          v: 1,
+          id: `${owner}:post:aged-post-request`,
+          owner,
+          requestId: 'aged-post-request',
+          createdAt: FIXED_NOW,
+          fingerprint: {
+            kind: 'post',
+            phraseId: target.phraseId,
+            emotes: [...target.emotes],
+            touringConsent: false
+          },
+          response: {
+            type: 'posted',
+            data: {
+              requestId: 'aged-post-request',
+              charadeId: target.id,
+              daily: { ...ownerPatch.after.daily },
+              revision: 1,
+              stampAwarded: false,
+              title: '',
+              nextUnlock: { nextTitle: 'Understudy', requirement: 'Post your first charade', progress: 1 },
+              titleUnlocked: true
+            }
+          },
+          charade: target,
+          stats: [ownerPatch]
+        }
+      } else {
+        const decoder = { address: owner, name: 'Decoder', correct: 1, total: 1 }
+        mutation = makeDurableMutation({
+          owner,
+          requestId: 'aged-guess-request',
+          id: `${owner}:guess:aged-guess-request`,
+          fingerprint: {
+            kind: 'guess',
+            charadeId: target.id,
+            answerIndex: 1,
+            spotlight: false,
+            roundId: null
+          },
+          notifiedAuthor: author,
+          charade: target,
+          stats: [
+            {
+              address: owner,
+              persistent: true,
+              seenAdd: target.id,
+              after: {
+                name: 'Decoder',
+                decoded: 1,
+                correct: 1,
+                authoredCount: 0,
+                lastSeenAt: FIXED_NOW,
+                pending: { triedYou: 0, gotYou: 0, replies: 0, mail: 0 },
+                daily: { day, decoded: 1, authored: 0, stamped: false },
+                revision: 1,
+                title: '',
+                showSet: {
+                  showKey: `daily:${day}`,
+                  round: 1,
+                  score: 100,
+                  streak: 1,
+                  bestStreak: 1,
+                  understood: 1
+                }
+              }
+            },
+            {
+              address: author,
+              persistent: true,
+              after: {
+                name: 'Author',
+                decoded: 0,
+                correct: 0,
+                authoredCount: 0,
+                lastSeenAt: FIXED_NOW,
+                pending: { triedYou: 1, gotYou: 1, replies: 0, mail: 0 },
+                daily: { day, decoded: 0, authored: 0, stamped: false },
+                revision: 0,
+                title: ''
+              }
+            }
+          ],
+          decoder: { day, row: decoder },
+          boards: { day, value: { decoders: [decoder], hardest: [] } }
+        })
+      }
+      await state.beginDurableMutation(mutation)
+
+      const restartedRepository = createStorageRepository(storage)
+      const restarted = new GhostlightState(restartedRepository, () => FIXED_NOW + HYDRATION_DAYS * 86_400_000)
+      await restarted.hydrate()
+
+      expect(storage.readJSON<string[]>(indexKey(day))).toEqual([...siblings, target.id])
+      expect(storage.readJSON(charadeKey(target.id))).toEqual(target)
+      expect(restarted.getCharade(target.id)).toBeNull()
+      expect(restarted.getPool().some((charade) => charade.id === target.id)).toBe(false)
+      expect(storage.readJSON<{ active: DurableMutation | null }>(DURABLE_MUTATION_JOURNAL_KEY)?.active).toBeNull()
+      expect(restartedRepository.getDirtyKeys()).toEqual([])
+    }
+  )
+
+  it('fails closed without overwriting a malformed active record', async () => {
+    const { storage, repository, state } = setup()
+    const malformed = { v: 1, active: { id: 'incomplete' }, completed: [] }
+    storage.putJSON(DURABLE_MUTATION_JOURNAL_KEY, malformed)
+
+    await state.hydrate()
+
+    expect(state.isReadOnly).toBe(true)
+    expect(storage.readJSON(DURABLE_MUTATION_JOURNAL_KEY)).toEqual(malformed)
+    expect(repository.getDirtyKeys()).toEqual([])
+  })
+
+  it('fails closed on cross-field corruption in active guess and reply mutations', async () => {
+    const day = dayKey(FIXED_NOW)
+    const guessCharade = makeCharade('journal-charade', {
+      guesses: { total: 1, correct: 1 },
+      lastGuessAt: FIXED_NOW
+    })
+    const decoder = { address: 'player', name: 'Player', correct: 0, total: 1 }
+    const guess = makeDurableMutation({
+      notifiedAuthor: guessCharade.author.address.toLowerCase(),
+      charade: guessCharade,
+      decoder: { day, row: decoder },
+      boards: { day, value: { decoders: [decoder], hardest: [] } }
+    })
+    guess.stats.push({
+      address: guessCharade.author.address.toLowerCase(),
+      persistent: true,
+      after: {
+        name: guessCharade.author.name,
+        decoded: 0,
+        correct: 0,
+        authoredCount: 0,
+        lastSeenAt: FIXED_NOW,
+        pending: { triedYou: 1, gotYou: 1, replies: 0, mail: 0 },
+        daily: { day, decoded: 0, authored: 0, stamped: false },
+        revision: 0,
+        title: ''
+      }
+    })
+    const replyOwner = 'replier'
+    const replyRequestId = 'reply-request'
+    const replyTarget = makeCharade('reply-target', {
+      reply: makeReply(replyOwner, 'Replier', { requestId: replyRequestId, createdAt: FIXED_NOW })
+    })
+    const reply: DurableMutation = {
+      v: 1,
+      id: `${replyOwner}:post:${replyRequestId}`,
+      owner: replyOwner,
+      requestId: replyRequestId,
+      createdAt: FIXED_NOW,
+      fingerprint: {
+        kind: 'post',
+        phraseId: replyTarget.phraseId,
+        emotes: [...replyTarget.reply!.emotes],
+        touringConsent: false,
+        replyTo: replyTarget.id
+      },
+      response: {
+        type: 'posted',
+        data: {
+          requestId: replyRequestId,
+          charadeId: replyTarget.id,
+          replyTo: replyTarget.id,
+          daily: { day, decoded: 0, authored: 0, stamped: false },
+          revision: 0,
+          stampAwarded: false,
+          title: '',
+          nextUnlock: { nextTitle: 'Understudy', requirement: 'Post your first charade', progress: 0 },
+          titleUnlocked: false
+        }
+      },
+      charade: replyTarget,
+      stats: [
+        {
+          address: replyTarget.author.address.toLowerCase(),
+          persistent: true,
+          after: {
+            name: replyTarget.author.name,
+            decoded: 0,
+            correct: 0,
+            authoredCount: 0,
+            lastSeenAt: FIXED_NOW,
+            pending: { triedYou: 0, gotYou: 0, replies: 1, mail: 0 },
+            daily: { day, decoded: 0, authored: 0, stamped: false },
+            revision: 0,
+            title: ''
+          }
+        }
+      ]
+    }
+    const corruptions: Array<{ label: string; mutation: DurableMutation }> = []
+    const wrongGuessResponse = structuredClone(guess)
+    wrongGuessResponse.response.data.charadeId = 'different-charade'
+    corruptions.push({ label: 'guess response target', mutation: wrongGuessResponse })
+    const wrongGuessId = structuredClone(guess)
+    wrongGuessId.id = 'different-owner:guess:request'
+    corruptions.push({ label: 'owner/request identity', mutation: wrongGuessId })
+    const malformedRoundId = structuredClone(guess)
+    if (malformedRoundId.fingerprint.kind === 'guess') malformedRoundId.fingerprint.roundId = '01'
+    corruptions.push({ label: 'non-canonical round identity', mutation: malformedRoundId })
+    const wrongGuessAuthor = structuredClone(guess)
+    wrongGuessAuthor.stats[1].address = 'different-author'
+    corruptions.push({ label: 'guess author stats target', mutation: wrongGuessAuthor })
+    const malformedReveal = structuredClone(guess)
+    delete malformedReveal.response.data.stats
+    corruptions.push({ label: 'typed reveal payload', mutation: malformedReveal })
+    const wrongReplyResponse = structuredClone(reply)
+    wrongReplyResponse.response.data.charadeId = 'different-charade'
+    corruptions.push({ label: 'reply response target', mutation: wrongReplyResponse })
+    const wrongReplyAuthor = structuredClone(reply)
+    wrongReplyAuthor.stats[0].address = 'different-author'
+    corruptions.push({ label: 'reply author stats target', mutation: wrongReplyAuthor })
+    const extraGuessStats = makeDurableMutation()
+    extraGuessStats.stats.push({
+      ...structuredClone(extraGuessStats.stats[0]),
+      address: 'unrelated-player'
+    })
+    corruptions.push({ label: 'unrelated guess stats target', mutation: extraGuessStats })
+
+    const mailOwner = `0x${'3'.repeat(40)}`
+    const mailRecipient = `0x${'4'.repeat(40)}`
+    const mailRequestId = 'mail-request'
+    const mailCharade = makeCharade('mail-charade', {
+      author: makeLook(mailOwner, 'Mailer'),
+      recipient: mailRecipient,
+      createdAt: FIXED_NOW,
+      lastGuessAt: 0
+    })
+    const mailOwnerPatch = {
+      address: mailOwner,
+      persistent: true,
+      after: {
+        name: 'Mailer',
+        decoded: 0,
+        correct: 0,
+        authoredCount: 0,
+        lastSeenAt: FIXED_NOW,
+        pending: { triedYou: 0, gotYou: 0, replies: 0, mail: 0 },
+        daily: { day, decoded: 0, authored: 0, stamped: false },
+        revision: 0,
+        title: '' as const
+      }
+    }
+    const mailRecipientPatch = {
+      address: mailRecipient,
+      persistent: true,
+      after: {
+        name: 'Recipient',
+        decoded: 0,
+        correct: 0,
+        authoredCount: 0,
+        lastSeenAt: FIXED_NOW,
+        pending: { triedYou: 0, gotYou: 0, replies: 0, mail: 1 },
+        daily: { day, decoded: 0, authored: 0, stamped: false },
+        revision: 0,
+        title: '' as const
+      }
+    }
+    const mail: DurableMutation = {
+      v: 1,
+      id: `${mailOwner}:post:${mailRequestId}`,
+      owner: mailOwner,
+      requestId: mailRequestId,
+      createdAt: FIXED_NOW,
+      fingerprint: {
+        kind: 'post',
+        phraseId: mailCharade.phraseId,
+        emotes: [...mailCharade.emotes],
+        touringConsent: false,
+        recipient: mailRecipient
+      },
+      response: {
+        type: 'posted',
+        data: {
+          requestId: mailRequestId,
+          charadeId: mailCharade.id,
+          recipient: mailRecipient,
+          daily: { ...mailOwnerPatch.after.daily },
+          revision: 0,
+          stampAwarded: false,
+          title: '',
+          nextUnlock: { nextTitle: 'Understudy', requirement: 'Post your first charade', progress: 0 },
+          titleUnlocked: false
+        }
+      },
+      charade: mailCharade,
+      stats: [mailOwnerPatch, mailRecipientPatch]
+    }
+    const missingMailRecipient = structuredClone(mail)
+    missingMailRecipient.stats.pop()
+    corruptions.push({ label: 'missing mail recipient stats target', mutation: missingMailRecipient })
+    const wrongMailRecipient = structuredClone(mail)
+    wrongMailRecipient.stats[1].address = `0x${'5'.repeat(40)}`
+    corruptions.push({ label: 'wrong mail recipient stats target', mutation: wrongMailRecipient })
+
+    for (const { label, mutation } of corruptions) {
+      const { storage, repository, state } = setup()
+      const raw = { v: 1, active: mutation, completed: [] }
+      storage.putJSON(DURABLE_MUTATION_JOURNAL_KEY, raw)
+
+      await state.hydrate()
+
+      expect(state.isReadOnly, label).toBe(true)
+      expect(storage.readJSON(DURABLE_MUTATION_JOURNAL_KEY), label).toEqual(raw)
+      expect(repository.getDirtyKeys(), label).toEqual([])
+    }
+  })
+
+  it('fails closed on a completed replay whose response no longer matches its fingerprint', async () => {
+    const mutation = makeDurableMutation()
+    const completion = {
+      v: mutation.v,
+      id: mutation.id,
+      owner: mutation.owner,
+      requestId: mutation.requestId,
+      createdAt: mutation.createdAt,
+      fingerprint: mutation.fingerprint,
+      response: structuredClone(mutation.response),
+      completedAt: FIXED_NOW
+    }
+    completion.response.data.charadeId = 'different-charade'
+    const raw = { v: 1, active: null, completed: [completion] }
+    const { storage, repository, state } = setup()
+    storage.putJSON(DURABLE_MUTATION_JOURNAL_KEY, raw)
+
+    await state.hydrate()
+
+    expect(state.isReadOnly).toBe(true)
+    expect(storage.readJSON(DURABLE_MUTATION_JOURNAL_KEY)).toEqual(raw)
+    expect(repository.getDirtyKeys()).toEqual([])
+  })
+
+  it('fails closed when journal completion chronology or active identity is contradictory', async () => {
+    const mutation = makeDurableMutation()
+    const completion = {
+      v: mutation.v,
+      id: mutation.id,
+      owner: mutation.owner,
+      requestId: mutation.requestId,
+      createdAt: mutation.createdAt,
+      fingerprint: mutation.fingerprint,
+      response: mutation.response,
+      completedAt: mutation.createdAt + 1
+    }
+    const corruptions = [
+      {
+        label: 'completion predates mutation',
+        raw: { v: 1, active: null, completed: [{ ...completion, completedAt: mutation.createdAt - 1 }] }
+      },
+      {
+        label: 'same mutation is active and completed',
+        raw: { v: 1, active: mutation, completed: [completion] }
+      },
+      {
+        label: 'unknown journal field',
+        raw: { v: 1, active: null, completed: [], unexpected: true }
+      }
+    ]
+
+    for (const { label, raw } of corruptions) {
+      const { storage, repository, state } = setup()
+      storage.putJSON(DURABLE_MUTATION_JOURNAL_KEY, raw)
+
+      await state.hydrate()
+
+      expect(state.isReadOnly, label).toBe(true)
+      expect(storage.readJSON(DURABLE_MUTATION_JOURNAL_KEY), label).toEqual(raw)
+      expect(repository.getDirtyKeys(), label).toEqual([])
+    }
+  })
+
+  it('clamps a completion timestamp so a backward clock cannot persist a self-corrupting journal', async () => {
+    const { storage, state } = setup()
+    await state.hydrate()
+    const mutation = makeDurableMutation()
+    await state.beginDurableMutation(mutation)
+
+    await state.completeDurableMutation(mutation.id, mutation.createdAt - 1)
+
+    expect(
+      storage.readJSON<{ completed: Array<{ completedAt: number }> }>(DURABLE_MUTATION_JOURNAL_KEY)?.completed[0]
+    ).toMatchObject({ completedAt: mutation.createdAt })
+    const restarted = new GhostlightState(createStorageRepository(storage), () => FIXED_NOW)
+    await restarted.hydrate()
+    expect(restarted.isReadOnly).toBe(false)
+  })
+
+  it('bounds completed history by count and serialized bytes below the host value ceiling', async () => {
+    const { storage, state } = setup()
+    await state.hydrate()
+
+    for (let index = 0; index < MAX_DURABLE_COMPLETIONS + 8; index += 1) {
+      const requestId = `bounded-${index}`
+      const mutation = makeDurableMutation({
+        id: `player:guess:${requestId}`,
+        requestId,
+        fingerprint: {
+          kind: 'guess',
+          charadeId: 'journal-charade',
+          answerIndex: 1,
+          spotlight: false,
+          roundId: null
+        }
+      })
+      await state.beginDurableMutation(mutation)
+      await state.completeDurableMutation(mutation.id, FIXED_NOW + index)
+    }
+
+    const serialized = storage.scene.get(DURABLE_MUTATION_JOURNAL_KEY)
+    expect(typeof serialized).toBe('string')
+    const journal = JSON.parse(serialized as string) as { active: unknown; completed: unknown[] }
+    expect(journal.active).toBeNull()
+    expect(journal.completed.length).toBeLessThanOrEqual(MAX_DURABLE_COMPLETIONS)
+    expect(new TextEncoder().encode(serialized as string).byteLength).toBeLessThanOrEqual(MAX_DURABLE_JOURNAL_BYTES)
+    expect(journal.completed).toHaveLength(MAX_DURABLE_COMPLETIONS)
   })
 })
 

@@ -1,5 +1,5 @@
 import { THEMES, WIRE_INT_MAX, themeForTimestamp } from './config'
-import { HOUSE_CHARADES, type PhraseId } from './deck'
+import { HOUSE_CHARADES, PLAYABLE_DECK, type PhraseId } from './deck'
 import type { Language } from './i18n'
 
 export type LocalizedSeasonLabel = Readonly<Record<Language, string>>
@@ -94,6 +94,13 @@ function curatedReferences(phraseIds: readonly PhraseId[]): readonly SeasonRefer
   return phraseIds.map((phraseId) => ({ phraseId, curationStatus: 'curated' }))
 }
 
+const SEASON_ZERO_PLAYABLE_PHRASE_IDS = PLAYABLE_DECK.map((phrase) => phrase.id as PhraseId)
+
+function playableReferencesExcluding(excludedPhraseIds: readonly PhraseId[]): readonly SeasonReference[] {
+  const excluded = new Set<PhraseId>(excludedPhraseIds)
+  return curatedReferences(SEASON_ZERO_PLAYABLE_PHRASE_IDS.filter((phraseId) => !excluded.has(phraseId)))
+}
+
 export const SEASON_ZERO_WEEKS: readonly SeasonWeek[] = [
   {
     id: 'first-impressions',
@@ -106,38 +113,7 @@ export const SEASON_ZERO_WEEKS: readonly SeasonWeek[] = [
       startsAt: SEASON_ZERO_START_AT,
       endsAt: SEASON_ZERO_START_AT + WEEK_MILLISECONDS
     },
-    references: curatedReferences([
-      'everyday-wake-up-late',
-      'everyday-miss-the-bus',
-      'everyday-find-lost-keys',
-      'everyday-take-a-selfie',
-      'everyday-greet-a-neighbor',
-      'everyday-choose-an-outfit',
-      'everyday-forget-a-password',
-      'feelings-hide-embarrassment',
-      'awkward-hold-door-too-long',
-      'feelings-fake-confidence',
-      'feelings-fall-in-love',
-      'feelings-act-confused',
-      'feelings-get-starstruck',
-      'dcl-life-dance-at-the-plaza',
-      'dcl-life-enter-a-portal',
-      'dcl-life-meet-your-digital-twin',
-      'dcl-life-take-an-avatar-selfie',
-      'dcl-life-wave-at-an-npc',
-      'dcl-life-explore-a-new-world',
-      'pop-walk-the-red-carpet',
-      'pop-meet-an-alien',
-      'pop-reveal-secret-identity',
-      'awkward-wave-at-wrong-person',
-      'awkward-forget-someones-name',
-      'awkward-get-stuck-handshaking',
-      'awkward-enter-wrong-room',
-      'awkward-miss-a-high-five',
-      'everyday-dodge-the-rain',
-      'awkward-trip-on-stage',
-      'awkward-pretend-to-know-song'
-    ]),
+    references: playableReferencesExcluding(['feelings-fight-boredom', 'food-crack-a-coconut']),
     title: {
       id: 'fresh-face',
       label: { en: 'Fresh Face', es: 'Cara nueva', pt: 'Cara nova' },
@@ -165,38 +141,7 @@ export const SEASON_ZERO_WEEKS: readonly SeasonWeek[] = [
       startsAt: SEASON_ZERO_START_AT + WEEK_MILLISECONDS,
       endsAt: SEASON_ZERO_START_AT + 2 * WEEK_MILLISECONDS
     },
-    references: curatedReferences([
-      'feelings-celebrate-a-win',
-      'feelings-fake-confidence',
-      'feelings-burst-with-excitement',
-      'feelings-lose-your-patience',
-      'feelings-feel-proud',
-      'feelings-get-starstruck',
-      'dcl-life-mint-a-wearable',
-      'dcl-life-dance-at-the-plaza',
-      'dcl-life-flex-a-rare-wearable',
-      'dcl-life-build-a-dream-house',
-      'dcl-life-claim-a-free-wearable',
-      'dcl-life-chase-an-airdrop',
-      'dcl-life-crash-a-virtual-party',
-      'pop-sing-into-a-microphone',
-      'pop-become-a-superhero',
-      'pop-fight-an-invisible-villain',
-      'pop-walk-the-red-carpet',
-      'pop-win-a-talent-show',
-      'pop-cast-a-magic-spell',
-      'pop-dodge-a-laser',
-      'pop-train-like-a-ninja',
-      'everyday-take-a-selfie',
-      'pop-meet-an-alien',
-      'pop-escape-a-zombie',
-      'pop-rule-a-kingdom',
-      'dcl-life-vote-in-the-dao',
-      'pop-reveal-secret-identity',
-      'awkward-trip-on-stage',
-      'awkward-dance-after-music-stops',
-      'awkward-get-caught-singing'
-    ]),
+    references: playableReferencesExcluding(['everyday-dodge-the-rain', 'food-eat-spicy-noodles']),
     title: {
       id: 'scene-magnet',
       label: { en: 'Scene Magnet', es: 'Imán de escena', pt: 'Ímã de cena' },
@@ -227,38 +172,7 @@ export const SEASON_ZERO_WEEKS: readonly SeasonWeek[] = [
       startsAt: SEASON_ZERO_START_AT + 2 * WEEK_MILLISECONDS,
       endsAt: SEASON_ZERO_START_AT + 3 * WEEK_MILLISECONDS
     },
-    references: curatedReferences([
-      'everyday-take-a-selfie',
-      'pop-become-a-superhero',
-      'everyday-choose-an-outfit',
-      'feelings-fear-a-spider',
-      'feelings-hide-embarrassment',
-      'feelings-fake-confidence',
-      'feelings-feel-jealous',
-      'feelings-feel-proud',
-      'feelings-get-starstruck',
-      'dcl-life-enter-a-portal',
-      'dcl-life-mint-a-wearable',
-      'dcl-life-dance-at-the-plaza',
-      'dcl-life-meet-your-digital-twin',
-      'dcl-life-flex-a-rare-wearable',
-      'dcl-life-claim-a-free-wearable',
-      'dcl-life-take-an-avatar-selfie',
-      'dcl-life-attend-metaverse-wedding',
-      'dcl-life-crash-a-virtual-party',
-      'dcl-life-find-a-secret-room',
-      'pop-walk-the-red-carpet',
-      'pop-escape-a-zombie',
-      'pop-cast-a-magic-spell',
-      'pop-solve-a-mystery',
-      'pop-join-a-boy-band',
-      'pop-fight-an-invisible-villain',
-      'pop-ghost-party',
-      'pop-reveal-secret-identity',
-      'pop-meet-an-alien',
-      'pop-sing-into-a-microphone',
-      'awkward-trip-on-stage'
-    ]),
+    references: playableReferencesExcluding(['dcl-life-dance-at-the-plaza', 'pop-become-a-superhero']),
     title: {
       id: 'phantom-icon',
       label: { en: 'Phantom Icon', es: 'Icono fantasma', pt: 'Ícone fantasma' },
@@ -289,38 +203,7 @@ export const SEASON_ZERO_WEEKS: readonly SeasonWeek[] = [
       startsAt: SEASON_ZERO_START_AT + 3 * WEEK_MILLISECONDS,
       endsAt: SEASON_ZERO_END_AT
     },
-    references: curatedReferences([
-      'everyday-take-a-selfie',
-      'everyday-dance-in-elevator',
-      'feelings-celebrate-a-win',
-      'feelings-burst-with-excitement',
-      'feelings-feel-proud',
-      'feelings-get-starstruck',
-      'pop-become-a-superhero',
-      'pop-cast-a-magic-spell',
-      'food-flip-a-pancake',
-      'pop-dodge-a-laser',
-      'food-juggle-three-oranges',
-      'dcl-life-vote-in-the-dao',
-      'dcl-life-dance-at-the-plaza',
-      'dcl-life-tip-a-performer',
-      'dcl-life-take-an-avatar-selfie',
-      'dcl-life-attend-metaverse-wedding',
-      'dcl-life-crash-a-virtual-party',
-      'pop-walk-the-red-carpet',
-      'pop-win-a-talent-show',
-      'pop-sing-into-a-microphone',
-      'pop-fight-an-invisible-villain',
-      'pop-join-a-boy-band',
-      'pop-ghost-party',
-      'pop-reveal-secret-identity',
-      'awkward-trip-on-stage',
-      'awkward-laugh-at-bad-time',
-      'awkward-miss-a-high-five',
-      'awkward-dance-after-music-stops',
-      'awkward-get-caught-singing',
-      'awkward-pretend-to-know-song'
-    ]),
+    references: playableReferencesExcluding(['feelings-celebrate-a-win', 'awkward-wave-at-wrong-person']),
     title: {
       id: 'encore-legend',
       label: { en: 'Encore Legend', es: 'Leyenda del bis', pt: 'Lenda do bis' },
@@ -405,7 +288,7 @@ export function weekModerationSummary(
     pending,
     quarantineRate: pending === 0 ? quarantined / total : null,
     reviewComplete: pending === 0,
-    promptRangeReady: approved >= 25 && approved <= 40
+    promptRangeReady: approved >= 24 && approved <= 30
   })
 }
 

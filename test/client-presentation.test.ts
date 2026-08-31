@@ -61,6 +61,7 @@ const ghosts = vi.hoisted(() => ({
   replayPerformer: vi.fn(),
   setAudience: vi.fn(),
   showDuet: vi.fn(),
+  showAuthorBeat: vi.fn(),
   showPerformer: vi.fn(),
   showGhostOfNight: vi.fn(),
   showPreview: vi.fn()

@@ -2,7 +2,7 @@ import { Color4 } from '@dcl/sdk/math'
 import ReactEcs, { Button, Label, UiEntity, type UiTransformProps } from '@dcl/sdk/react-ecs'
 import { copyToClipboard } from '~system/RestrictedActions'
 import { INVITE_URL, THEMES } from '../shared/config'
-import type { Emote } from '../shared/deck'
+import { type Emote } from '../shared/deck'
 import {
   LANGUAGE_LABELS,
   LANGUAGES,
@@ -28,7 +28,7 @@ import {
   mailRecipients,
   type ClientFlowState
 } from './flow'
-import { getPerformerBeatIndex } from './ghosts'
+import { getPerformerBeatIndex, hasPerformerCompletedSequence } from './ghosts'
 import { getOpeningViewState, skipOpening, type OpeningViewState } from './opening-scene'
 import { REACTION_OPTIONS, sendReaction } from './reactions'
 import { getRevealViewState, type RevealViewState } from './reveal-scene'
@@ -63,7 +63,7 @@ const PANEL = {
 
 const BUTTON = { width: '100%', minHeight: 96, height: 96, margin: '6px 0' } satisfies UiTransformProps
 const DECODE_BUTTON = { width: '100%', minHeight: 96, height: 96, margin: '2px 0' } satisfies UiTransformProps
-const AUTHOR_CONFIRM_BUTTON = { width: '100%', minHeight: 72, height: 72, margin: '4px 0' } satisfies UiTransformProps
+const STACKED_BUTTON = { width: '100%', minHeight: 96, height: 96, margin: '0' } satisfies UiTransformProps
 const HINT_HEIGHT = 48
 
 export const REVEAL_VERTICAL_BUDGET = {
@@ -88,6 +88,45 @@ export const DECODE_VERTICAL_BUDGET = {
   controls: 100,
   answers: 300,
   hint: HINT_HEIGHT
+} as const
+
+export const AUTHOR_CONFIRM_VERTICAL_BUDGET = {
+  panelHeight: 672,
+  panelPadding: 48,
+  header: 92,
+  bodyPadding: 12,
+  actions: 324,
+  hint: HINT_HEIGHT,
+  status: 30
+} as const
+
+export const SETTINGS_VERTICAL_BUDGET = {
+  panelHeight: 672,
+  panelPadding: 48,
+  header: 92,
+  bodyPadding: 12,
+  actions: 480,
+  status: 30
+} as const
+
+export const MAIL_VERTICAL_BUDGET = {
+  panelHeight: 672,
+  panelPadding: 48,
+  header: 92,
+  bodyPadding: 12,
+  actions: 480,
+  status: 30
+} as const
+
+export const DIAGNOSTICS_VERTICAL_BUDGET = {
+  panelHeight: 672,
+  panelPadding: 48,
+  header: 92,
+  bodyPadding: 12,
+  lines: 189,
+  linePadding: 8,
+  actions: 288,
+  status: 30
 } as const
 
 const UI_TEXTURES = {
@@ -171,10 +210,12 @@ function actionButton(
   onMouseDown: () => void,
   disabled = false,
   variant: 'primary' | 'secondary' = 'primary',
-  transform: UiTransformProps = BUTTON
+  transform: UiTransformProps = BUTTON,
+  elementKey?: string
 ) {
   return (
     <Button
+      key={elementKey}
       value={value}
       fontSize={uiFontSize(26)}
       font="monospace"
@@ -239,7 +280,13 @@ function hintFor(state: ClientFlowState) {
       return copy('hint.reveal')
     case 'author':
       if (!state.author) return null
-      return copy(state.author.selectedEmotes.length < 3 ? 'author.chooseThree' : 'hint.authorReady')
+      return copy(
+        state.author.selectedEmotes.length < 3
+          ? 'author.chooseThree'
+          : state.author.previewed
+            ? 'hint.authorPreviewed'
+            : 'hint.authorReady'
+      )
     case 'posted':
       return copy('hint.posted')
     default:
@@ -264,7 +311,7 @@ function screenShell(sentence: string, body: ReactEcs.JSX.Element, state: Client
       <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', padding: '12px 0 0 0' }}>
         {body}
       </UiEntity>
-      {hint ? (
+      {!state.errorCode && hint ? (
         <UiEntity
           uiTransform={{ width: '100%', minHeight: HINT_HEIGHT, height: HINT_HEIGHT, padding: '6px 12px' }}
           uiBackground={{ texture: { src: UI_TEXTURES.card }, textureMode: 'stretch', color: COLORS.raised }}
@@ -299,7 +346,12 @@ function wakingScreen(state: ClientFlowState) {
   return screenShell(
     copy('waking.title'),
     <UiEntity uiTransform={{ width: '100%', flex: 1, justifyContent: 'center', flexDirection: 'column' }}>
-      <Label value={copy('waking.connecting')} fontSize={uiFontSize(22)} font="monospace" color={COLORS.muted} />
+      <Label
+        value={copy(state.instanceId ? 'waking.reconnecting' : 'waking.connecting')}
+        fontSize={uiFontSize(22)}
+        font="monospace"
+        color={COLORS.muted}
+      />
     </UiEntity>,
     state
   )
@@ -431,6 +483,7 @@ function decodeScreen(state: ClientFlowState) {
     .filter(({ index }) => state.retry?.removedAnswerIndex !== index)
   const waiting = state.pending.some((request) => request.kind === 'guess' || request.kind === 'roundGuess')
   const controlsDisabled = waiting || !showReady
+  const answersDisabled = controlsDisabled || (!state.retry && !hasPerformerCompletedSequence())
   const question = copy(charade.reply ? 'decode.questionMany' : 'decode.questionOne', { performers })
   const sentence = state.retry
     ? copy('decode.secondChance')
@@ -476,7 +529,7 @@ function decodeScreen(state: ClientFlowState) {
           uiTransform={{ width: '34%', height: 42 }}
         />
         <UiEntity uiTransform={{ width: '64%', height: 42, flexDirection: 'row', justifyContent: 'space-between' }}>
-          {BEAT_COPY_KEYS.map((key, index) => beatChip(key, undefined, performerBeat === index))}
+          {BEAT_COPY_KEYS.map((key, index) => beatChip(key, performerBeat === index))}
         </UiEntity>
       </UiEntity>
       <UiEntity uiTransform={{ width: '100%', flexDirection: 'row', justifyContent: 'space-between' }}>
@@ -497,9 +550,10 @@ function decodeScreen(state: ClientFlowState) {
         actionButton(
           answer.toUpperCase(),
           () => clientFlow.guess(index),
-          controlsDisabled,
+          answersDisabled,
           optionIndex === 0 ? 'primary' : 'secondary',
-          DECODE_BUTTON
+          DECODE_BUTTON,
+          `${charade.id}:${index}`
         )
       )}
     </UiEntity>,
@@ -722,8 +776,9 @@ function revealAnswerCard(answer: string, index: number, presentation: RevealVie
 }
 
 const BEAT_COPY_KEYS = ['beat.setup', 'beat.action', 'beat.punchline'] as const satisfies readonly CopyKey[]
+const BEAT_ROLE_KEYS = ['beat.setupRole', 'beat.actionRole', 'beat.punchlineRole'] as const satisfies readonly CopyKey[]
 
-function beatChip(key: (typeof BEAT_COPY_KEYS)[number], emote?: Emote, active = false) {
+function beatChip(key: (typeof BEAT_COPY_KEYS)[number], active = false) {
   return (
     <UiEntity
       key={key}
@@ -735,8 +790,8 @@ function beatChip(key: (typeof BEAT_COPY_KEYS)[number], emote?: Emote, active = 
       }}
     >
       <Label
-        value={`${copy(key)}${emote ? ` · ${emoteLabel(emote, getClientSettings().language)}` : ''}`}
-        fontSize={uiFontSize(emote ? 15 : 17)}
+        value={copy(key)}
+        fontSize={uiFontSize(17)}
         font="monospace"
         color={active ? COLORS.ink : COLORS.bone}
         textAlign="middle-center"
@@ -770,9 +825,9 @@ function authorScreen(state: ClientFlowState) {
   const replying = !!author.replyTo
   const mailing = !!author.recipient
   const touringConsentVisible = canToggleTouringConsent(author)
-  const confirmationButton = touringConsentVisible ? AUTHOR_CONFIRM_BUTTON : BUTTON
   const phrase = phraseText(author.phrase.id, getClientSettings().language) ?? author.phrase.text
-  const visibleEmotes = author.offeredEmotes.slice(author.emotePage * 4, author.emotePage * 4 + 4)
+  const visibleEmotes = author.offeredEmotes
+  const activeBeat = Math.min(author.selectedEmotes.length, 2)
   const sentence =
     author.phase === 'phrase'
       ? replying
@@ -781,7 +836,11 @@ function authorScreen(state: ClientFlowState) {
           ? copy('author.mailPhrase', { recipient: playerText(author.recipient!.name), phrase })
           : copy('author.ownPhrase', { phrase })
       : author.phase === 'emotes'
-        ? copy('author.chooseThree')
+        ? copy('author.chooseBeat', {
+            phrase,
+            beat: copy(BEAT_COPY_KEYS[activeBeat]),
+            role: copy(BEAT_ROLE_KEYS[activeBeat])
+          })
         : copy('author.ready', { phrase })
   return screenShell(
     sentence,
@@ -802,9 +861,7 @@ function authorScreen(state: ClientFlowState) {
       ) : author.phase === 'emotes' ? (
         <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column' }}>
           <UiEntity uiTransform={{ width: '100%', height: 48, flexDirection: 'row', justifyContent: 'space-between' }}>
-            {BEAT_COPY_KEYS.map((key, index) =>
-              beatChip(key, author.selectedEmotes[index], index === author.selectedEmotes.length)
-            )}
+            {BEAT_COPY_KEYS.map((key, index) => beatChip(key, index === author.selectedEmotes.length))}
           </UiEntity>
           <UiEntity
             uiTransform={{
@@ -817,49 +874,60 @@ function authorScreen(state: ClientFlowState) {
           >
             {visibleEmotes.map((emote) => emoteButton(emote, !showReady))}
           </UiEntity>
-          {actionButton(copy('author.more'), () => clientFlow.moreAuthorEmotes(), !showReady, 'secondary')}
+          <UiEntity uiTransform={{ width: '100%', height: 108, flexDirection: 'row', justifyContent: 'space-between' }}>
+            {author.selectedEmotes.length > 0 ? (
+              <UiEntity uiTransform={{ width: '49%' }}>
+                {actionButton(copy('author.undo'), () => clientFlow.undoAuthorEmote(), !showReady, 'secondary')}
+              </UiEntity>
+            ) : null}
+            <UiEntity uiTransform={{ width: author.selectedEmotes.length > 0 ? '49%' : '100%' }}>
+              {actionButton(copy('common.back'), () => clientFlow.backFromAuthor(), false, 'secondary')}
+            </UiEntity>
+          </UiEntity>
         </UiEntity>
       ) : (
         <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', justifyContent: 'center' }}>
-          {actionButton(
-            copy('author.preview'),
-            () => clientFlow.previewAuthor(),
-            !readyToPost || posting || !showReady,
-            'secondary',
-            confirmationButton
-          )}
-          {touringConsentVisible
-            ? actionButton(
-                copy('author.touringConsent', {
-                  value: copy(author.touringConsent ? 'common.on' : 'common.off')
-                }),
-                () => clientFlow.toggleTouringConsent(),
-                posting || !showReady,
-                author.touringConsent ? 'primary' : 'secondary',
-                confirmationButton
-              )
-            : null}
+          <UiEntity uiTransform={{ width: '100%', height: 108, flexDirection: 'row', justifyContent: 'space-between' }}>
+            <UiEntity uiTransform={{ width: touringConsentVisible ? '49%' : '100%' }}>
+              {actionButton(
+                copy(author.previewed ? 'author.previewAgain' : 'author.preview'),
+                () => clientFlow.previewAuthor(),
+                !readyToPost || posting || !showReady,
+                'secondary'
+              )}
+            </UiEntity>
+            {touringConsentVisible ? (
+              <UiEntity uiTransform={{ width: '49%' }}>
+                {actionButton(
+                  copy('author.touringConsent', {
+                    value: copy(author.touringConsent ? 'common.on' : 'common.off')
+                  }),
+                  () => clientFlow.toggleTouringConsent(),
+                  posting || !showReady,
+                  author.touringConsent ? 'primary' : 'secondary'
+                )}
+              </UiEntity>
+            ) : null}
+          </UiEntity>
           {actionButton(
             replying ? copy('author.sendReply') : mailing ? copy('author.sendMail') : copy('author.post'),
             () => clientFlow.postAuthor(),
-            !readyToPost || posting || !showReady,
-            'primary',
-            confirmationButton
+            !readyToPost || !author.previewed || posting || !showReady,
+            'primary'
           )}
-          {actionButton(
-            copy('author.changeEmotes'),
-            () => clientFlow.reviseAuthorEmotes(),
-            posting || !showReady,
-            'secondary',
-            confirmationButton
-          )}
-          {actionButton(
-            copy('common.back'),
-            () => clientFlow.backFromAuthor(),
-            posting,
-            'secondary',
-            confirmationButton
-          )}
+          <UiEntity uiTransform={{ width: '100%', height: 108, flexDirection: 'row', justifyContent: 'space-between' }}>
+            <UiEntity uiTransform={{ width: '49%' }}>
+              {actionButton(
+                copy('author.changeEmotes'),
+                () => clientFlow.reviseAuthorEmotes(),
+                posting || !showReady,
+                'secondary'
+              )}
+            </UiEntity>
+            <UiEntity uiTransform={{ width: '49%' }}>
+              {actionButton(copy('common.back'), () => clientFlow.backFromAuthor(), posting, 'secondary')}
+            </UiEntity>
+          </UiEntity>
         </UiEntity>
       )}
     </UiEntity>,
@@ -929,7 +997,7 @@ function mailScreen(state: ClientFlowState) {
         recipients.map((recipient) => (
           <UiEntity
             key={recipient.address}
-            uiTransform={{ width: '100%', height: 96, margin: '6px 0', flexDirection: 'row' }}
+            uiTransform={{ width: '100%', minHeight: 96, height: 96, margin: '0', flexDirection: 'row' }}
           >
             <UiEntity
               uiTransform={{ width: 88, height: 88, margin: '4px 10px 4px 0', borderRadius: 44, overflow: 'hidden' }}
@@ -940,13 +1008,16 @@ function mailScreen(state: ClientFlowState) {
                 `${playerText(recipient.name, true)} · ${shortWalletAddress(recipient.address)}`,
                 () => clientFlow.selectGhostMailRecipient(recipient.address),
                 !showReady,
-                'secondary'
+                'secondary',
+                STACKED_BUTTON
               )}
             </UiEntity>
           </UiEntity>
         ))
       )}
-      {!selected ? actionButton(copy('common.back'), () => clientFlow.showFoyer(), false, 'secondary') : null}
+      {!selected
+        ? actionButton(copy('common.back'), () => clientFlow.showFoyer(), false, 'secondary', STACKED_BUTTON)
+        : null}
     </UiEntity>,
     state
   )
@@ -968,12 +1039,12 @@ function howToPlayScreen(state: ClientFlowState) {
         {HOW_TO_PLAY_STEPS.map((key) => (
           <UiEntity
             key={key}
-            uiTransform={{ width: '100%', flex: 1, minHeight: 64, padding: '8px 14px', margin: '3px 0' }}
+            uiTransform={{ width: '100%', minHeight: 70, height: 70, padding: '4px 12px', margin: '2px 0' }}
             uiBackground={{ texture: { src: UI_TEXTURES.card }, textureMode: 'stretch', color: COLORS.surface }}
           >
             <Label
               value={copy(key)}
-              fontSize={uiFontSize(22)}
+              fontSize={uiFontSize(18)}
               font="monospace"
               color={COLORS.bone}
               textAlign="middle-left"
@@ -1005,30 +1076,38 @@ function settingsScreen(state: ClientFlowState) {
     return screenShell(
       copy('diagnostics.title'),
       <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column' }}>
-        <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', padding: '8px 4px' }}>
+        <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', padding: '4px' }}>
           {lines.map((line) => (
             <Label
+              key={line}
               value={line}
               fontSize={uiFontSize(16)}
               font="monospace"
               color={COLORS.bone}
               textAlign="middle-left"
-              uiTransform={{ width: '100%', minHeight: 32 }}
+              uiTransform={{ width: '100%', minHeight: 27, height: 27 }}
             />
           ))}
         </UiEntity>
-        {actionButton(copy('diagnostics.copy'), () => {
-          void copyToClipboard({ text: formatDiagnosticsBlock(snapshot) }).catch((error: unknown) => {
-            console.error('Ghostlight diagnostics copy failed', error)
-          })
-        })}
+        {actionButton(
+          copy('diagnostics.copy'),
+          () => {
+            void copyToClipboard({ text: formatDiagnosticsBlock(snapshot) }).catch((error: unknown) => {
+              console.error('Ghostlight diagnostics copy failed', error)
+            })
+          },
+          false,
+          'primary',
+          STACKED_BUTTON
+        )}
         {actionButton(
           copy('diagnostics.disable'),
           () => updateClientSettings({ diagnosticsEnabled: false }),
           false,
-          'secondary'
+          'secondary',
+          STACKED_BUTTON
         )}
-        {actionButton(copy('common.back'), () => clientFlow.showFoyer(), false, 'secondary')}
+        {actionButton(copy('common.back'), () => clientFlow.showFoyer(), false, 'secondary', STACKED_BUTTON)}
       </UiEntity>,
       state
     )
@@ -1049,15 +1128,21 @@ function settingsScreen(state: ClientFlowState) {
   return screenShell(
     copy('settings.title'),
     <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', justifyContent: 'center' }}>
-      {actionButton(copy('settings.sound', { value: soundValue }), () => {
-        if (!settings.soundEnabled) {
-          updateClientSettings({ soundEnabled: true, soundVolume: 0.5 })
-        } else if (settings.soundVolume === 0.5) {
-          updateClientSettings({ soundVolume: 1 })
-        } else {
-          updateClientSettings({ soundEnabled: false })
-        }
-      })}
+      {actionButton(
+        copy('settings.sound', { value: soundValue }),
+        () => {
+          if (!settings.soundEnabled) {
+            updateClientSettings({ soundEnabled: true, soundVolume: 0.5 })
+          } else if (settings.soundVolume === 0.5) {
+            updateClientSettings({ soundVolume: 1 })
+          } else {
+            updateClientSettings({ soundEnabled: false })
+          }
+        },
+        false,
+        'primary',
+        STACKED_BUTTON
+      )}
       {actionButton(
         copy('settings.language', { language: LANGUAGE_LABELS[settings.language] }),
         () => {
@@ -1065,7 +1150,8 @@ function settingsScreen(state: ClientFlowState) {
           updateClientSettings({ language: LANGUAGES[(index + 1) % LANGUAGES.length] })
         },
         false,
-        'secondary'
+        'secondary',
+        STACKED_BUTTON
       )}
       {actionButton(
         copy('settings.accessibility', { value: accessibilityValue }),
@@ -1081,15 +1167,17 @@ function settingsScreen(state: ClientFlowState) {
           }
         },
         false,
-        'secondary'
+        'secondary',
+        STACKED_BUTTON
       )}
       {actionButton(
         copy('settings.diagnostics', { value: copy('common.off') }),
         () => updateClientSettings({ diagnosticsEnabled: true }),
         false,
-        'secondary'
+        'secondary',
+        STACKED_BUTTON
       )}
-      {actionButton(copy('howToPlay.title'), () => clientFlow.showHowToPlay(), false, 'secondary')}
+      {actionButton(copy('howToPlay.title'), () => clientFlow.showHowToPlay(), false, 'secondary', STACKED_BUTTON)}
     </UiEntity>,
     state
   )
@@ -1266,16 +1354,16 @@ function openingOverlay(opening: OpeningViewState) {
       uiBackground={{ color: Color4.create(0.02, 0.014, 0.037, 0.72) }}
     >
       <UiEntity
-        uiTransform={{ width: 780, maxWidth: '72%', height: 270, padding: 30, flexDirection: 'column' }}
+        uiTransform={{ width: 780, maxWidth: '72%', height: 320, padding: 24, flexDirection: 'column' }}
         uiBackground={{ texture: { src: UI_TEXTURES.marquee }, textureMode: 'stretch', color: COLORS.ink }}
       >
         <Label
           value={opening.instruction || copy('opening.night')}
-          fontSize={uiFontSize(36)}
+          fontSize={uiFontSize(28)}
           font="serif"
           color={COLORS.bone}
           textAlign="middle-center"
-          uiTransform={{ width: '100%', height: 112 }}
+          uiTransform={{ width: '100%', height: 156 }}
         />
         {actionButton(copy('opening.skip'), () => skipOpening(), false, 'secondary')}
       </UiEntity>

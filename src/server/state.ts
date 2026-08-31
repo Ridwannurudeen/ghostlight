@@ -1,4 +1,4 @@
-import { AUDIENCE_SEATS, HYDRATION_DAYS, WIRE_INT_MAX } from '../shared/config'
+import { AUDIENCE_SEATS, HYDRATION_DAYS, TITLES, WIRE_INT_MAX } from '../shared/config'
 import type { PlayerTitle } from '../shared/config'
 import { DECK, EMOTE_VOCABULARY, HOUSE_CHARADES } from '../shared/deck'
 import type {
@@ -26,21 +26,99 @@ import {
   markDirty,
   markDirtyBatch,
   markPlayerDirty,
+  saveJSONNow,
+  flushNow,
   StorageCorruptError,
+  StorageCapacityError,
+  StorageUnavailableError,
   type StorageRepository
 } from './storage'
 
 export type RecentVisitor = Look & { lastSeenAt: number }
 
+export const DURABLE_MUTATION_JOURNAL_KEY = 'gc:v1:mutationJournal'
+export const MAX_DURABLE_COMPLETIONS = 64
+export const MAX_DURABLE_JOURNAL_BYTES = 112 * 1024
+
+export type DurableMutationFingerprint =
+  | {
+      kind: 'guess'
+      charadeId: string
+      answerIndex: number
+      spotlight: boolean
+      roundId: string | null
+    }
+  | {
+      kind: 'post'
+      phraseId: string
+      emotes: [string, string, string]
+      touringConsent: boolean
+      replyTo?: string
+      recipient?: string
+    }
+
+export type DurableMutationResponse = {
+  type: 'reveal' | 'posted'
+  data: Record<string, unknown>
+}
+
+export type DurableStatsPatch = {
+  address: string
+  persistent: boolean
+  seenAdd?: string
+  authoredAdd?: string
+  stampedDayAdd?: string
+  after: {
+    name: string
+    decoded: number
+    correct: number
+    authoredCount: number
+    lastSeenAt: number
+    pending: PlayerStats['pending']
+    daily: DailyProgress
+    revision: number
+    title: PlayerTitle
+    showSet?: ShowSet
+  }
+}
+
+export type DurableMutation = {
+  v: 1
+  id: string
+  owner: string
+  requestId: string
+  createdAt: number
+  fingerprint: DurableMutationFingerprint
+  response: DurableMutationResponse
+  notifiedAuthor?: string
+  charade?: Charade
+  stats: DurableStatsPatch[]
+  decoder?: { day: string; row: Boards['decoders'][number] }
+  boards?: { day: string; value: Boards }
+}
+
+export type DurableCompletion = Pick<
+  DurableMutation,
+  'v' | 'id' | 'owner' | 'requestId' | 'createdAt' | 'fingerprint' | 'response'
+> & { completedAt: number }
+
+type DurableMutationJournal = {
+  v: 1
+  active: DurableMutation | null
+  completed: DurableCompletion[]
+}
+
 type StateStorage = Pick<StorageRepository, 'loadJSON' | 'loadPlayerJSON' | 'markDirty' | 'markPlayerDirty'> &
-  Partial<Pick<StorageRepository, 'markDirtyBatch'>>
+  Partial<Pick<StorageRepository, 'markDirtyBatch' | 'saveJSONNow' | 'flushNow'>>
 
 const defaultStorage: StateStorage = {
   loadJSON,
   loadPlayerJSON,
   markDirty,
   markDirtyBatch,
-  markPlayerDirty
+  markPlayerDirty,
+  saveJSONNow,
+  flushNow
 }
 
 const EMPTY_BOARDS: Boards = { decoders: [], hardest: [] }
@@ -66,6 +144,7 @@ const HOUSE_CHARADE_IDS = new Set(HOUSE_CHARADES.map((charade) => charade.id))
 const PHRASE_IDS = new Set(DECK.map((phrase) => phrase.id))
 const VALID_EMOTES = new Set<string>(EMOTE_VOCABULARY)
 const STABLE_ADDRESS = /^0x[a-f0-9]{40}$/iu
+const ROUND_ID = /^[1-9][0-9]*$/u
 
 export class UnsupportedStorageVersionError extends Error {
   constructor(readonly version: number) {
@@ -546,6 +625,739 @@ function migrateIndex(value: unknown) {
   return [...new Set(asStringArray(value, MAX_INDEX_IDS_PER_DAY))]
 }
 
+function isBoundedString(value: unknown, maxBytes = MAX_STORED_ID_BYTES): value is string {
+  return typeof value === 'string' && value.length > 0 && utf8Bytes(value) <= maxBytes
+}
+
+function isExactNonNegativeInt(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= WIRE_INT_MAX
+}
+
+function isSafeJournalJSON(value: unknown, depth = 0): boolean {
+  if (value === null || typeof value === 'boolean') return true
+  if (typeof value === 'number') return Number.isFinite(value)
+  if (typeof value === 'string') return utf8Bytes(value) <= MAX_DURABLE_JOURNAL_BYTES
+  if (depth >= 12) return false
+  if (Array.isArray(value)) return value.length <= 512 && value.every((entry) => isSafeJournalJSON(entry, depth + 1))
+  const stored = asObject(value)
+  if (!stored || Object.keys(stored).length > 256) return false
+  return Object.entries(stored).every(
+    ([key, entry]) => utf8Bytes(key) <= MAX_STORED_NAME_BYTES && isSafeJournalJSON(entry, depth + 1)
+  )
+}
+
+function sameJournalJSON(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((entry, index) => sameJournalJSON(entry, right[index]))
+    )
+  }
+  const leftObject = asObject(left)
+  const rightObject = asObject(right)
+  if (!leftObject || !rightObject) return false
+  const leftKeys = Object.keys(leftObject).sort()
+  const rightKeys = Object.keys(rightObject).sort()
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every((key, index) => key === rightKeys[index] && sameJournalJSON(leftObject[key], rightObject[key]))
+  )
+}
+
+function migrateDurableFingerprint(value: unknown): DurableMutationFingerprint | null {
+  const stored = asObject(value)
+  if (!stored) return null
+  if (stored.kind === 'guess') {
+    if (
+      !isBoundedString(stored.charadeId) ||
+      !Number.isInteger(stored.answerIndex) ||
+      (stored.answerIndex as number) < 0 ||
+      (stored.answerIndex as number) > 2 ||
+      typeof stored.spotlight !== 'boolean' ||
+      (stored.roundId !== null &&
+        (!isBoundedString(stored.roundId, 64) ||
+          !ROUND_ID.test(stored.roundId) ||
+          !Number.isSafeInteger(Number(stored.roundId))))
+    ) {
+      return null
+    }
+    const fingerprint: DurableMutationFingerprint = {
+      kind: 'guess',
+      charadeId: stored.charadeId,
+      answerIndex: stored.answerIndex as number,
+      spotlight: stored.spotlight,
+      roundId: stored.roundId as string | null
+    }
+    return sameJournalJSON(fingerprint, value) ? fingerprint : null
+  }
+  if (stored.kind !== 'post') return null
+  const emotes = exactStrings(stored.emotes, 3, 64)
+  if (
+    !isBoundedString(stored.phraseId) ||
+    !PHRASE_IDS.has(stored.phraseId) ||
+    !emotes ||
+    emotes.some((emote) => !VALID_EMOTES.has(emote)) ||
+    typeof stored.touringConsent !== 'boolean' ||
+    (stored.replyTo !== undefined && !isBoundedString(stored.replyTo)) ||
+    (stored.recipient !== undefined &&
+      (!isBoundedString(stored.recipient) ||
+        !STABLE_ADDRESS.test(stored.recipient) ||
+        stored.recipient !== stored.recipient.toLowerCase())) ||
+    (stored.replyTo !== undefined && stored.recipient !== undefined) ||
+    ((stored.replyTo !== undefined || stored.recipient !== undefined) && stored.touringConsent)
+  ) {
+    return null
+  }
+  const fingerprint: DurableMutationFingerprint = {
+    kind: 'post',
+    phraseId: stored.phraseId,
+    emotes: [emotes[0], emotes[1], emotes[2]],
+    touringConsent: stored.touringConsent,
+    ...(stored.replyTo === undefined ? {} : { replyTo: stored.replyTo as string }),
+    ...(stored.recipient === undefined ? {} : { recipient: stored.recipient as string })
+  }
+  return sameJournalJSON(fingerprint, value) ? fingerprint : null
+}
+
+function migrateDurableDaily(value: unknown, createdAt: number) {
+  const daily = migrateDaily(value, createdAt)
+  return sameJournalJSON(daily, value) ? daily : null
+}
+
+function migrateDurableProgress(data: Record<string, unknown>) {
+  const nextUnlock = asObject(data.nextUnlock)
+  if (
+    (data.title !== '' && !TITLES.includes(data.title as (typeof TITLES)[number])) ||
+    !nextUnlock ||
+    (nextUnlock.nextTitle !== '' && !TITLES.includes(nextUnlock.nextTitle as (typeof TITLES)[number])) ||
+    !isBoundedString(nextUnlock.requirement, MAX_STORED_NAME_BYTES) ||
+    typeof nextUnlock.progress !== 'number' ||
+    !Number.isFinite(nextUnlock.progress) ||
+    nextUnlock.progress < 0 ||
+    nextUnlock.progress > 1
+  ) {
+    return null
+  }
+  return {
+    title: data.title as PlayerTitle,
+    nextUnlock: {
+      nextTitle: nextUnlock.nextTitle as PlayerTitle,
+      requirement: nextUnlock.requirement,
+      progress: nextUnlock.progress
+    }
+  }
+}
+
+function migrateDurableResponse(
+  value: unknown,
+  fingerprint: DurableMutationFingerprint,
+  requestId: string,
+  createdAt: number
+): DurableMutationResponse | null {
+  const stored = asObject(value)
+  const data = asObject(stored?.data)
+  const expectedType = fingerprint.kind === 'guess' ? 'reveal' : 'posted'
+  if (
+    !stored ||
+    stored.type !== expectedType ||
+    !data ||
+    data.requestId !== requestId ||
+    !isBoundedString(data.charadeId) ||
+    !isSafeJournalJSON(data)
+  ) {
+    return null
+  }
+  const daily = migrateDurableDaily(data.daily, createdAt)
+  const progress = migrateDurableProgress(data)
+  if (
+    !daily ||
+    !progress ||
+    !isExactNonNegativeInt(data.revision) ||
+    typeof data.stampAwarded !== 'boolean' ||
+    typeof data.titleUnlocked !== 'boolean'
+  ) {
+    return null
+  }
+  if (fingerprint.kind === 'guess') {
+    const phrase = DECK.find((candidate) => candidate.id === data.phraseId)
+    const stats = asObject(data.stats)
+    if (
+      data.charadeId !== fingerprint.charadeId ||
+      !phrase ||
+      data.phrase !== phrase.text ||
+      typeof data.correct !== 'boolean' ||
+      !stats ||
+      !isExactNonNegativeInt(stats.total) ||
+      !isExactNonNegativeInt(stats.correct) ||
+      stats.correct > stats.total ||
+      !isExactNonNegativeInt(data.yourScore) ||
+      (data.attempt !== 1 && data.attempt !== 2) ||
+      typeof data.spotlight !== 'boolean' ||
+      !Number.isSafeInteger(data.scoreDelta) ||
+      ![-100, 0, 50, 100, 200].includes(data.scoreDelta as number) ||
+      !isExactNonNegativeInt(data.setRound) ||
+      data.setRound > SHOW_SET_SIZE ||
+      data.setSize !== SHOW_SET_SIZE ||
+      !isExactNonNegativeInt(data.setScore) ||
+      data.setScore > SHOW_SET_SIZE * 200 ||
+      !isExactNonNegativeInt(data.setStreak) ||
+      data.setStreak > SHOW_SET_SIZE ||
+      !isExactNonNegativeInt(data.setBestStreak) ||
+      data.setBestStreak < data.setStreak ||
+      data.setBestStreak > SHOW_SET_SIZE ||
+      !isExactNonNegativeInt(data.setUnderstood) ||
+      data.setUnderstood > SHOW_SET_SIZE ||
+      typeof data.setComplete !== 'boolean' ||
+      data.setComplete !== (data.setRound === SHOW_SET_SIZE) ||
+      typeof data.isFinale !== 'boolean' ||
+      data.isFinale !== data.setComplete
+    ) {
+      return null
+    }
+    const response: DurableMutationResponse = {
+      type: 'reveal',
+      data: {
+        requestId,
+        charadeId: fingerprint.charadeId,
+        correct: data.correct,
+        phraseId: phrase.id,
+        phrase: phrase.text,
+        stats: { total: stats.total, correct: stats.correct },
+        yourScore: data.yourScore,
+        daily,
+        revision: data.revision,
+        stampAwarded: data.stampAwarded,
+        attempt: data.attempt,
+        ...progress,
+        titleUnlocked: data.titleUnlocked,
+        spotlight: data.spotlight,
+        scoreDelta: data.scoreDelta,
+        setRound: data.setRound,
+        setSize: SHOW_SET_SIZE,
+        setScore: data.setScore,
+        setStreak: data.setStreak,
+        setBestStreak: data.setBestStreak,
+        setUnderstood: data.setUnderstood,
+        setComplete: data.setComplete,
+        isFinale: data.isFinale
+      }
+    }
+    return sameJournalJSON(response, value) ? response : null
+  }
+  if (
+    (fingerprint.replyTo !== undefined &&
+      (data.charadeId !== fingerprint.replyTo ||
+        data.replyTo !== fingerprint.replyTo ||
+        data.recipient !== undefined)) ||
+    (fingerprint.replyTo === undefined && data.replyTo !== undefined) ||
+    (fingerprint.recipient === undefined && data.recipient !== undefined) ||
+    (fingerprint.recipient !== undefined &&
+      (!isBoundedString(data.recipient) ||
+        !STABLE_ADDRESS.test(data.recipient) ||
+        data.recipient.toLowerCase() !== fingerprint.recipient))
+  ) {
+    return null
+  }
+  const response: DurableMutationResponse = {
+    type: 'posted',
+    data: {
+      requestId,
+      charadeId: data.charadeId,
+      ...(fingerprint.replyTo === undefined ? {} : { replyTo: fingerprint.replyTo }),
+      ...(fingerprint.recipient === undefined ? {} : { recipient: data.recipient as string }),
+      daily,
+      revision: data.revision,
+      stampAwarded: data.stampAwarded,
+      ...progress,
+      titleUnlocked: data.titleUnlocked
+    }
+  }
+  return sameJournalJSON(response, value) ? response : null
+}
+
+function migrateDurableStatsPatch(value: unknown): DurableStatsPatch | null {
+  const stored = asObject(value)
+  const after = asObject(stored?.after)
+  const pending = asObject(after?.pending)
+  if (
+    !stored ||
+    !after ||
+    !pending ||
+    !isBoundedString(stored.address) ||
+    typeof stored.persistent !== 'boolean' ||
+    (stored.seenAdd !== undefined && !isBoundedString(stored.seenAdd)) ||
+    (stored.authoredAdd !== undefined && !isBoundedString(stored.authoredAdd)) ||
+    (stored.stampedDayAdd !== undefined &&
+      (typeof stored.stampedDayAdd !== 'string' || !isDayKey(stored.stampedDayAdd))) ||
+    !isBoundedString(after.name, MAX_STORED_NAME_BYTES) ||
+    !isExactNonNegativeInt(after.decoded) ||
+    !isExactNonNegativeInt(after.correct) ||
+    (after.correct as number) > (after.decoded as number) ||
+    !isExactNonNegativeInt(after.authoredCount) ||
+    asTimestamp(after.lastSeenAt) === null ||
+    !isExactNonNegativeInt(pending.triedYou) ||
+    !isExactNonNegativeInt(pending.gotYou) ||
+    !isExactNonNegativeInt(pending.replies) ||
+    !isExactNonNegativeInt(pending.mail) ||
+    !isExactNonNegativeInt(after.revision) ||
+    (after.title !== '' && !TITLES.includes(after.title as (typeof TITLES)[number]))
+  ) {
+    return null
+  }
+  const daily = migrateDaily(after.daily, after.lastSeenAt as number)
+  if (!sameJournalJSON(daily, after.daily)) return null
+  let showSet: ShowSet | undefined
+  if (after.showSet !== undefined) {
+    const storedShowSet = asObject(after.showSet)
+    if (
+      !storedShowSet ||
+      !isExactNonNegativeInt(storedShowSet.round) ||
+      storedShowSet.round > SHOW_SET_SIZE ||
+      !isExactNonNegativeInt(storedShowSet.score) ||
+      storedShowSet.score > SHOW_SET_SIZE * 200 ||
+      !isExactNonNegativeInt(storedShowSet.streak) ||
+      storedShowSet.streak > SHOW_SET_SIZE ||
+      !isExactNonNegativeInt(storedShowSet.bestStreak) ||
+      storedShowSet.bestStreak > SHOW_SET_SIZE ||
+      !isExactNonNegativeInt(storedShowSet.understood) ||
+      storedShowSet.understood > SHOW_SET_SIZE ||
+      (storedShowSet.showKey !== undefined && !isBoundedString(storedShowSet.showKey))
+    ) {
+      return null
+    }
+    showSet = {
+      ...(storedShowSet.showKey === undefined ? {} : { showKey: storedShowSet.showKey as string }),
+      round: storedShowSet.round,
+      score: storedShowSet.score,
+      streak: storedShowSet.streak,
+      bestStreak: storedShowSet.bestStreak,
+      understood: storedShowSet.understood
+    }
+    if (!sameJournalJSON(showSet, after.showSet)) return null
+  }
+  return {
+    address: stored.address,
+    persistent: stored.persistent,
+    ...(stored.seenAdd === undefined ? {} : { seenAdd: stored.seenAdd as string }),
+    ...(stored.authoredAdd === undefined ? {} : { authoredAdd: stored.authoredAdd as string }),
+    ...(stored.stampedDayAdd === undefined ? {} : { stampedDayAdd: stored.stampedDayAdd as string }),
+    after: {
+      name: after.name as string,
+      decoded: after.decoded as number,
+      correct: after.correct as number,
+      authoredCount: after.authoredCount as number,
+      lastSeenAt: after.lastSeenAt as number,
+      pending: {
+        triedYou: pending.triedYou as number,
+        gotYou: pending.gotYou as number,
+        replies: pending.replies as number,
+        mail: pending.mail as number
+      },
+      daily,
+      revision: after.revision as number,
+      title: after.title as PlayerTitle,
+      ...(showSet ? { showSet } : {})
+    }
+  }
+}
+
+function migrateDurableBoards(value: unknown): Boards | null {
+  const stored = asObject(value)
+  if (!stored || !Array.isArray(stored.decoders) || !Array.isArray(stored.hardest)) return null
+  if (stored.decoders.length > 10 || stored.hardest.length > 10) return null
+  const decoders: Boards['decoders'] = []
+  for (const value of stored.decoders) {
+    const row = asObject(value)
+    if (
+      !row ||
+      !isBoundedString(row.address) ||
+      !isBoundedString(row.name, MAX_STORED_NAME_BYTES) ||
+      !isExactNonNegativeInt(row.correct) ||
+      !isExactNonNegativeInt(row.total) ||
+      row.correct > row.total
+    ) {
+      return null
+    }
+    decoders.push({ address: row.address, name: row.name, correct: row.correct, total: row.total })
+  }
+  const hardest: Boards['hardest'] = []
+  for (const value of stored.hardest) {
+    const row = asObject(value)
+    if (
+      !row ||
+      !isBoundedString(row.charadeId) ||
+      !isBoundedString(row.authorName, MAX_STORED_NAME_BYTES) ||
+      !isExactNonNegativeInt(row.correct) ||
+      !isExactNonNegativeInt(row.total) ||
+      row.correct > row.total
+    ) {
+      return null
+    }
+    hardest.push({
+      charadeId: row.charadeId,
+      authorName: row.authorName,
+      correct: row.correct,
+      total: row.total
+    })
+  }
+  return { decoders, hardest }
+}
+
+function migrateDurableMutation(value: unknown, targetsRequired = true): DurableMutation | null {
+  const stored = asObject(value)
+  if (
+    !stored ||
+    stored.v !== 1 ||
+    !isBoundedString(stored.id, 256) ||
+    !isBoundedString(stored.owner) ||
+    !isBoundedString(stored.requestId, 64) ||
+    asTimestamp(stored.createdAt) === null ||
+    !Array.isArray(stored.stats) ||
+    stored.stats.length > 3
+  ) {
+    return null
+  }
+  const fingerprint = migrateDurableFingerprint(stored.fingerprint)
+  if (!fingerprint) return null
+  const response = migrateDurableResponse(stored.response, fingerprint, stored.requestId, stored.createdAt as number)
+  if (!response) return null
+  let notifiedAuthor: string | undefined
+  if (stored.notifiedAuthor !== undefined) {
+    if (!isBoundedString(stored.notifiedAuthor) || stored.notifiedAuthor !== stored.notifiedAuthor.toLowerCase()) {
+      return null
+    }
+    notifiedAuthor = stored.notifiedAuthor
+  }
+  const stats: DurableStatsPatch[] = []
+  for (const value of stored.stats) {
+    const patch = migrateDurableStatsPatch(value)
+    if (!patch || stats.some((entry) => entry.address.toLowerCase() === patch.address.toLowerCase())) return null
+    stats.push(patch)
+  }
+  let charade: Charade | undefined
+  if (stored.charade !== undefined) {
+    const migrated = migrateCharade(stored.charade)
+    if (!migrated || !sameJournalJSON(migrated, stored.charade)) return null
+    charade = migrated
+  }
+  let decoder: DurableMutation['decoder']
+  if (stored.decoder !== undefined) {
+    const decoderValue = asObject(stored.decoder)
+    const row = asObject(decoderValue?.row)
+    if (
+      !decoderValue ||
+      typeof decoderValue.day !== 'string' ||
+      !isDayKey(decoderValue.day) ||
+      !row ||
+      !isBoundedString(row.address) ||
+      !isBoundedString(row.name, MAX_STORED_NAME_BYTES) ||
+      !isExactNonNegativeInt(row.correct) ||
+      !isExactNonNegativeInt(row.total) ||
+      (row.correct as number) > (row.total as number)
+    ) {
+      return null
+    }
+    decoder = {
+      day: decoderValue.day,
+      row: {
+        address: row.address,
+        name: row.name,
+        correct: row.correct,
+        total: row.total
+      }
+    }
+  }
+  let boards: DurableMutation['boards']
+  if (stored.boards !== undefined) {
+    const boardValue = asObject(stored.boards)
+    if (!boardValue || typeof boardValue.day !== 'string' || !isDayKey(boardValue.day)) return null
+    const migrated = migrateDurableBoards(boardValue.value)
+    if (!migrated || !sameJournalJSON(migrated, boardValue.value)) return null
+    boards = { day: boardValue.day, value: migrated }
+  }
+  const mutation: DurableMutation = {
+    v: 1,
+    id: stored.id,
+    owner: stored.owner,
+    requestId: stored.requestId,
+    createdAt: stored.createdAt as number,
+    fingerprint,
+    response,
+    ...(notifiedAuthor ? { notifiedAuthor } : {}),
+    ...(charade ? { charade } : {}),
+    stats,
+    ...(decoder ? { decoder } : {}),
+    ...(boards ? { boards } : {})
+  }
+  const ownerPatch = stats.find((patch) => patch.address === mutation.owner)
+  const responseData = mutation.response.data
+  if (
+    mutation.owner !== mutation.owner.toLowerCase() ||
+    mutation.id !== `${mutation.owner}:${mutation.fingerprint.kind}:${mutation.requestId}` ||
+    stats.some(
+      (patch) => patch.address !== patch.address.toLowerCase() || patch.after.lastSeenAt !== mutation.createdAt
+    ) ||
+    (mutation.notifiedAuthor !== undefined && mutation.fingerprint.kind !== 'guess') ||
+    (mutation.decoder !== undefined && mutation.boards === undefined) ||
+    (mutation.boards !== undefined && mutation.fingerprint.kind !== 'guess') ||
+    (mutation.decoder !== undefined &&
+      (mutation.fingerprint.kind !== 'guess' ||
+        mutation.decoder.row.address !== mutation.owner ||
+        mutation.boards?.day !== mutation.decoder.day))
+  ) {
+    return null
+  }
+  if (mutation.fingerprint.kind === 'guess') {
+    const responseStats = asObject(responseData.stats)
+    const notifiedPatch = mutation.notifiedAuthor
+      ? stats.find((patch) => patch.address === mutation.notifiedAuthor)
+      : undefined
+    const mutationDay = dayKey(mutation.createdAt)
+    if (
+      responseData.charadeId !== mutation.fingerprint.charadeId ||
+      (targetsRequired && !ownerPatch) ||
+      (targetsRequired && stats.length !== 1 + (mutation.notifiedAuthor ? 1 : 0)) ||
+      (targetsRequired && mutation.notifiedAuthor !== undefined && (!notifiedPatch || !notifiedPatch.persistent)) ||
+      (targetsRequired && mutation.notifiedAuthor !== undefined && !ownerPatch?.persistent) ||
+      stats.some((patch) => patch.authoredAdd !== undefined) ||
+      (ownerPatch !== undefined &&
+        ((ownerPatch.seenAdd !== undefined && ownerPatch.seenAdd !== mutation.fingerprint.charadeId) ||
+          (ownerPatch.stampedDayAdd !== undefined && ownerPatch.stampedDayAdd !== mutationDay))) ||
+      (notifiedPatch !== undefined &&
+        (notifiedPatch.seenAdd !== undefined ||
+          notifiedPatch.authoredAdd !== undefined ||
+          notifiedPatch.stampedDayAdd !== undefined)) ||
+      (targetsRequired && (mutation.charade === undefined) !== (mutation.boards === undefined)) ||
+      (mutation.charade === undefined && mutation.decoder !== undefined) ||
+      (mutation.charade !== undefined &&
+        (mutation.charade.id !== mutation.fingerprint.charadeId ||
+          mutation.notifiedAuthor !== mutation.charade.author.address.toLowerCase() ||
+          mutation.charade.isHouse ||
+          mutation.charade.recipient !== undefined ||
+          mutation.charade.lastGuessAt !== mutation.createdAt ||
+          mutation.boards?.day !== mutationDay ||
+          mutation.charade.author.isGuest ||
+          !ownerPatch?.persistent ||
+          mutation.charade.phraseId !== responseData.phraseId ||
+          !responseStats ||
+          !sameJournalJSON(mutation.charade.guesses, responseStats))) ||
+      (ownerPatch !== undefined &&
+        (ownerPatch.after.correct !== responseData.yourScore ||
+          ownerPatch.after.revision !== responseData.revision ||
+          !sameJournalJSON(ownerPatch.after.daily, responseData.daily) ||
+          ownerPatch.after.title !== responseData.title ||
+          Boolean(ownerPatch.stampedDayAdd) !== responseData.stampAwarded ||
+          !ownerPatch.after.showSet ||
+          ownerPatch.after.showSet.round !== responseData.setRound ||
+          ownerPatch.after.showSet.score !== responseData.setScore ||
+          ownerPatch.after.showSet.streak !== responseData.setStreak ||
+          ownerPatch.after.showSet.bestStreak !== responseData.setBestStreak ||
+          ownerPatch.after.showSet.understood !== responseData.setUnderstood))
+    ) {
+      return null
+    }
+  } else {
+    if (mutation.notifiedAuthor || mutation.decoder || mutation.boards || (targetsRequired && !mutation.charade)) {
+      return null
+    }
+    if (mutation.charade) {
+      const fingerprint = mutation.fingerprint
+      if (fingerprint.replyTo !== undefined) {
+        const reply = mutation.charade.reply
+        const authorPatch = stats.find((patch) => patch.address === mutation.charade!.author.address.toLowerCase())
+        if (
+          mutation.charade.id !== fingerprint.replyTo ||
+          mutation.charade.phraseId !== fingerprint.phraseId ||
+          !reply ||
+          reply.requestId !== mutation.requestId ||
+          reply.address.toLowerCase() !== mutation.owner ||
+          mutation.charade.author.address.toLowerCase() === mutation.owner ||
+          (mutation.charade.recipient !== undefined && mutation.charade.recipient.toLowerCase() !== mutation.owner) ||
+          !sameJournalJSON(reply.emotes, fingerprint.emotes) ||
+          reply.createdAt !== mutation.createdAt ||
+          responseData.charadeId !== mutation.charade.id ||
+          responseData.replyTo !== mutation.charade.id ||
+          responseData.stampAwarded !== false ||
+          responseData.titleUnlocked !== false ||
+          stats.length !== 1 ||
+          !authorPatch ||
+          authorPatch.seenAdd !== undefined ||
+          authorPatch.authoredAdd !== undefined ||
+          authorPatch.stampedDayAdd !== undefined ||
+          authorPatch.persistent !== !mutation.charade.author.isGuest
+        ) {
+          return null
+        }
+      } else if (
+        mutation.charade.id !== responseData.charadeId ||
+        mutation.charade.author.address.toLowerCase() !== mutation.owner ||
+        mutation.charade.author.isGuest ||
+        mutation.charade.phraseId !== fingerprint.phraseId ||
+        !sameJournalJSON(mutation.charade.emotes, fingerprint.emotes) ||
+        mutation.charade.touringConsent !== fingerprint.touringConsent ||
+        (mutation.charade.recipient?.toLowerCase() ?? undefined) !== fingerprint.recipient ||
+        mutation.charade.createdAt !== mutation.createdAt ||
+        mutation.charade.reply !== undefined ||
+        mutation.charade.lastGuessAt !== 0 ||
+        mutation.charade.guesses.total !== 0 ||
+        mutation.charade.guesses.correct !== 0 ||
+        mutation.charade.isHouse ||
+        !ownerPatch ||
+        !ownerPatch.persistent ||
+        ownerPatch.seenAdd !== undefined ||
+        (fingerprint.recipient === undefined && ownerPatch.authoredAdd !== mutation.charade.id) ||
+        (fingerprint.recipient === undefined &&
+          ownerPatch.stampedDayAdd !== undefined &&
+          ownerPatch.stampedDayAdd !== dayKey(mutation.createdAt)) ||
+        (fingerprint.recipient !== undefined &&
+          (ownerPatch.authoredAdd !== undefined ||
+            ownerPatch.stampedDayAdd !== undefined ||
+            stats.some(
+              (patch) =>
+                patch.address === fingerprint.recipient &&
+                (patch.seenAdd !== undefined || patch.authoredAdd !== undefined || patch.stampedDayAdd !== undefined)
+            ))) ||
+        stats.length !== (fingerprint.recipient === undefined ? 1 : 2) ||
+        (fingerprint.recipient !== undefined &&
+          !stats.some(
+            (patch) => patch.address === fingerprint.recipient && patch.persistent && patch.address !== mutation.owner
+          )) ||
+        ownerPatch.after.revision !== responseData.revision ||
+        !sameJournalJSON(ownerPatch.after.daily, responseData.daily) ||
+        ownerPatch.after.title !== responseData.title ||
+        Boolean(ownerPatch.stampedDayAdd) !== responseData.stampAwarded
+      ) {
+        return null
+      }
+    }
+  }
+  if (!targetsRequired && (mutation.charade || mutation.stats.length > 0 || mutation.decoder || mutation.boards))
+    return null
+  return sameJournalJSON(mutation, value) ? mutation : null
+}
+
+function migrateDurableCompletion(value: unknown): DurableCompletion | null {
+  const stored = asObject(value)
+  if (!stored || asTimestamp(stored.completedAt) === null) return null
+  const mutation = migrateDurableMutation(
+    {
+      v: stored.v,
+      id: stored.id,
+      owner: stored.owner,
+      requestId: stored.requestId,
+      createdAt: stored.createdAt,
+      fingerprint: stored.fingerprint,
+      response: stored.response,
+      stats: []
+    },
+    false
+  )
+  if (!mutation) return null
+  if ((stored.completedAt as number) < mutation.createdAt) return null
+  const completion: DurableCompletion = {
+    v: 1,
+    id: mutation.id,
+    owner: mutation.owner,
+    requestId: mutation.requestId,
+    createdAt: mutation.createdAt,
+    fingerprint: mutation.fingerprint,
+    response: mutation.response,
+    completedAt: stored.completedAt as number
+  }
+  return sameJournalJSON(completion, value) ? completion : null
+}
+
+function migrateDurableJournal(value: unknown): DurableMutationJournal | null {
+  const stored = asObject(value)
+  if (
+    !stored ||
+    stored.v !== 1 ||
+    !Array.isArray(stored.completed) ||
+    stored.completed.length > MAX_DURABLE_COMPLETIONS
+  ) {
+    return null
+  }
+  const active = stored.active === null ? null : migrateDurableMutation(stored.active)
+  if (stored.active !== null && !active) return null
+  const completed: DurableCompletion[] = []
+  for (const value of stored.completed) {
+    const entry = migrateDurableCompletion(value)
+    if (!entry || completed.some((candidate) => candidate.id === entry.id)) return null
+    completed.push(entry)
+  }
+  if (active && completed.some((entry) => entry.id === active.id)) return null
+  const journal = { v: 1 as const, active, completed }
+  return sameJournalJSON(journal, value) && utf8Bytes(JSON.stringify(journal)) <= MAX_DURABLE_JOURNAL_BYTES
+    ? journal
+    : null
+}
+
+function completionFor(mutation: DurableMutation, completedAt: number): DurableCompletion {
+  return {
+    v: 1,
+    id: mutation.id,
+    owner: mutation.owner,
+    requestId: mutation.requestId,
+    createdAt: mutation.createdAt,
+    fingerprint: mutation.fingerprint,
+    response: mutation.response,
+    completedAt
+  }
+}
+
+function fitDurableJournal(journal: DurableMutationJournal) {
+  while (
+    journal.completed.length > 0 &&
+    (journal.completed.length > MAX_DURABLE_COMPLETIONS ||
+      utf8Bytes(JSON.stringify(journal)) > MAX_DURABLE_JOURNAL_BYTES)
+  ) {
+    journal.completed.shift()
+  }
+  if (utf8Bytes(JSON.stringify(journal)) > MAX_DURABLE_JOURNAL_BYTES) {
+    throw new StorageCapacityError('Durable mutation journal capacity exceeded')
+  }
+  return journal
+}
+
+function computeBoardsFor(
+  day: string,
+  charades: Iterable<Charade>,
+  decoders: Iterable<Boards['decoders'][number]>
+): Boards {
+  const decoderBoard = [...decoders]
+    .sort((a, b) => b.correct - a.correct || b.total - a.total || a.name.localeCompare(b.name))
+    .slice(0, 10)
+  const hardest = [...charades]
+    .filter(
+      (charade) =>
+        !charade.isHouse &&
+        !charade.author.isGuest &&
+        charade.recipient === undefined &&
+        dayKey(charade.createdAt) === day &&
+        charade.guesses.total >= 3
+    )
+    .sort((a, b) => {
+      const aDifference = BigInt(a.guesses.correct) * 5n - BigInt(a.guesses.total) * 3n
+      const bDifference = BigInt(b.guesses.correct) * 5n - BigInt(b.guesses.total) * 3n
+      const distanceComparison =
+        (aDifference < 0n ? -aDifference : aDifference) * BigInt(b.guesses.total) -
+        (bDifference < 0n ? -bDifference : bDifference) * BigInt(a.guesses.total)
+      if (distanceComparison !== 0n) return distanceComparison < 0n ? -1 : 1
+      return b.guesses.total - a.guesses.total || a.createdAt - b.createdAt || a.id.localeCompare(b.id)
+    })
+    .slice(0, 10)
+    .map((charade) => ({
+      charadeId: charade.id,
+      authorName: charade.author.name,
+      total: charade.guesses.total,
+      correct: charade.guesses.correct
+    }))
+  return { decoders: decoderBoard, hardest }
+}
+
 export function dayKey(timestamp: number) {
   return new Date(timestamp).toISOString().slice(0, 10)
 }
@@ -564,6 +1376,7 @@ export class GhostlightState {
   private decoderDay: string | null = null
   private acceptedDay: string | null = null
   private storageReadOnly = false
+  private durableJournal: DurableMutationJournal = { v: 1, active: null, completed: [] }
 
   constructor(
     private readonly storage: StateStorage = defaultStorage,
@@ -581,6 +1394,7 @@ export class GhostlightState {
     const ids = new Map<string, string>()
     this.acceptedDay = today
     this.storageReadOnly = false
+    this.durableJournal = { v: 1, active: null, completed: [] }
     this.charades.clear()
     HOUSE_CHARADES.forEach((charade) => this.charades.set(charade.id, charade))
     const loadFoundational = async <T>(key: string, fallback: T) => {
@@ -592,16 +1406,48 @@ export class GhostlightState {
         return fallback
       }
     }
+    let journalValue: unknown
+    try {
+      journalValue = await this.storage.loadJSON<unknown>(DURABLE_MUTATION_JOURNAL_KEY, {
+        v: 1,
+        active: null,
+        completed: []
+      })
+    } catch (error) {
+      if (!(error instanceof StorageCorruptError)) throw error
+      this.storageReadOnly = true
+      return
+    }
+    const durableJournal = migrateDurableJournal(journalValue)
+    if (!durableJournal) {
+      this.storageReadOnly = true
+      return
+    }
+    this.durableJournal = durableJournal
+    const activeTarget = durableJournal.active?.charade
+    const activeTargetDay = activeTarget ? dayKey(activeTarget.createdAt) : null
+    const activeTargetRetained = activeTargetDay !== null && days.includes(activeTargetDay)
+    const indexDays = activeTargetDay && !days.includes(activeTargetDay) ? [...days, activeTargetDay] : days
+    const repairedTargetIndexes: Array<{ day: string; ids: string[] }> = []
     this.indexes.clear()
-    for (let offset = 0; offset < days.length; offset += MAX_CONCURRENT_READS) {
-      const batch = days.slice(offset, offset + MAX_CONCURRENT_READS)
+    if (activeTarget && activeTargetDay && activeTargetRetained) ids.set(activeTarget.id, activeTargetDay)
+    for (let offset = 0; offset < indexDays.length; offset += MAX_CONCURRENT_READS) {
+      const batch = indexDays.slice(offset, offset + MAX_CONCURRENT_READS)
       const values = await Promise.all(batch.map((day) => loadFoundational<unknown>(indexKey(day), [])))
       values.forEach((value, index) => {
         const day = batch[index]
-        const dayIndex = migrateIndex(value)
+        let dayIndex = migrateIndex(value)
+        if (activeTarget && day === activeTargetDay && !dayIndex.includes(activeTarget.id)) {
+          if (dayIndex.length >= MAX_INDEX_IDS_PER_DAY) {
+            this.storageReadOnly = true
+          } else {
+            dayIndex = [...dayIndex, activeTarget.id]
+            repairedTargetIndexes.push({ day, ids: dayIndex })
+          }
+        }
         this.indexes.set(day, dayIndex)
         dayIndex.forEach((id) => {
-          if (ids.size < MAX_LIVE_CHARADES && !ids.has(id)) ids.set(id, day)
+          if (days.includes(day) && ids.size < MAX_LIVE_CHARADES && !ids.has(id)) ids.set(id, day)
         })
       })
     }
@@ -617,6 +1463,9 @@ export class GhostlightState {
       this.dailyDecoders.clear()
       this.decoderDay = today
       return
+    }
+    for (const repairedTargetIndex of repairedTargetIndexes) {
+      this.storage.markDirty(indexKey(repairedTargetIndex.day), repairedTargetIndex.ids)
     }
 
     const visitorAddresses = new Set<string>()
@@ -653,8 +1502,165 @@ export class GhostlightState {
         if (charade && !charade.isHouse) this.charades.set(charade.id, charade)
       })
     }
+    if (
+      activeTarget &&
+      durableJournal.active?.fingerprint.kind === 'post' &&
+      durableJournal.active.fingerprint.replyTo !== undefined &&
+      !this.charades.has(activeTarget.id)
+    ) {
+      this.charades.set(activeTarget.id, activeTarget)
+    }
 
     this.recomputeBoards(false)
+    if (this.durableJournal.active) {
+      await this.recoverDurableMutation(this.durableJournal.active.id, this.now())
+      if (activeTarget && !activeTargetRetained) {
+        this.charades.delete(activeTarget.id)
+        this.recomputeBoards(false)
+      }
+    }
+  }
+
+  getActiveDurableMutation(id?: string) {
+    const active = this.durableJournal.active
+    return active && (id === undefined || active.id === id) ? active : null
+  }
+
+  getDurableCompletion(owner: string, kind: DurableMutationFingerprint['kind'], requestId: string) {
+    const wanted = owner.toLowerCase()
+    return (
+      this.durableJournal.completed
+        .slice()
+        .reverse()
+        .find(
+          (entry) =>
+            entry.owner.toLowerCase() === wanted && entry.fingerprint.kind === kind && entry.requestId === requestId
+        ) ?? null
+    )
+  }
+
+  async beginDurableMutation(value: DurableMutation) {
+    if (this.storageReadOnly || !this.storage.saveJSONNow) {
+      throw new StorageUnavailableError([`scene:${DURABLE_MUTATION_JOURNAL_KEY}`])
+    }
+    const mutation = migrateDurableMutation(value)
+    if (!mutation) throw new StorageCapacityError('Invalid durable mutation')
+    const active = this.durableJournal.active
+    if (active) {
+      if (active.id === mutation.id && sameJournalJSON(active, mutation)) return active
+      throw new StorageUnavailableError([`scene:${DURABLE_MUTATION_JOURNAL_KEY}`])
+    }
+    const next = fitDurableJournal({
+      v: 1,
+      active: mutation,
+      completed: this.durableJournal.completed.filter((entry) => entry.id !== mutation.id)
+    })
+    await this.storage.saveJSONNow(DURABLE_MUTATION_JOURNAL_KEY, next)
+    this.durableJournal = next
+    return mutation
+  }
+
+  async completeDurableMutation(id: string, completedAt = this.now()) {
+    if (this.storageReadOnly || !this.storage.saveJSONNow) {
+      throw new StorageUnavailableError([`scene:${DURABLE_MUTATION_JOURNAL_KEY}`])
+    }
+    const active = this.durableJournal.active
+    if (!active) {
+      if (this.durableJournal.completed.some((entry) => entry.id === id)) return
+      throw new StorageUnavailableError([`scene:${DURABLE_MUTATION_JOURNAL_KEY}`])
+    }
+    if (active.id !== id || asTimestamp(completedAt) === null) {
+      throw new StorageUnavailableError([`scene:${DURABLE_MUTATION_JOURNAL_KEY}`])
+    }
+    const next = fitDurableJournal({
+      v: 1,
+      active: null,
+      completed: [
+        ...this.durableJournal.completed.filter((entry) => entry.id !== id),
+        completionFor(active, Math.max(completedAt, active.createdAt))
+      ]
+    })
+    await this.storage.saveJSONNow(DURABLE_MUTATION_JOURNAL_KEY, next)
+    this.durableJournal = next
+  }
+
+  async recoverDurableMutation(id: string, completedAt = this.now()) {
+    if (this.storageReadOnly || !this.storage.flushNow) {
+      throw new StorageUnavailableError(['durable-mutation-recovery'])
+    }
+    const active = this.durableJournal.active
+    if (!active || active.id !== id) {
+      if (this.durableJournal.completed.some((entry) => entry.id === id)) return null
+      throw new StorageUnavailableError([`scene:${DURABLE_MUTATION_JOURNAL_KEY}`])
+    }
+    await this.storage.flushNow()
+    await this.applyDurableMutation(active)
+    await this.storage.flushNow()
+    await this.completeDurableMutation(active.id, completedAt)
+    return active
+  }
+
+  async applyDurableMutation(mutation: DurableMutation) {
+    if (this.storageReadOnly) throw new StorageUnavailableError(['durable-mutation-recovery'])
+    if (mutation.charade) {
+      if (mutation.fingerprint.kind === 'post' && mutation.fingerprint.replyTo !== undefined) {
+        const current = this.charades.get(mutation.charade.id)
+        if (!current || current.isHouse) throw new StorageCapacityError('Durable reply target missing')
+        this.storage.markDirty(charadeKey(mutation.charade.id), mutation.charade)
+        this.charades.set(mutation.charade.id, mutation.charade)
+      } else if (!this.upsertCharade(mutation.charade)) {
+        throw new StorageCapacityError('Durable charade capacity exceeded')
+      }
+    }
+    for (const patch of mutation.stats) {
+      const key = patch.address.toLowerCase()
+      const stats = await this.getOrCreateStats(key, patch.after.name, patch.persistent)
+      stats.name = patch.after.name
+      stats.decoded = patch.after.decoded
+      stats.correct = patch.after.correct
+      if (patch.seenAdd && !stats.seen.includes(patch.seenAdd)) stats.seen.push(patch.seenAdd)
+      if (patch.authoredAdd && !stats.authored.includes(patch.authoredAdd)) stats.authored.push(patch.authoredAdd)
+      stats.seen = [...new Set(stats.seen)].filter((id) => {
+        const charade = this.charades.get(id)
+        return charade !== undefined && !charade.isHouse
+      })
+      stats.authored = normalizeAuthored(stats.authored)
+      stats.authoredCount = Math.max(patch.after.authoredCount, stats.authored.length)
+      stats.lastSeenAt = patch.after.lastSeenAt
+      stats.pending = { ...patch.after.pending }
+      stats.daily = { ...patch.after.daily }
+      if (patch.stampedDayAdd && !stats.stampedDays.includes(patch.stampedDayAdd)) {
+        stats.stampedDays.push(patch.stampedDayAdd)
+      }
+      stats.stampedDays = [...new Set(stats.stampedDays)].slice(-MAX_STAMPED_DAYS)
+      stats.revision = patch.after.revision
+      stats.title = patch.after.title
+      if (patch.after.showSet) stats.showSet = { ...patch.after.showSet }
+      else delete stats.showSet
+      if (patch.persistent) this.storage.markPlayerDirty(key, PLAYER_STATS_KEY, stats)
+    }
+    if (mutation.decoder) {
+      const key = mutation.decoder.row.address.toLowerCase()
+      if (mutation.decoder.day === this.decoderDay) {
+        this.dailyDecoders.set(key, { ...mutation.decoder.row })
+        this.storage.markDirty(decoderAggregateKey(mutation.decoder.day), [...this.dailyDecoders.values()])
+      } else {
+        const stored = await this.storage.loadJSON<unknown>(decoderAggregateKey(mutation.decoder.day), [])
+        const rows = migrateDecoderAggregate(stored)
+        const index = rows.findIndex((row) => row.address.toLowerCase() === key)
+        if (index >= 0) rows[index] = { ...mutation.decoder.row }
+        else rows.push({ ...mutation.decoder.row })
+        this.storage.markDirty(decoderAggregateKey(mutation.decoder.day), rows.slice(0, MAX_DAILY_DECODERS))
+      }
+    }
+    if (mutation.boards) {
+      const value = {
+        decoders: mutation.boards.value.decoders.map((row) => ({ ...row })),
+        hardest: mutation.boards.value.hardest.map((row) => ({ ...row }))
+      }
+      if (mutation.boards.day === this.decoderDay) this.boards = value
+      this.storage.markDirty(boardsKey(mutation.boards.day), value)
+    }
   }
 
   getCharade(id: string) {
@@ -673,6 +1679,41 @@ export class GhostlightState {
     return [...this.charades.values()]
       .filter((charade) => !charade.isHouse)
       .sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id))
+  }
+
+  canUpsertCharade(charade: Charade) {
+    if (this.storageReadOnly) return false
+    if (charade.isHouse || this.charades.has(charade.id)) return true
+    const day = dayKey(charade.createdAt)
+    const currentIds = this.indexes.get(day) ?? []
+    return (
+      (currentIds.includes(charade.id) || currentIds.length < MAX_INDEX_IDS_PER_DAY) &&
+      [...this.charades.values()].filter((candidate) => !candidate.isHouse).length < MAX_LIVE_CHARADES
+    )
+  }
+
+  previewRankedGuess(charade: Charade, address: string, name: string, correct: boolean) {
+    const day = this.ensureDecoderDay()
+    const key = address.toLowerCase()
+    const decoders = new Map(this.dailyDecoders)
+    let decoder: DurableMutation['decoder']
+    if (decoders.has(key) || decoders.size < MAX_DAILY_DECODERS) {
+      const current = decoders.get(key) ?? { address, name, correct: 0, total: 0 }
+      const row = {
+        address,
+        name,
+        correct: Math.min(current.correct + (correct ? 1 : 0), WIRE_INT_MAX),
+        total: Math.min(current.total + 1, WIRE_INT_MAX)
+      }
+      decoders.set(key, row)
+      decoder = { day, row }
+    }
+    const charades = new Map(this.charades)
+    charades.set(charade.id, charade)
+    return {
+      decoder,
+      boards: { day, value: computeBoardsFor(day, charades.values(), decoders.values()) }
+    }
   }
 
   getMailForRecipient(
@@ -746,7 +1787,7 @@ export class GhostlightState {
   }
 
   upsertCharade(charade: Charade) {
-    if (this.storageReadOnly) return false
+    if (!this.canUpsertCharade(charade)) return false
     if (charade.isHouse) {
       this.charades.set(charade.id, charade)
       return true
@@ -755,9 +1796,10 @@ export class GhostlightState {
     const day = dayKey(charade.createdAt)
     const currentIds = this.indexes.get(day) ?? []
     const isNew = !this.charades.has(charade.id)
+    const hasReservedIndexSlot = currentIds.includes(charade.id)
     if (
       isNew &&
-      (currentIds.length >= MAX_INDEX_IDS_PER_DAY ||
+      ((!hasReservedIndexSlot && currentIds.length >= MAX_INDEX_IDS_PER_DAY) ||
         [...this.charades.values()].filter((candidate) => !candidate.isHouse).length >= MAX_LIVE_CHARADES)
     ) {
       return false
@@ -853,36 +1895,7 @@ export class GhostlightState {
 
   recomputeBoards(markForStorage = true) {
     const today = this.ensureDecoderDay()
-    const decoders = [...this.dailyDecoders.values()]
-      .sort((a, b) => b.correct - a.correct || b.total - a.total || a.name.localeCompare(b.name))
-      .slice(0, 10)
-    const hardest = [...this.charades.values()]
-      .filter(
-        (charade) =>
-          !charade.isHouse &&
-          !charade.author.isGuest &&
-          charade.recipient === undefined &&
-          dayKey(charade.createdAt) === today &&
-          charade.guesses.total >= 3
-      )
-      .sort((a, b) => {
-        const aDifference = BigInt(a.guesses.correct) * 5n - BigInt(a.guesses.total) * 3n
-        const bDifference = BigInt(b.guesses.correct) * 5n - BigInt(b.guesses.total) * 3n
-        const distanceComparison =
-          (aDifference < 0n ? -aDifference : aDifference) * BigInt(b.guesses.total) -
-          (bDifference < 0n ? -bDifference : bDifference) * BigInt(a.guesses.total)
-        if (distanceComparison !== 0n) return distanceComparison < 0n ? -1 : 1
-        return b.guesses.total - a.guesses.total || a.createdAt - b.createdAt || a.id.localeCompare(b.id)
-      })
-      .slice(0, 10)
-      .map((charade) => ({
-        charadeId: charade.id,
-        authorName: charade.author.name,
-        total: charade.guesses.total,
-        correct: charade.guesses.correct
-      }))
-
-    this.boards = { decoders, hardest }
+    this.boards = computeBoardsFor(today, this.charades.values(), this.dailyDecoders.values())
     if (markForStorage && !this.storageReadOnly) {
       this.storage.markDirty(boardsKey(today), this.boards)
       this.storage.markDirty(decoderAggregateKey(today), [...this.dailyDecoders.values()])

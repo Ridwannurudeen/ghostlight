@@ -4,6 +4,7 @@ import {
   MAX_CHECKPOINT_FLUSHES,
   MAX_DIRTY_ENTRIES,
   MAX_FLUSH_WRITES,
+  MAX_STORAGE_VALUE_BYTES,
   PLAYER_STATS_KEY,
   RECENT_VISITORS_KEY,
   StorageCapacityError,
@@ -53,9 +54,7 @@ describe('storage reads', () => {
     }
     const repository = createStorageRepository(swallowedFailures)
 
-    await expect(repository.loadJSON('existing-but-unreadable', null)).rejects.toBeInstanceOf(
-      StorageUnavailableError
-    )
+    await expect(repository.loadJSON('existing-but-unreadable', null)).rejects.toBeInstanceOf(StorageUnavailableError)
     await expect(repository.loadPlayerJSON('player', 'existing-but-unreadable', null)).rejects.toBeInstanceOf(
       StorageUnavailableError
     )
@@ -179,6 +178,43 @@ describe('storage reads', () => {
 
     await expect(repository.loadJSON('malformed', null)).rejects.toBeInstanceOf(StorageCorruptError)
     await expect(repository.loadJSON('oversized', null)).rejects.toBeInstanceOf(StorageCorruptError)
+  })
+})
+
+describe('immediate durable writes', () => {
+  it('persists a versioned value immediately and retries rejected host writes', async () => {
+    const storage = new FakeStorage()
+    const repository = createStorageRepository(storage)
+    storage.sceneWriteOutcomes.push(false, true)
+
+    await repository.saveJSONNow('gc:v1:journal', { v: 1, active: null })
+
+    expect(storage.writes.map((write) => write.key)).toEqual(['gc:v1:journal', 'gc:v1:journal'])
+    expect(storage.readJSON('gc:v1:journal')).toEqual({ v: 1, active: null })
+    expect(repository.getDirtyKeys()).toEqual([])
+  })
+
+  it('fails without staging an oversized immediate value', async () => {
+    const storage = new FakeStorage()
+    const repository = createStorageRepository(storage)
+
+    await expect(repository.saveJSONNow('too-large', 'x'.repeat(MAX_STORAGE_VALUE_BYTES))).rejects.toBeInstanceOf(
+      StorageCapacityError
+    )
+
+    expect(storage.writes).toEqual([])
+    expect(repository.getDirtyKeys()).toEqual([])
+  })
+
+  it('fails closed after three rejected immediate writes', async () => {
+    const storage = new FakeStorage()
+    const repository = createStorageRepository(storage)
+    storage.sceneWriteOutcomes.push(false, false, false)
+
+    await expect(repository.saveJSONNow('required-journal', { v: 1 })).rejects.toMatchObject({
+      keys: ['scene:required-journal']
+    })
+    expect(storage.writes).toHaveLength(3)
   })
 })
 

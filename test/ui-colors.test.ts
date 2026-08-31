@@ -16,6 +16,7 @@ const uiTest = vi.hoisted(() => ({
   },
   state: {} as Record<string, unknown>,
   performerBeat: null as 0 | 1 | 2 | null,
+  performanceComplete: true,
   mailRecipients: [] as Array<{ address: string; name: string; isGuest: boolean; title: ''; performedAt: number }>
 }))
 
@@ -31,7 +32,8 @@ const uiActions = vi.hoisted(() => ({
   requestNextCharade: vi.fn(),
   toggleSpotlight: vi.fn(),
   toggleTouringConsent: vi.fn(),
-  moreAuthorEmotes: vi.fn(),
+  backFromAuthor: vi.fn(),
+  undoAuthorEmote: vi.fn(),
   setInviteStatus: vi.fn()
 }))
 
@@ -64,7 +66,8 @@ vi.mock('../src/client/reveal-scene', () => ({
 }))
 
 vi.mock('../src/client/ghosts', () => ({
-  getPerformerBeatIndex: () => uiTest.performerBeat
+  getPerformerBeatIndex: () => uiTest.performerBeat,
+  hasPerformerCompletedSequence: () => uiTest.performanceComplete
 }))
 
 vi.mock('../src/client/flow', () => ({
@@ -86,12 +89,12 @@ vi.mock('../src/client/flow', () => ({
     replay: vi.fn(),
     beginAuthoring: uiActions.beginAuthoring,
     beginAnswerBack: vi.fn(),
-    backFromAuthor: vi.fn(),
+    backFromAuthor: uiActions.backFromAuthor,
     continueAuthoring: vi.fn(),
     reviseAuthorEmotes: vi.fn(),
     toggleTouringConsent: uiActions.toggleTouringConsent,
     selectAuthorEmote: vi.fn(),
-    moreAuthorEmotes: uiActions.moreAuthorEmotes,
+    undoAuthorEmote: uiActions.undoAuthorEmote,
     shuffleAuthorPhrase: vi.fn(),
     previewAuthor: vi.fn(),
     postAuthor: vi.fn(),
@@ -111,9 +114,13 @@ vi.mock('../src/client/flow', () => ({
 }))
 
 import {
+  AUTHOR_CONFIRM_VERTICAL_BUDGET,
   COLORS,
   DECODE_VERTICAL_BUDGET,
+  DIAGNOSTICS_VERTICAL_BUDGET,
+  MAIL_VERTICAL_BUDGET,
   REVEAL_VERTICAL_BUDGET,
+  SETTINGS_VERTICAL_BUDGET,
   formatPerformedAgo,
   localizedAnswers,
   performerPortraitBackground,
@@ -122,7 +129,8 @@ import {
   uiComponent
 } from '../src/client/ui'
 import { DEFAULT_CLIENT_SETTINGS, getClientSettings, updateClientSettings } from '../src/client/settings'
-import { COPY, LANGUAGES, t, themeLabel } from '../src/shared/i18n'
+import { EMOTE_VOCABULARY } from '../src/shared/deck'
+import { COPY, LANGUAGES, emoteLabel, t, themeLabel } from '../src/shared/i18n'
 import { SEASON_ZERO_WEEKS, type SeasonWeek } from '../src/shared/seasons'
 import { showPolicyForTimestamp } from '../src/shared/show-policy'
 
@@ -130,6 +138,7 @@ const TEST_NOW = Date.UTC(2026, 7, 23, 12)
 const TEST_SHOW_KEY = showPolicyForTimestamp(TEST_NOW)!.showKey
 
 type ElementNode = {
+  key?: string | number | null
   type: string | ((props: Record<string, unknown>) => unknown)
   props: Record<string, unknown>
 }
@@ -173,6 +182,28 @@ function collectButtons(node: unknown, buttons: ButtonProps[] = []): ButtonProps
   return buttons
 }
 
+function collectButtonKeys(
+  node: unknown,
+  buttons: Array<{ value: string; key: ElementNode['key'] }> = []
+): Array<{ value: string; key: ElementNode['key'] }> {
+  if (Array.isArray(node)) {
+    node.forEach((child) => collectButtonKeys(child, buttons))
+    return buttons
+  }
+  if (node === null || typeof node !== 'object' || !('type' in node) || !('props' in node)) return buttons
+
+  const element = node as ElementNode
+  if (typeof element.props.value === 'string' && typeof element.props.onMouseDown === 'function') {
+    buttons.push({ value: element.props.value, key: element.key })
+  }
+  if (typeof element.type === 'function') {
+    collectButtonKeys(element.type(element.props), buttons)
+    return buttons
+  }
+  collectButtonKeys(element.props.children, buttons)
+  return buttons
+}
+
 function findButton(node: unknown, value: string): Record<string, unknown> | null {
   if (Array.isArray(node)) {
     for (const child of node) {
@@ -209,6 +240,22 @@ function findStaticText(
   return findStaticText(element.props.children, value, matches)
 }
 
+function staticTextPath(node: unknown, value: string): Record<string, unknown>[] | null {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const path = staticTextPath(child, value)
+      if (path) return path
+    }
+    return null
+  }
+  if (node === null || typeof node !== 'object' || !('type' in node) || !('props' in node)) return null
+  const element = node as ElementNode
+  if (element.props.value === value && typeof element.props.onMouseDown !== 'function') return [element.props]
+  const child = typeof element.type === 'function' ? element.type(element.props) : element.props.children
+  const path = staticTextPath(child, value)
+  return path ? [element.props, ...path] : null
+}
+
 function collectStaticText(node: unknown, values: string[] = []): string[] {
   if (Array.isArray(node)) {
     node.forEach((child) => collectStaticText(child, values))
@@ -232,6 +279,7 @@ function stateFor(screen: 'decode' | 'reveal' | 'posted') {
   const charade = {
     id: 'charade-1',
     authorName: 'Author',
+    emotes: ['wave', 'clap', 'dab'],
     answers: ['One', 'Two', 'Three'],
     isHouse: false,
     setRound: 2,
@@ -300,11 +348,11 @@ function authorState(selectedEmotes: string[]) {
     theme: 'food',
     author: {
       phrase: { id: 'phrase', text: 'Walking a dog' },
-      offeredEmotes: ['wave', 'clap', 'dab', 'disco', 'shrug'],
-      emotePage: 0,
+      offeredEmotes: selectedEmotes.length === 0 ? ['wave', 'clap'] : ['dab', 'disco'],
       selectedEmotes,
       shufflesRemaining: 2,
       touringConsent: false,
+      previewed: false,
       phase: selectedEmotes.length === 3 ? 'confirm' : 'emotes'
     }
   }
@@ -345,6 +393,7 @@ beforeEach(() => {
   }
   uiTest.mailRecipients = []
   uiTest.performerBeat = null
+  uiTest.performanceComplete = true
   uiTest.state = stateFor('decode')
   updateClientSettings(DEFAULT_CLIENT_SETTINGS)
 })
@@ -370,8 +419,7 @@ describe('UI colors', () => {
       screen: 'author',
       author: {
         phrase,
-        offeredEmotes: ['wave', 'clap', 'dab', 'disco', 'shrug'],
-        emotePage: 0,
+        offeredEmotes: ['wave', 'clap'],
         selectedEmotes: [],
         shufflesRemaining: 2,
         phase: 'emotes'
@@ -387,12 +435,84 @@ describe('mobile control budget', () => {
   it('renders beat structure as non-interactive chips and highlights the performing beat', () => {
     uiTest.state = authorState(['wave'])
     const authorUi = uiComponent()
-    expect(collectButtons(authorUi)).toHaveLength(5)
-    expect(findStaticText(authorUi, 'SETUP · WAVE')).not.toBeNull()
+    expect(collectButtons(authorUi)).toHaveLength(4)
+    expect(findStaticText(authorUi, '1 START')).not.toBeNull()
 
     uiTest.state = stateFor('decode')
     uiTest.performerBeat = 1
-    expect(findStaticText(uiComponent(), 'ACTION', (props) => props.color === COLORS.ink)).not.toBeNull()
+    expect(findStaticText(uiComponent(), '2 ACTION', (props) => props.color === COLORS.ink)).not.toBeNull()
+  })
+
+  it('keeps the longest localized emote out of fixed-height beat chips at large text', () => {
+    for (const language of LANGUAGES) {
+      updateClientSettings({ language, largeText: true })
+      const longestEmote = EMOTE_VOCABULARY.reduce((longest, emote) =>
+        emoteLabel(emote, language).length > emoteLabel(longest, language).length ? emote : longest
+      )
+      uiTest.state = {
+        ...stateFor('decode'),
+        charade: {
+          ...(stateFor('decode').charade as Record<string, unknown>),
+          emotes: [longestEmote, longestEmote, longestEmote]
+        }
+      }
+      const component = uiComponent()
+      const text = collectStaticText(component)
+
+      for (const key of ['beat.setup', 'beat.action', 'beat.punchline'] as const) {
+        const label = t(key, language)
+        const path = staticTextPath(component, label)
+        expect(path, `${language}:${key}`).not.toBeNull()
+        expect(path?.at(-1), `${language}:${key}`).toMatchObject({ fontSize: uiFontSize(17) })
+        expect(
+          path?.some((props) => {
+            const transform = props.uiTransform as Record<string, unknown> | undefined
+            return transform?.width === '32%' && transform.height === 40
+          }),
+          `${language}:${key}`
+        ).toBe(true)
+      }
+      expect(
+        text.some((value) => value.includes(emoteLabel(longestEmote, language))),
+        language
+      ).toBe(false)
+    }
+  })
+
+  it('keeps answers locked until the complete three-beat clue has played while replay remains available', () => {
+    uiTest.state = { ...stateFor('decode'), pending: [] }
+    uiTest.performanceComplete = false
+
+    let buttons = collectButtons(uiComponent())
+    expect(buttons.find(({ value }) => value === 'REPLAY')).toEqual({ value: 'REPLAY', disabled: false })
+    for (const answer of ['ONE', 'TWO', 'THREE']) {
+      expect(buttons.find(({ value }) => value === answer)).toEqual({ value: answer, disabled: true })
+    }
+    expect(hintText(uiComponent())).toBe(COPY.en['hint.decode'])
+
+    uiTest.performanceComplete = true
+    buttons = collectButtons(uiComponent())
+    for (const answer of ['ONE', 'TWO', 'THREE']) {
+      expect(buttons.find(({ value }) => value === answer)).toEqual({ value: answer, disabled: false })
+    }
+  })
+
+  it('uses stable original-answer keys when retry removes the middle option', () => {
+    uiTest.state = {
+      ...stateFor('decode'),
+      pending: [],
+      retry: {
+        charadeId: 'charade-1',
+        removedAnswerIndex: 1,
+        replayBeatIndex: 2,
+        spotlight: false
+      }
+    }
+
+    expect(collectButtonKeys(uiComponent()).filter(({ value }) => value === 'ONE' || value === 'THREE')).toEqual([
+      { value: 'ONE', key: 'charade-1:0' },
+      { value: 'THREE', key: 'charade-1:2' }
+    ])
   })
 
   it('fits decode labels and five 96px controls inside the fixed panel', () => {
@@ -401,6 +521,16 @@ describe('mobile control budget', () => {
       .reduce((total, [, value]) => total + value, 0)
 
     expect(usedHeight).toBeLessThanOrEqual(DECODE_VERTICAL_BUDGET.panelHeight)
+  })
+
+  it('uses one footer slot for a decode error instead of overflowing below the set status', () => {
+    uiTest.state = { ...stateFor('decode'), pending: [], errorCode: 'request_timeout' }
+    const component = uiComponent()
+    const text = collectStaticText(component)
+
+    expect(text.some((value) => value.startsWith('STATUS ·'))).toBe(true)
+    expect(text).not.toContain(COPY.en['hint.decode'])
+    expect(hintText(component)).toBeNull()
   })
 
   it('shows returning authors how many players understood their ghost in every language', () => {
@@ -510,9 +640,31 @@ describe('mobile control budget', () => {
     expect(uiActions.beginGhostMail).toHaveBeenCalledTimes(1)
   })
 
+  it('fits four Ghost Mail recipients and Back inside the panel with 96px targets', () => {
+    uiTest.mailRecipients = Array.from({ length: 4 }, (_, index) => ({
+      address: `0x${String(index + 1).repeat(40)}`,
+      name: `PLAYER ${index + 1}`,
+      isGuest: false,
+      title: '' as const,
+      performedAt: TEST_NOW
+    }))
+    uiTest.state = { ...stateFor('decode'), screen: 'mail', mailRecipient: null }
+    const component = uiComponent()
+    const buttons = collectButtons(component)
+    const usedHeight = Object.entries(MAIL_VERTICAL_BUDGET)
+      .filter(([key]) => key !== 'panelHeight')
+      .reduce((total, [, value]) => total + value, 0)
+
+    expect(usedHeight).toBeLessThanOrEqual(MAIL_VERTICAL_BUDGET.panelHeight)
+    expect(buttons).toHaveLength(5)
+    for (const { value } of buttons) {
+      expect(findButton(component, value)?.uiTransform).toMatchObject({ minHeight: 96, height: 96, margin: '0' })
+    }
+  })
+
   it.each([
     ['phrase', 3],
-    ['emotes', 5],
+    ['emotes', 3],
     ['confirm', 5]
   ] as const)('keeps author %s phase within five buttons', (phase, expected) => {
     uiTest.state = {
@@ -520,8 +672,7 @@ describe('mobile control budget', () => {
       screen: 'author',
       author: {
         phrase: { id: 'phrase', text: 'Walking a dog' },
-        offeredEmotes: ['wave', 'clap', 'dab', 'disco', 'shrug'],
-        emotePage: 0,
+        offeredEmotes: ['wave', 'clap'],
         selectedEmotes: phase === 'confirm' ? ['wave', 'clap', 'dab'] : [],
         shufflesRemaining: 2,
         touringConsent: false,
@@ -532,14 +683,14 @@ describe('mobile control budget', () => {
     const buttons = collectButtons(component)
     expect(buttons).toHaveLength(expected)
     if (phase === 'emotes') {
-      expect(buttons.map(({ value }) => value)).toEqual(['WAVE', 'CLAP', 'DAB', 'DISCO', 'MORE'])
+      expect(buttons.map(({ value }) => value)).toEqual(['WAVE', 'CLAP', 'BACK'])
       for (const { value } of buttons) {
         expect(findButton(component, value)?.uiTransform).toMatchObject({ minHeight: 96, height: 96 })
         expect(findButton(component, value)?.uiTransform).not.toHaveProperty('position.bottom')
         expect(findButton(component, value)?.uiTransform).not.toHaveProperty('position.right')
       }
-      ;(findButton(component, 'MORE')?.onMouseDown as (() => void) | undefined)?.()
-      expect(uiActions.moreAuthorEmotes).toHaveBeenCalledTimes(1)
+      ;(findButton(component, 'BACK')?.onMouseDown as (() => void) | undefined)?.()
+      expect(uiActions.backFromAuthor).toHaveBeenCalledTimes(1)
     } else if (phase === 'confirm') {
       expect(buttons.map(({ value }) => value)).toEqual([
         'PREVIEW',
@@ -549,11 +700,19 @@ describe('mobile control budget', () => {
         'BACK'
       ])
       for (const { value } of buttons) {
-        expect(findButton(component, value)?.uiTransform).toMatchObject({ minHeight: 72, height: 72 })
+        expect(findButton(component, value)?.uiTransform).toMatchObject({ minHeight: 96, height: 96 })
       }
       ;(findButton(component, 'ALLOW TOUR TO OTHER WORLDS · OFF')?.onMouseDown as (() => void) | undefined)?.()
       expect(uiActions.toggleTouringConsent).toHaveBeenCalledTimes(1)
     }
+  })
+
+  it('fits the three-row author confirmation layout inside the fixed panel', () => {
+    const usedHeight = Object.entries(AUTHOR_CONFIRM_VERTICAL_BUDGET)
+      .filter(([key]) => key !== 'panelHeight')
+      .reduce((total, [, value]) => total + value, 0)
+
+    expect(usedHeight).toBeLessThanOrEqual(AUTHOR_CONFIRM_VERTICAL_BUDGET.panelHeight)
   })
 
   it('shows touring consent only for ordinary confirmation, never Ghost Mail or Answer Back', () => {
@@ -857,7 +1016,7 @@ describe('mobile control budget', () => {
 
     uiTest.state = { ...authorState([]), showKey: '' }
     component = uiComponent()
-    for (const value of ['WAVE', 'CLAP', 'DAB', 'DISCO', 'MORE']) {
+    for (const value of ['WAVE', 'CLAP']) {
       expect(findButton(component, value), `author-emotes:${value}`).toMatchObject({ disabled: true })
     }
 
@@ -978,13 +1137,78 @@ describe('mobile control budget', () => {
     expect(uiActions.showSettings).toHaveBeenCalledTimes(1)
     expect(uiActions.showFoyer).toHaveBeenCalledTimes(1)
   })
+
+  it('fits all five localized facts in fixed large-text guide cards', () => {
+    uiTest.state = { ...stateFor('decode'), screen: 'howToPlay', theme: 'food' }
+    const keys = [
+      'howToPlay.walk',
+      'howToPlay.watch',
+      'howToPlay.guess',
+      'howToPlay.leave',
+      'howToPlay.realPlayers'
+    ] as const
+    const usedHeight = 48 + 92 + 12 + 5 * 74 + 108 + 30
+    expect(usedHeight).toBeLessThanOrEqual(672)
+
+    for (const language of LANGUAGES) {
+      updateClientSettings({ language, largeText: true })
+      const component = uiComponent()
+      for (const key of keys) {
+        const value = COPY[language][key]
+        expect(findStaticText(component, value), `${language}:${key}`).toMatchObject({ fontSize: 22 })
+        const path = staticTextPath(component, value)
+        expect(
+          path?.some((props) => {
+            const transform = props.uiTransform as Record<string, unknown> | undefined
+            return transform?.minHeight === 70 && transform.height === 70
+          }),
+          `${language}:${key}:card`
+        ).toBe(true)
+      }
+    }
+  })
+
+  it('keeps the secret phrase visible, offers undo within budget, and requires preview before post', () => {
+    uiTest.state = {
+      ...authorState(['wave']),
+      author: {
+        ...(authorState(['wave']).author as Record<string, unknown>),
+        offeredEmotes: ['clap', 'dab'],
+        previewed: false
+      }
+    }
+
+    let component = uiComponent()
+    expect(collectStaticText(component).some((value) => value.includes('Walking a dog'))).toBe(true)
+    expect(collectButtons(component)).toHaveLength(4)
+    ;(findButton(component, 'UNDO LAST BEAT')?.onMouseDown as (() => void) | undefined)?.()
+    expect(uiActions.undoAuthorEmote).toHaveBeenCalledTimes(1)
+
+    uiTest.state = authorState(['wave', 'clap', 'dab'])
+    component = uiComponent()
+    expect(findButton(component, 'POST')).toMatchObject({ disabled: true })
+
+    uiTest.state = {
+      ...uiTest.state,
+      author: { ...(uiTest.state.author as Record<string, unknown>), previewed: true }
+    }
+    expect(findButton(uiComponent(), 'POST')).toMatchObject({ disabled: false })
+  })
 })
 
 describe('settings and accessibility', () => {
   it('changes sound, language, and both accessibility modes from a five-control panel', () => {
     uiTest.state = { ...stateFor('decode'), screen: 'settings', theme: 'food' }
+    const component = uiComponent()
+    const usedHeight = Object.entries(SETTINGS_VERTICAL_BUDGET)
+      .filter(([key]) => key !== 'panelHeight')
+      .reduce((total, [, value]) => total + value, 0)
 
-    expect(collectButtons(uiComponent())).toHaveLength(5)
+    expect(usedHeight).toBeLessThanOrEqual(SETTINGS_VERTICAL_BUDGET.panelHeight)
+    expect(collectButtons(component)).toHaveLength(5)
+    for (const { value } of collectButtons(component)) {
+      expect(findButton(component, value)?.uiTransform).toMatchObject({ minHeight: 96, height: 96, margin: '0' })
+    }
     ;(findButton(uiComponent(), 'SOUND: FULL')?.onMouseDown as (() => void) | undefined)?.()
     ;(findButton(uiComponent(), 'ACCESSIBILITY: OFF')?.onMouseDown as (() => void) | undefined)?.()
     ;(findButton(uiComponent(), 'ACCESSIBILITY: REDUCED')?.onMouseDown as (() => void) | undefined)?.()
@@ -1009,11 +1233,20 @@ describe('settings and accessibility', () => {
     ;(findButton(uiComponent(), 'DIAGNOSTICS: OFF')?.onMouseDown as (() => void) | undefined)?.()
 
     expect(() => uiComponent()).not.toThrow()
-    expect(collectButtons(uiComponent()).map(({ value }) => value)).toEqual([
-      'COPY DIAGNOSTICS',
-      'DISABLE DIAGNOSTICS',
-      'BACK'
-    ])
+    const component = uiComponent()
+    const buttons = collectButtons(component)
+    const usedHeight = Object.entries(DIAGNOSTICS_VERTICAL_BUDGET)
+      .filter(([key]) => key !== 'panelHeight')
+      .reduce((total, [, value]) => total + value, 0)
+    expect(usedHeight).toBeLessThanOrEqual(DIAGNOSTICS_VERTICAL_BUDGET.panelHeight)
+    expect(buttons.map(({ value }) => value)).toEqual(['COPY DIAGNOSTICS', 'DISABLE DIAGNOSTICS', 'BACK'])
+    for (const { value } of buttons) {
+      expect(findButton(component, value)?.uiTransform).toMatchObject({ minHeight: 96, height: 96, margin: '0' })
+    }
+    expect(staticTextPath(component, 'GHOSTLIGHT_DIAGNOSTICS v1')?.at(-1)?.uiTransform).toMatchObject({
+      minHeight: 27,
+      height: 27
+    })
     ;(findButton(uiComponent(), 'COPY DIAGNOSTICS')?.onMouseDown as (() => void) | undefined)?.()
     await Promise.resolve()
     expect(restrictedActions.copyToClipboard).toHaveBeenCalledWith({
@@ -1087,6 +1320,35 @@ describe('cold-open overlay', () => {
     const buttons = collectButtons(uiComponent())
 
     expect(buttons).toEqual([{ value: 'SKIP INTRO', disabled: false }])
+  })
+
+  it('fits every localized opening instruction and its 96px action with large text', () => {
+    const usedHeight = 48 + 156 + 108
+    expect(usedHeight).toBeLessThanOrEqual(320)
+    uiTest.state = stateFor('decode')
+
+    for (const language of LANGUAGES) {
+      updateClientSettings({ language, largeText: true })
+      uiTest.opening = { active: true, instruction: COPY[language]['opening.instruction'] }
+      const component = uiComponent()
+      const instruction = findStaticText(component, COPY[language]['opening.instruction'])
+      expect(instruction, language).toMatchObject({
+        fontSize: 34,
+        uiTransform: { width: '100%', height: 156 }
+      })
+      const path = staticTextPath(component, COPY[language]['opening.instruction'])
+      expect(
+        path?.some((props) => {
+          const transform = props.uiTransform as Record<string, unknown> | undefined
+          return transform?.height === 320 && transform.padding === 24
+        }),
+        `${language}:panel`
+      ).toBe(true)
+      expect(findButton(component, COPY[language]['opening.skip'])?.uiTransform).toMatchObject({
+        minHeight: 96,
+        height: 96
+      })
+    }
   })
 })
 

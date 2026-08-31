@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { THEMES, TITLES } from '../src/shared/config'
-import { CATEGORIES, DECK, EMOTE_VOCABULARY, HOUSE_CHARADES } from '../src/shared/deck'
+import {
+  CATEGORIES,
+  DECK,
+  EMOTE_VOCABULARY,
+  HOUSE_CHARADES,
+  PLAYABLE_DECK,
+  canonicalPerformance
+} from '../src/shared/deck'
 import {
   COPY,
   LANGUAGES,
@@ -108,7 +115,7 @@ const ERROR_CODES = [
 describe('localization copy', () => {
   it('has the same complete, non-empty player-copy key set in every language', () => {
     const expectedKeys = Object.keys(COPY.en).sort()
-    expect(expectedKeys).toHaveLength(206)
+    expect(expectedKeys).toHaveLength(213)
 
     for (const language of LANGUAGES) {
       expect(Object.keys(COPY[language]).sort(), language).toEqual(expectedKeys)
@@ -134,44 +141,38 @@ describe('localization copy', () => {
       en: {
         setup: COPY.en['beat.setup'],
         action: COPY.en['beat.action'],
-        punchline: COPY.en['beat.punchline'],
-        more: COPY.en['author.more'],
+        reaction: COPY.en['beat.punchline'],
         guidance: COPY.en['author.chooseThree']
       },
       es: {
         setup: COPY.es['beat.setup'],
         action: COPY.es['beat.action'],
-        punchline: COPY.es['beat.punchline'],
-        more: COPY.es['author.more'],
+        reaction: COPY.es['beat.punchline'],
         guidance: COPY.es['author.chooseThree']
       },
       pt: {
         setup: COPY.pt['beat.setup'],
         action: COPY.pt['beat.action'],
-        punchline: COPY.pt['beat.punchline'],
-        more: COPY.pt['author.more'],
+        reaction: COPY.pt['beat.punchline'],
         guidance: COPY.pt['author.chooseThree']
       }
     }).toEqual({
       en: {
-        setup: 'SETUP',
-        action: 'ACTION',
-        punchline: 'PUNCHLINE',
-        more: 'MORE',
+        setup: '1 START',
+        action: '2 ACTION',
+        reaction: '3 REACTION',
         guidance: 'Build the performance one beat at a time.'
       },
       es: {
-        setup: 'PREPARACIÓN',
-        action: 'ACCIÓN',
-        punchline: 'REMATE',
-        more: 'MÁS',
+        setup: '1 INICIO',
+        action: '2 ACCIÓN',
+        reaction: '3 REACCIÓN',
         guidance: 'Crea la actuación, un paso a la vez.'
       },
       pt: {
-        setup: 'PREPARAÇÃO',
-        action: 'AÇÃO',
-        punchline: 'DESFECHO',
-        more: 'MAIS',
+        setup: '1 INÍCIO',
+        action: '2 AÇÃO',
+        reaction: '3 REAÇÃO',
         guidance: 'Monte a apresentação, um passo de cada vez.'
       }
     })
@@ -181,6 +182,24 @@ describe('localization copy', () => {
     for (const key of GUIDANCE_KEYS) {
       expect(COPY.es[key], `es:${key}`).not.toBe(COPY.en[key])
       expect(COPY.pt[key], `pt:${key}`).not.toBe(COPY.en[key])
+    }
+  })
+
+  it('keeps localized onboarding copy within the fixed large-text line budgets', () => {
+    const guideFacts = [
+      'howToPlay.walk',
+      'howToPlay.watch',
+      'howToPlay.guess',
+      'howToPlay.leave',
+      'howToPlay.realPlayers'
+    ] as const
+
+    for (const language of LANGUAGES) {
+      for (const key of guideFacts) {
+        expect(COPY[language][key].length, `${language}:${key}`).toBeLessThanOrEqual(68)
+      }
+      expect(COPY[language]['opening.instruction'].length, `${language}:opening.instruction`).toBeLessThanOrEqual(100)
+      expect(COPY[language]['opening.night'].length, `${language}:opening.night`).toBeLessThanOrEqual(72)
     }
   })
 
@@ -419,11 +438,14 @@ describe('localized phrase deck', () => {
     }
   })
 
-  it('keeps every localized decoy in the canonical phrase category and theme', () => {
+  it('keeps every localized playable decoy in the canonical phrase category and theme', () => {
     for (const language of LANGUAGES) {
       const localized = localizeDeck(language)
-      for (const phrase of localized) {
-        const decoys = pickDecoys(phrase.id, phrase.suggested, localized, `localized:${language}:${phrase.id}`)
+      const playableIds = new Set(PLAYABLE_DECK.map((phrase) => phrase.id))
+      for (const phrase of localized.filter((candidate) => playableIds.has(candidate.id))) {
+        const performance = canonicalPerformance(phrase)
+        expect(performance, `${language}:${phrase.id}:performance`).not.toBeNull()
+        const decoys = pickDecoys(phrase.id, performance!, localized, `localized:${language}:${phrase.id}`)
         expect(decoys, `${language}:${phrase.id}`).toHaveLength(2)
         expect(
           decoys.every(
@@ -436,11 +458,14 @@ describe('localized phrase deck', () => {
   })
 
   it('round-trips an authored phrase id and same-theme answer ids across every language pair', () => {
-    for (const canonical of DECK) {
-      const decoyIds = pickDecoys(canonical.id, canonical.suggested, DECK, `round-trip:${canonical.id}`).map(
+    for (const canonical of PLAYABLE_DECK) {
+      const performance = canonicalPerformance(canonical)
+      expect(performance, `${canonical.id}:performance`).not.toBeNull()
+      const decoyIds = pickDecoys(canonical.id, performance!, PLAYABLE_DECK, `round-trip:${canonical.id}`).map(
         (phrase) => phrase.id
       )
       const answerIds = shuffleSeeded([canonical.id, ...decoyIds], `answers:${canonical.id}`)
+      expect(answerIds, `${canonical.id}:answers`).toHaveLength(3)
 
       for (const authorLanguage of LANGUAGES) {
         const authored = phraseById(canonical.id, authorLanguage)

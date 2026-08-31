@@ -31,10 +31,7 @@ export type StoragePort = {
   set(key: string, value: unknown): Promise<boolean>
   player: {
     get(address: string, key: string, options?: { fresh?: boolean }): Promise<unknown | null>
-    getValues(
-      address: string,
-      options?: { prefix?: string; limit?: number; offset?: number }
-    ): Promise<GetValuesResult>
+    getValues(address: string, options?: { prefix?: string; limit?: number; offset?: number }): Promise<GetValuesResult>
     set(address: string, key: string, value: unknown): Promise<boolean>
   }
 }
@@ -91,7 +88,7 @@ const MAX_CONCURRENT_HOST_CALLS = 32
 const MAX_WAITING_HOST_CALLS = 128
 const MAX_READ_ATTEMPTS = 3
 const MAX_CHECKPOINT_ATTEMPTS = 3
-const MAX_STORAGE_VALUE_BYTES = 128 * 1024
+export const MAX_STORAGE_VALUE_BYTES = 128 * 1024
 const MAX_DIRTY_BYTES = 512 * 1024
 const STORAGE_HEALTH_KEY = 'gc:v1:health'
 const STORAGE_HEALTH_VALUE = JSON.stringify({ v: 1 })
@@ -185,8 +182,7 @@ export function createStorageRepository(storage: StoragePort = Storage) {
     const saved = await hostCall(() => storage.player.set(address, STORAGE_HEALTH_KEY, STORAGE_HEALTH_VALUE))
     if (!saved) return false
     return (
-      (await hostCall(() => storage.player.get(address, STORAGE_HEALTH_KEY, { fresh: true }))) ===
-      STORAGE_HEALTH_VALUE
+      (await hostCall(() => storage.player.get(address, STORAGE_HEALTH_KEY, { fresh: true }))) === STORAGE_HEALTH_VALUE
     )
   }
 
@@ -207,9 +203,7 @@ export function createStorageRepository(storage: StoragePort = Storage) {
     try {
       const raw = await confirm()
       if (raw !== null) return { status: 'found' as const, raw }
-      return (await confirmReadsAvailable())
-        ? { status: 'missing' as const }
-        : { status: 'unavailable' as const }
+      return (await confirmReadsAvailable()) ? { status: 'missing' as const } : { status: 'unavailable' as const }
     } catch {
       return { status: 'unavailable' as const }
     }
@@ -304,6 +298,18 @@ export function createStorageRepository(storage: StoragePort = Storage) {
     ])
   }
 
+  async function saveJSONNow(key: string, value: unknown) {
+    const { serialized } = serialize(value)
+    for (let attempt = 0; attempt < MAX_CHECKPOINT_ATTEMPTS; attempt += 1) {
+      try {
+        if (await hostCall(() => storage.set(key, serialized))) return
+      } catch {
+        // Retry the bounded immediate write below.
+      }
+    }
+    throw new StorageUnavailableError([`scene:${key}`])
+  }
+
   async function write(entry: DirtyWrite) {
     try {
       if (entry.scope === 'scene') return await hostCall(() => storage.set(entry.key, entry.serialized))
@@ -385,6 +391,7 @@ export function createStorageRepository(storage: StoragePort = Storage) {
   return {
     loadJSON,
     loadPlayerJSON,
+    saveJSONNow,
     markDirty,
     markDirtyBatch,
     markPlayerDirty,
@@ -401,6 +408,7 @@ const repository = createStorageRepository()
 
 export const loadJSON = repository.loadJSON
 export const loadPlayerJSON = repository.loadPlayerJSON
+export const saveJSONNow = repository.saveJSONNow
 export const markDirty = repository.markDirty
 export const markDirtyBatch = repository.markDirtyBatch
 export const markPlayerDirty = repository.markPlayerDirty

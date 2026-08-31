@@ -76,6 +76,9 @@ export function createSceneRevealController(audio: RevealAudioPort, clock?: Reve
   let titleProgressElapsed = TITLE_PROGRESS_SECONDS
   let reducedMotion = false
   let retrySecondsRemaining = 0
+  let resolvedCharadeId = ''
+  let resolvedAnswerIndex = -1
+  let restoredPresentation = false
 
   function ensureFloatingEntity() {
     if (floatingEntity !== null) return floatingEntity
@@ -192,9 +195,48 @@ export function createSceneRevealController(audio: RevealAudioPort, clock?: Reve
 
   const controller = createRevealController(effects, clock, { reducedMotion: () => reducedMotion })
 
+  function presentationFor(reveal: RevealResult, charade: DecodeCharade) {
+    const language = getClientSettings().language
+    const phrase = phraseText(reveal.phraseId, language) ?? reveal.phrase
+    const authorName = charade.isHouse ? t('decode.houseGhost', language) : charade.authorName
+    const scoreDelta = Number.isSafeInteger(reveal.scoreDelta) ? reveal.scoreDelta : undefined
+    const spotlightDelta =
+      scoreDelta === undefined
+        ? ''
+        : scoreDelta > 0
+          ? `+${scoreDelta}`
+          : scoreDelta < 0
+            ? `−${Math.abs(scoreDelta)}`
+            : '0'
+    return {
+      answers:
+        charade.answerIds?.map((id, index) => phraseText(id, language) ?? charade.answers[index]) ?? charade.answers,
+      phrase,
+      authorName,
+      hitText:
+        reveal.attempt === 2
+          ? t('reveal.recovered', language)
+          : reveal.spotlight === true && spotlightDelta
+            ? t('spotlight.won', language, { delta: spotlightDelta })
+            : t('reveal.hit', language),
+      missText:
+        reveal.attempt !== 2 && reveal.spotlight === true && spotlightDelta
+          ? t('spotlight.lost', language, { delta: spotlightDelta })
+          : t('reveal.miss', language, { author: authorName.toUpperCase(), phrase: phrase.toUpperCase() }),
+      gotYouText:
+        reveal.spotlight === true && spotlightDelta
+          ? t('reveal.gotYouSpotlight', language)
+          : t('reveal.gotYou', language),
+      unlockedTitle: reveal.titleUnlocked ? titleLabel(reveal.title, language) : ''
+    }
+  }
+
   return {
     begin(charade: DecodeCharade, answerIndex: number, runOptions: RevealRunOptions = {}) {
       retrySecondsRemaining = 0
+      resolvedCharadeId = ''
+      resolvedAnswerIndex = -1
+      restoredPresentation = false
       reducedMotion = getClientSettings().reducedMotion
       const language = getClientSettings().language
       titleProgressTarget = 0
@@ -209,58 +251,70 @@ export function createSceneRevealController(audio: RevealAudioPort, clock?: Reve
       controller.begin(runOptions)
     },
     resolve(reveal: RevealResult, charade: DecodeCharade) {
-      const language = getClientSettings().language
-      const phrase = phraseText(reveal.phraseId, language) ?? reveal.phrase
-      const authorName = charade.isHouse ? t('decode.houseGhost', language) : charade.authorName
-      const scoreDelta = Number.isSafeInteger(reveal.scoreDelta) ? reveal.scoreDelta : undefined
-      const spotlightDelta =
-        scoreDelta === undefined
-          ? ''
-          : scoreDelta > 0
-            ? `+${scoreDelta}`
-            : scoreDelta < 0
-              ? `−${Math.abs(scoreDelta)}`
-              : '0'
-      const spotlightHitText =
-        reveal.attempt === 2
-          ? t('reveal.recovered', language)
-          : reveal.spotlight === true && spotlightDelta
-            ? t('spotlight.won', language, { delta: spotlightDelta })
-            : t('reveal.hit', language)
-      const spotlightMissText =
-        reveal.attempt !== 2 && reveal.spotlight === true && spotlightDelta
-          ? t('spotlight.lost', language, { delta: spotlightDelta })
-          : t('reveal.miss', language, { author: authorName.toUpperCase(), phrase: phrase.toUpperCase() })
-      const gotYouText =
-        reveal.spotlight === true && spotlightDelta
-          ? t('reveal.gotYouSpotlight', language)
-          : t('reveal.gotYou', language)
+      const presentation = presentationFor(reveal, charade)
+      resolvedCharadeId = charade.id
+      resolvedAnswerIndex = revealView.selectedAnswerIndex
+      restoredPresentation = false
       revealView = {
         ...revealView,
-        answers:
-          charade.answerIds?.map((id, index) => phraseText(id, language) ?? charade.answers[index]) ?? charade.answers,
-        phrase,
+        answers: presentation.answers,
+        phrase: presentation.phrase,
         answerRevealed: false,
         correct: reveal.correct,
         stampAwarded: reveal.stampAwarded
       }
       return controller.resolve({
         correct: reveal.correct,
-        authorName,
-        phrase,
+        authorName: presentation.authorName,
+        phrase: presentation.phrase,
         stats: reveal.stats,
         titleProgress: reveal.nextUnlock.progress,
-        unlockedTitle: reveal.titleUnlocked ? titleLabel(reveal.title, language) : '',
+        unlockedTitle: presentation.unlockedTitle,
         stampAwarded: reveal.stampAwarded,
         attempt: reveal.attempt,
-        hitText: spotlightHitText,
-        missText: spotlightMissText,
-        gotYouText
+        hitText: presentation.hitText,
+        missText: presentation.missText,
+        gotYouText: presentation.gotYouText
       })
+    },
+    restore(reveal: RevealResult, charade: DecodeCharade) {
+      if (
+        reveal.charadeId !== charade.id ||
+        resolvedCharadeId !== charade.id ||
+        resolvedAnswerIndex < 0 ||
+        resolvedAnswerIndex >= charade.answers.length
+      ) {
+        return false
+      }
+      const presentation = presentationFor(reveal, charade)
+      retrySecondsRemaining = 0
+      hideFloatingVerdict()
+      titleProgressTarget = reveal.nextUnlock.progress
+      titleProgressElapsed = TITLE_PROGRESS_SECONDS
+      revealView = {
+        ...EMPTY_REVEAL_VIEW,
+        active: true,
+        answersLocked: true,
+        selectedAnswerIndex: resolvedAnswerIndex,
+        answers: presentation.answers,
+        phrase: presentation.phrase,
+        answerRevealed: true,
+        correct: reveal.correct,
+        verdict: reveal.correct ? 'hit' : 'miss',
+        verdictText: reveal.correct ? presentation.hitText : presentation.missText,
+        stats: reveal.stats,
+        titleProgress: reveal.nextUnlock.progress,
+        unlockedTitle: presentation.unlockedTitle,
+        stampAwarded: reveal.stampAwarded,
+        complete: true
+      }
+      restoredPresentation = true
+      return true
     },
     retry(beatIndex: 0 | 1 | 2) {
       controller.cancel()
       hideFloatingVerdict()
+      restoredPresentation = false
       reducedMotion = getClientSettings().reducedMotion
       retrySecondsRemaining = EMOTE_STEP_SECONDS
       revealView = { ...EMPTY_REVEAL_VIEW }
@@ -269,8 +323,8 @@ export function createSceneRevealController(audio: RevealAudioPort, clock?: Reve
       if (!reducedMotion) replayPerformerBeat(beatIndex)
     },
     hasShownVerdict: controller.hasShownVerdict,
-    canAdvance: () => controller.hasShownVerdict() && revealView.answerRevealed,
-    skipToEnd: controller.skipToEnd,
+    canAdvance: () => (restoredPresentation || controller.hasShownVerdict()) && revealView.answerRevealed,
+    skipToEnd: () => restoredPresentation || controller.skipToEnd(),
     cancel() {
       const retryActive = retrySecondsRemaining > 0
       retrySecondsRemaining = 0
@@ -278,6 +332,7 @@ export function createSceneRevealController(audio: RevealAudioPort, clock?: Reve
       if (retryActive) lights.set('house')
       hideFloatingVerdict()
       revealView = { ...EMPTY_REVEAL_VIEW }
+      restoredPresentation = false
       return cancelled || retryActive
     },
     getStatus: controller.getStatus

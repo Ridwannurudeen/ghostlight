@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DECK } from '../src/shared/deck'
+import { DECK, PLAYABLE_DECK } from '../src/shared/deck'
 import {
   SEASON_ZERO_DECOY_APPROVAL_RECORD,
   SEASON_ZERO_MODERATION_EVALUATION,
@@ -15,24 +15,31 @@ import {
 } from '../src/shared/seasons'
 
 describe('checked-in Season Zero moderation ledger', () => {
-  it('covers exactly the current 120 week references with explicit approvals', () => {
+  it('covers only the reviewed playable references with explicit approvals', () => {
     const expectedKeys = SEASON_ZERO_WEEKS.flatMap((week) =>
       week.references.map((reference) => seasonReferenceKey(week.id, reference.phraseId))
     ).sort()
     const decisionKeys = Object.keys(SEASON_ZERO_MODERATION_RECORD.decisions).sort()
 
-    expect(expectedKeys).toHaveLength(120)
-    expect(new Set(expectedKeys).size).toBe(120)
+    expect(expectedKeys).toHaveLength(112)
+    expect(new Set(expectedKeys).size).toBe(112)
+    expect(
+      SEASON_ZERO_WEEKS.every(
+        (week) =>
+          week.references.length === PLAYABLE_DECK.length - 2 &&
+          week.references.every((reference) => PLAYABLE_DECK.some((phrase) => phrase.id === reference.phraseId))
+      )
+    ).toBe(true)
     expect(decisionKeys).toEqual(expectedKeys)
-    expect(decisionKeys).toHaveLength(120)
+    expect(decisionKeys).toHaveLength(112)
     expect(Object.values(SEASON_ZERO_MODERATION_RECORD.decisions).every((decision) => decision === 'approved')).toBe(
       true
     )
     expect(SEASON_ZERO_MODERATION_RECORD).toMatchObject({
       v: 1,
       seasonId: 'season-zero',
-      revision: 1,
-      updatedAt: 1_787_961_600_000
+      revision: 3,
+      updatedAt: 1_788_048_000_000
     })
   })
 
@@ -44,7 +51,7 @@ describe('checked-in Season Zero moderation ledger', () => {
       launchReady: true,
       houseFallbackReady: true,
       moderation: {
-        approved: 120,
+        approved: 112,
         quarantined: 0,
         pending: 0,
         quarantineRate: 0,
@@ -67,7 +74,7 @@ describe('checked-in Season Zero moderation ledger', () => {
     delete missingDecision[firstKey]
     const incomplete = parseSeasonModerationRecord({
       ...SEASON_ZERO_MODERATION_RECORD,
-      revision: 2,
+      revision: 3,
       decisions: missingDecision
     })
     expect(incomplete).not.toBeNull()
@@ -76,7 +83,7 @@ describe('checked-in Season Zero moderation ledger', () => {
     expect(
       parseSeasonModerationRecord({
         ...SEASON_ZERO_MODERATION_RECORD,
-        revision: 2,
+        revision: 3,
         decisions: { ...SEASON_ZERO_MODERATION_RECORD.decisions, [firstKey]: 'pending' }
       })
     ).toBeNull()
@@ -102,36 +109,23 @@ describe('checked-in Season Zero moderation ledger', () => {
       SEASON_ZERO_MODERATION_RECORD.decisions
     )
 
-    expect(originalEligible).toHaveLength(30)
-    expect(alteredEligible).toHaveLength(29)
+    expect(originalEligible).toHaveLength(28)
+    expect(alteredEligible).toHaveLength(27)
     expect(alteredEligible).not.toContain(replacement.id)
     expect(SEASON_ZERO_MODERATION_RECORD.decisions[seasonReferenceKey(week.id, replacement.id)]).toBeUndefined()
-    expect(Object.keys(SEASON_ZERO_MODERATION_RECORD.decisions)).toHaveLength(120)
+    expect(Object.keys(SEASON_ZERO_MODERATION_RECORD.decisions)).toHaveLength(112)
   })
 
-  it('keeps the minimal reviewed food decoys separate from primary approvals', () => {
+  it('needs no separate decoy approvals because every playable phrase is explicitly reviewed', () => {
     expect(SEASON_ZERO_DECOY_APPROVAL_RECORD).toEqual({
       v: 1,
       seasonId: 'season-zero',
-      revision: 1,
-      updatedAt: 1_787_961_600_000,
-      phraseIds: ['food-burn-the-toast', 'food-order-a-pizza']
+      revision: 3,
+      updatedAt: 1_788_048_000_000,
+      phraseIds: []
     })
     expect(Object.isFrozen(SEASON_ZERO_DECOY_APPROVAL_RECORD)).toBe(true)
     expect(Object.isFrozen(SEASON_ZERO_DECOY_APPROVAL_RECORD.phraseIds)).toBe(true)
-    expect(Reflect.set(SEASON_ZERO_DECOY_APPROVAL_RECORD.phraseIds, 0, 'food-flip-a-pancake')).toBe(false)
-
-    const scheduledPhraseIds = new Set(
-      SEASON_ZERO_WEEKS.flatMap((week) => week.references.map((reference) => reference.phraseId))
-    )
-    const approvedDecoys = SEASON_ZERO_DECOY_APPROVAL_RECORD.phraseIds.map((phraseId) =>
-      DECK.find((phrase) => phrase.id === phraseId)
-    )
-    expect(approvedDecoys.every((phrase) => phrase?.category === 'food')).toBe(true)
-    expect(new Set(approvedDecoys.map((phrase) => phrase?.text.split(' ')[0].toLowerCase())).size).toBe(2)
-    expect(new Set(approvedDecoys.map((phrase) => [...phrase!.suggested].sort().join(':'))).size).toBe(2)
-    expect(SEASON_ZERO_DECOY_APPROVAL_RECORD.phraseIds.every((phraseId) => !scheduledPhraseIds.has(phraseId))).toBe(
-      true
-    )
+    expect(Reflect.set(SEASON_ZERO_DECOY_APPROVAL_RECORD.phraseIds, 0, PLAYABLE_DECK[0].id)).toBe(false)
   })
 })

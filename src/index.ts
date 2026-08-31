@@ -13,6 +13,7 @@ import {
   replayPerformer,
   setAudience,
   showDuet,
+  showAuthorBeat,
   showPerformer,
   showGhostOfNight,
   showPreview
@@ -120,6 +121,7 @@ export function main() {
     replayPerformer,
     showRetryBeat: (beatIndex) => reveal.retry(beatIndex),
     showPreview,
+    showAuthorBeat,
     clearPreview,
     clearPerformer,
     showReward: setRewardProp,
@@ -131,6 +133,7 @@ export function main() {
     },
     beginReveal: reveal.begin,
     resolveReveal: reveal.resolve,
+    restoreReveal: reveal.restore,
     canAdvanceReveal: reveal.canAdvance,
     skipReveal: reveal.skipToEnd,
     cancelReveal: reveal.cancel,

@@ -6,6 +6,7 @@ import {
   clearPreview,
   freezePerformer,
   getPerformerBeatIndex,
+  hasPerformerCompletedSequence,
   playPerformerEmote,
   replayPerformer,
   replayPerformerBeat,
@@ -13,9 +14,12 @@ import {
   setAudience,
   showDuet,
   showGhostOfNight,
-  showPerformer
+  showPerformer,
+  showPreview
 } from '../src/client/ghosts'
-import { makeLook } from './test-helpers'
+import { createFlowRuntime, type OutboundMessage } from '../src/client/flow'
+import { showPolicyForTimestamp } from '../src/shared/show-policy'
+import { FIXED_NOW, makeLook } from './test-helpers'
 
 vi.mock('@dcl/sdk/ecs', () => {
   let nextEntity = 0
@@ -29,9 +33,32 @@ vi.mock('@dcl/sdk/ecs', () => {
     engine: {
       addEntity: vi.fn(() => ++nextEntity),
       addSystem: vi.fn()
+    },
+    Schemas: {
+      Map: (value: unknown) => value,
+      Array: (value: unknown) => value,
+      Optional: (value: unknown) => value,
+      String: 'string',
+      Boolean: 'boolean',
+      Number: 'number',
+      Int: 'int',
+      Int64: 'int64'
     }
   }
 })
+
+vi.mock('@dcl/sdk/network', () => ({
+  registerMessages: () => ({
+    send: vi.fn(),
+    onMessage: vi.fn(),
+    onReady: vi.fn(),
+    isReady: () => false
+  })
+}))
+
+vi.mock('@dcl/sdk/src/players', () => ({
+  getPlayer: () => null
+}))
 
 vi.mock('@dcl/sdk/math', () => ({
   Quaternion: {
@@ -124,6 +151,147 @@ describe('audience ghosts', () => {
     system(0.01)
     expect(getPerformerBeatIndex()).toBe(0)
     expect(engine.addEntity).toHaveBeenCalledTimes(8)
+  })
+
+  it('unlocks a solo clue only after beat three finishes and resets for the next performer', () => {
+    const system = vi.mocked(engine.addSystem).mock.calls[0][0]
+
+    showPerformer(makeLook('0xFirst'), ['wave', 'clap', 'dab'])
+    expect(hasPerformerCompletedSequence()).toBe(false)
+    system(2.5)
+    system(2.5)
+    expect(hasPerformerCompletedSequence()).toBe(false)
+    system(2.5)
+    expect(hasPerformerCompletedSequence()).toBe(true)
+
+    showPerformer(makeLook('0xNext'), ['shrug', 'kiss', 'headexplode'])
+    expect(hasPerformerCompletedSequence()).toBe(false)
+    clearPerformer()
+    expect(hasPerformerCompletedSequence()).toBe(false)
+  })
+
+  it('unlocks a duet after the author sequence without waiting through the reply sequence', () => {
+    const system = vi.mocked(engine.addSystem).mock.calls[0][0]
+
+    showDuet(
+      { look: makeLook('0xAuthor'), emotes: ['wave', 'clap', 'dab'] },
+      { look: makeLook('0xReply'), emotes: ['shrug', 'kiss', 'headexplode'] }
+    )
+    system(2.5)
+    system(2.5)
+    expect(hasPerformerCompletedSequence()).toBe(false)
+    system(2.5)
+    expect(hasPerformerCompletedSequence()).toBe(true)
+  })
+
+  it('reports author preview completion once after all three beats and cancels stale callbacks', () => {
+    const system = vi.mocked(engine.addSystem).mock.calls[0][0]
+    const completed = vi.fn()
+
+    showPreview(makeLook('0xAuthor'), ['wave', 'clap', 'dab'], completed)
+    system(2.5)
+    system(2.5)
+    expect(completed).not.toHaveBeenCalled()
+    system(2.5)
+    system(7.5)
+    expect(completed).toHaveBeenCalledTimes(1)
+
+    const cancelled = vi.fn()
+    showPreview(makeLook('0xAuthor'), ['shrug', 'kiss', 'headexplode'], cancelled)
+    system(2.5)
+    clearPreview()
+    system(7.5)
+    expect(cancelled).not.toHaveBeenCalled()
+
+    const replaced = vi.fn()
+    const replacement = vi.fn()
+    showPreview(makeLook('0xAuthor'), ['wave', 'clap', 'dab'], replaced)
+    showPreview(makeLook('0xAuthor'), ['shrug', 'kiss', 'headexplode'], replacement)
+    system(2.5)
+    system(2.5)
+    system(2.5)
+    expect(replaced).not.toHaveBeenCalled()
+    expect(replacement).toHaveBeenCalledTimes(1)
+  })
+
+  it('connects the real ghost timer to the first-guess lock while preserving the retry exception', () => {
+    const sent: OutboundMessage[] = []
+    let requestSequence = 0
+    const runtime = createFlowRuntime({
+      send: (message) => sent.push(message),
+      now: () => FIXED_NOW,
+      createRequestId: () => `request-${++requestSequence}`,
+      getProfile: () => ({ address: '0xPlayer', name: 'Player', isGuest: false }),
+      canGuess: hasPerformerCompletedSequence,
+      effects: { showPerformer }
+    })
+    const policy = showPolicyForTimestamp(FIXED_NOW)!
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    runtime.receive({
+      type: 'showSchedule',
+      data: { instanceId: 'server', serverTime: FIXED_NOW, showKey: policy.showKey }
+    })
+    expect(runtime.requestNextCharade()).toBe(true)
+    const requestId = runtime.getState().pending.find((request) => request.kind === 'nextCharade')!.requestId
+    runtime.receive({
+      type: 'charade',
+      data: {
+        requestId,
+        id: 'charade-1',
+        authorName: 'Author',
+        authorAddress: '0xAuthor',
+        look: makeLook('0xAuthor', 'Author'),
+        emotes: ['wave', 'clap', 'dab'],
+        answers: ['One', 'Two', 'Three'],
+        createdAt: FIXED_NOW,
+        isHouse: false
+      }
+    })
+    const system = vi.mocked(engine.addSystem).mock.calls[0][0]
+
+    expect(runtime.guess(0)).toBe(false)
+    system(2.5)
+    system(2.5)
+    expect(runtime.guess(0)).toBe(false)
+    system(2.5)
+    expect(runtime.guess(0)).toBe(true)
+    expect(sent.at(-1)?.type).toBe('guess')
+
+    const retryRuntime = createFlowRuntime({
+      send: vi.fn(),
+      now: () => FIXED_NOW,
+      createRequestId: () => 'retry-request',
+      getProfile: () => ({ address: '0xPlayer', name: 'Player', isGuest: false }),
+      canGuess: hasPerformerCompletedSequence
+    })
+    retryRuntime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    retryRuntime.receive({
+      type: 'showSchedule',
+      data: { instanceId: 'server', serverTime: FIXED_NOW, showKey: policy.showKey }
+    })
+    expect(retryRuntime.requestNextCharade()).toBe(true)
+    const retryCharadeRequest = retryRuntime.getState().pending[0].requestId
+    retryRuntime.receive({
+      type: 'charade',
+      data: {
+        requestId: retryCharadeRequest,
+        id: 'retry-charade',
+        authorName: 'Author',
+        authorAddress: '0xAuthor',
+        look: makeLook('0xAuthor', 'Author'),
+        emotes: ['wave', 'clap', 'dab'],
+        answers: ['One', 'Two', 'Three'],
+        createdAt: FIXED_NOW,
+        isHouse: false
+      }
+    })
+    showPerformer(makeLook('0xAuthor'), ['wave', 'clap', 'dab'])
+    retryRuntime.dispatch({
+      type: 'retry',
+      retry: { charadeId: 'retry-charade', removedAnswerIndex: 1, replayBeatIndex: 2, spotlight: false }
+    })
+    expect(hasPerformerCompletedSequence()).toBe(false)
+    expect(retryRuntime.guess(0)).toBe(true)
   })
 
   it('alternates complete author and reply sequences in the existing performer and preview slots', () => {

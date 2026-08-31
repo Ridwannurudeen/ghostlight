@@ -1,7 +1,13 @@
 import { AvatarBase, AvatarEquippedData, PlayerIdentityData, engine } from '@dcl/sdk/ecs'
 import { onEnterScene, onLeaveScene } from '@dcl/sdk/src/players'
-import { AUTHOR_COOLDOWN_SECONDS, PROTOCOL_VERSION, WIRE_INT_MAX, themeForTimestamp } from '../shared/config'
-import { DECK, EMOTE_VOCABULARY } from '../shared/deck'
+import {
+  AUTHOR_COOLDOWN_SECONDS,
+  EMOTE_STEP_SECONDS,
+  PROTOCOL_VERSION,
+  WIRE_INT_MAX,
+  themeForTimestamp
+} from '../shared/config'
+import { DECK, EMOTE_VOCABULARY, isAllowedPerformance, isDecodablePerformance } from '../shared/deck'
 import { normalizePlayerName } from '../shared/i18n'
 import { Messages, SPECTATOR_REACTION_KINDS, room } from '../shared/messages'
 import { chooseCharadeFor, chooseHouseCharade, chooseRetryBeat, pickDecoys, shuffleSeeded } from '../shared/pick'
@@ -9,7 +15,15 @@ import { showPolicyForTimestamp } from '../shared/show-policy'
 import type { Charade, Look, PlayerProgress, PlayerStats, ShowSet } from '../shared/types'
 import { SHOW_SET_SIZE, STORAGE_SCHEMA_VERSION } from '../shared/types'
 import { LiveRounds } from './rounds'
-import { GhostlightState, dayKey, gameState } from './state'
+import {
+  DURABLE_MUTATION_JOURNAL_KEY,
+  GhostlightState,
+  dayKey,
+  gameState,
+  type DurableMutation,
+  type DurableMutationFingerprint,
+  type DurableStatsPatch
+} from './state'
 import { StorageCapacityError, StorageUnavailableError, flushNow, startFlushLoop } from './storage'
 
 type HelloPayload = { displayName: string; isGuest: boolean; protocolVersion: number }
@@ -83,10 +97,12 @@ type AuthoredPost = {
   recipient?: string
 }
 
+type GuessFingerprint = Extract<DurableMutationFingerprint, { kind: 'guess' }>
+
 type CompletedRequest =
-  | { type: 'retry'; data: RetryPayload; durable: boolean }
-  | { type: 'reveal'; data: RevealPayload; durable: boolean }
-  | { type: 'posted'; data: PostedPayload; durable: boolean; authoredPost: AuthoredPost }
+  | { type: 'retry'; data: RetryPayload; durable: boolean; fingerprint: GuessFingerprint }
+  | { type: 'reveal'; data: RevealPayload; durable: boolean; fingerprint: GuessFingerprint; mutationId?: string }
+  | { type: 'posted'; data: PostedPayload; durable: boolean; authoredPost: AuthoredPost; mutationId?: string }
 
 type PreparedCharade = {
   charade: Charade
@@ -99,11 +115,13 @@ type PreparedCharade = {
 
 type ServedCharade = {
   prepared: PreparedCharade
+  firstGuessEligibleAt: number | null
   retry: {
     requestId: string
     removedAnswerIndex: number
     replayBeatIndex: number
     spotlight: boolean
+    fingerprint: GuessFingerprint
     response: RetryPayload
   } | null
 }
@@ -133,6 +151,7 @@ export type ServerProtocolOptions = {
   lookRetryMilliseconds?: number
   random?: () => number
   roundDurationMilliseconds?: number
+  firstGuessDelayMilliseconds?: number
 }
 
 const VALID_REACTION_KINDS = new Set<string>(SPECTATOR_REACTION_KINDS)
@@ -276,6 +295,89 @@ function sameAuthoredPost(left: AuthoredPost, right: AuthoredPost) {
   )
 }
 
+function cloneStats(stats: PlayerStats): PlayerStats {
+  return {
+    ...stats,
+    seen: [...stats.seen],
+    authored: [...stats.authored],
+    pending: { ...stats.pending },
+    daily: { ...stats.daily },
+    stampedDays: [...stats.stampedDays],
+    ...(stats.showSet ? { showSet: { ...stats.showSet } } : {})
+  }
+}
+
+function durableStatsPatch(
+  address: string,
+  persistent: boolean,
+  before: PlayerStats,
+  after: PlayerStats
+): DurableStatsPatch {
+  const seenAdd = after.seen.find((id) => !before.seen.includes(id))
+  const authoredAdd = after.authored.find((id) => !before.authored.includes(id))
+  const stampedDayAdd = after.stampedDays.find((day) => !before.stampedDays.includes(day))
+  return {
+    address: canonicalAddress(address),
+    persistent,
+    ...(seenAdd ? { seenAdd } : {}),
+    ...(authoredAdd ? { authoredAdd } : {}),
+    ...(stampedDayAdd ? { stampedDayAdd } : {}),
+    after: {
+      name: after.name,
+      decoded: after.decoded,
+      correct: after.correct,
+      authoredCount: after.authoredCount,
+      lastSeenAt: after.lastSeenAt,
+      pending: { ...after.pending },
+      daily: { ...after.daily },
+      revision: after.revision,
+      title: after.title,
+      ...(after.showSet ? { showSet: { ...after.showSet } } : {})
+    }
+  }
+}
+
+function guessFingerprint(data: GuessPayload, roundId: string | null): GuessFingerprint {
+  return {
+    kind: 'guess',
+    charadeId: data.charadeId,
+    answerIndex: data.answerIndex,
+    spotlight: data.spotlight === true,
+    roundId
+  }
+}
+
+function postFingerprint(post: AuthoredPost): DurableMutationFingerprint {
+  return {
+    kind: 'post',
+    phraseId: post.phraseId,
+    emotes: [post.emotes[0], post.emotes[1], post.emotes[2]],
+    touringConsent: post.touringConsent,
+    ...(post.replyTo === undefined ? {} : { replyTo: post.replyTo }),
+    ...(post.recipient === undefined ? {} : { recipient: post.recipient })
+  }
+}
+
+function sameDurableFingerprint(left: DurableMutationFingerprint, right: DurableMutationFingerprint) {
+  if (left.kind !== right.kind) return false
+  if (left.kind === 'guess' && right.kind === 'guess') {
+    return (
+      left.charadeId === right.charadeId &&
+      left.answerIndex === right.answerIndex &&
+      left.spotlight === right.spotlight &&
+      left.roundId === right.roundId
+    )
+  }
+  if (left.kind !== 'post' || right.kind !== 'post') return false
+  return (
+    left.phraseId === right.phraseId &&
+    left.emotes.every((emote, index) => emote === right.emotes[index]) &&
+    left.touringConsent === right.touringConsent &&
+    left.replyTo === right.replyTo &&
+    left.recipient === right.recipient
+  )
+}
+
 function storedCharadeMatchesPost(charade: Charade, author: string, post: AuthoredPost) {
   return (
     post.replyTo === undefined &&
@@ -343,6 +445,7 @@ export function snapshotServerLook(address: string): Look | null {
 export function createServerProtocol(options: ServerProtocolOptions) {
   const now = options.now ?? Date.now
   const random = options.random ?? Math.random
+  const firstGuessDelayMilliseconds = options.firstGuessDelayMilliseconds ?? EMOTE_STEP_SECONDS * 3 * 1_000
   const ready = options.ready ?? Promise.resolve()
   const checkpoint = options.flush ?? (async () => {})
   const initialTimestamp = now()
@@ -354,6 +457,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
   const welcomed = new Set<string>()
   const negotiated = new Set<string>()
   const welcomePromises = new Map<string, Promise<boolean>>()
+  const pendingWelcomeLooks = new Map<string, { generation: number; look: Look }>()
   const cancelledWelcomePromises = new WeakSet<Promise<boolean>>()
   const servedAnswers = new Map<string, ServedCharade>()
   const activeDecoders = new Set<string>()
@@ -382,6 +486,10 @@ export function createServerProtocol(options: ServerProtocolOptions) {
   let answerSequence = 0
   const serverSecret = `${initialTimestamp}:${random()}:${random()}`
   let activeRoundCharade: PreparedCharade | null = null
+  let mutationQueue = Promise.resolve()
+  let queuedMutations = 0
+  const pendingLeavePersistence = new Map<string, { generation: number; look: Look }>()
+  const activeLeavePersistence = new Map<string, Promise<void>>()
 
   function sessionGeneration(address: string) {
     const key = canonicalAddress(address)
@@ -446,9 +554,10 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     await sendTo(address, requestId ? 'requestError' : 'error', requestId ? { code, requestId } : { code })
   }
 
-  async function checkpointOrError(address: string, generation: number, requestId?: string) {
+  async function checkpointOrError(address: string, generation: number, requestId?: string, mutationId?: string) {
     try {
       await checkpoint()
+      if (mutationId) await options.state.completeDurableMutation(mutationId)
       options.state.evictInactiveStats(new Set(looks.keys()))
       return true
     } catch (error) {
@@ -474,6 +583,157 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     } finally {
       if (activeRequestHandlers.get(key) === owner) activeRequestHandlers.delete(key)
     }
+  }
+
+  async function serializeMutation<T>(run: () => Promise<T>) {
+    queuedMutations += 1
+    const previous = mutationQueue
+    let release = () => {}
+    mutationQueue = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    await previous.catch(() => {})
+    try {
+      return await run()
+    } finally {
+      queuedMutations -= 1
+      release()
+    }
+  }
+
+  async function checkpointCachedMutation(address: string, generation: number, requestId: string, mutationId?: string) {
+    if (!mutationId) return checkpointOrError(address, generation, requestId)
+    return serializeMutation(() => checkpointOrError(address, generation, requestId, mutationId))
+  }
+
+  function settleRecoveredGuess(mutation: DurableMutation) {
+    if (mutation.fingerprint.kind !== 'guess' || mutation.response.type !== 'reveal') return
+    const owner = mutation.owner
+    const fingerprint = mutation.fingerprint
+    const reveal = mutation.response.data as RevealPayload
+    let recoveredIsHouse: boolean | undefined
+    for (const [servedKey, served] of servedAnswers) {
+      if (servedKey.startsWith(`${owner}:`) && served.prepared.publicId === fingerprint.charadeId) {
+        recoveredIsHouse = served.prepared.charade.isHouse
+        servedAnswers.delete(servedKey)
+      }
+    }
+    for (const [requestKey, entry] of nextRequests) {
+      if (entry.owner === owner) nextRequests.delete(requestKey)
+    }
+    activeDecoders.delete(owner)
+    const currentRound = rounds.current
+    const recoveredCharade = options.state.getCharade(fingerprint.charadeId)
+    const isHouse = recoveredIsHouse ?? recoveredCharade?.isHouse
+    if (
+      fingerprint.roundId !== null &&
+      currentRound?.roundId === fingerprint.roundId &&
+      currentRound.charadeId === fingerprint.charadeId
+    ) {
+      rounds.guess(
+        owner,
+        fingerprint.roundId,
+        fingerprint.charadeId,
+        isHouse === false && reveal.correct && reveal.attempt === 1
+      )
+    }
+    cacheSet(completedRequests, mutation.id, owner, {
+      type: 'reveal',
+      data: reveal,
+      durable: true,
+      fingerprint
+    })
+  }
+
+  async function reconcileActiveDurableMutation() {
+    const active = options.state.getActiveDurableMutation()
+    if (!active) return null
+    const recovered = await options.state.recoverDurableMutation(active.id)
+    if (recovered) settleRecoveredGuess(recovered)
+    return recovered
+  }
+
+  async function reconcileActiveDurableMutationOrError(address: string, generation: number, requestId: string) {
+    try {
+      await reconcileActiveDurableMutation()
+      return true
+    } catch (error) {
+      if (!(error instanceof StorageUnavailableError || error instanceof StorageCapacityError)) {
+        console.error('[storage] durable reconciliation failed', error)
+      }
+      if (isCurrentSession(address, generation)) {
+        await sendError(
+          address,
+          error instanceof StorageCapacityError ? 'server-busy' : 'storage-unavailable',
+          requestId
+        )
+      }
+      return false
+    }
+  }
+
+  function scheduleLeavePersistence(key: string) {
+    const active = activeLeavePersistence.get(key)
+    if (active) return active
+    let processed: { generation: number; look: Look } | undefined
+    const persistence = serializeMutation(async () => {
+      processed = pendingLeavePersistence.get(key)
+      if (!processed) return
+      pendingLeavePersistence.delete(key)
+      await reconcileActiveDurableMutation()
+      options.state.touchVisitor(processed.look)
+      options.state.saveStats(key, !processed.look.isGuest)
+      await checkpoint()
+    })
+      .catch((error) => {
+        console.error('[storage] leave persistence failed', error)
+      })
+      .finally(() => {
+        activeLeavePersistence.delete(key)
+        if (!present.has(key) && processed && sessionGenerations.get(key) === processed.generation) {
+          sessionGenerations.delete(key)
+        }
+        if (pendingLeavePersistence.has(key)) {
+          void scheduleLeavePersistence(key)
+        } else if (!present.has(key)) {
+          options.state.evictStats(key)
+        }
+      })
+    activeLeavePersistence.set(key, persistence)
+    return persistence
+  }
+
+  async function recoverActiveRequest(
+    address: string,
+    generation: number,
+    requestId: string,
+    mutation: DurableMutation
+  ) {
+    return serializeMutation(async () => {
+      try {
+        const active = options.state.getActiveDurableMutation(mutation.id)
+        if (active) {
+          const recovered = await options.state.recoverDurableMutation(active.id)
+          if (recovered) settleRecoveredGuess(recovered)
+        } else if (!options.state.getDurableCompletion(mutation.owner, mutation.fingerprint.kind, mutation.requestId)) {
+          throw new StorageUnavailableError([`scene:${DURABLE_MUTATION_JOURNAL_KEY}`])
+        }
+        options.state.evictInactiveStats(new Set(looks.keys()))
+        return true
+      } catch (error) {
+        if (!(error instanceof StorageUnavailableError || error instanceof StorageCapacityError)) {
+          console.error('[storage] durable recovery failed', error)
+        }
+        if (isCurrentSession(address, generation)) {
+          await sendError(
+            address,
+            error instanceof StorageCapacityError ? 'server-busy' : 'storage-unavailable',
+            requestId
+          )
+        }
+        return false
+      }
+    })
   }
 
   async function withRequestAdmission(address: string, kind: string, data: unknown, run: () => Promise<void>) {
@@ -608,19 +868,6 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     const nextShow = activeShowForTimestamp(timestamp)
     const showChanged = nextShow?.policy.showKey !== currentShow?.policy.showKey
     rolloverPromise = (async () => {
-      const announced = new Set<string>()
-      if (nextDay !== currentDay) options.state.rollover(timestamp)
-      if (showChanged) {
-        servedAnswers.clear()
-        nextRequests.clear()
-        activeDecoders.clear()
-        activeRoundCharade = null
-        rounds.reset()
-        for (const [requestKey, entry] of completedRequests) {
-          if (entry.value.type === 'retry') completedRequests.delete(requestKey)
-        }
-      }
-      await checkpoint()
       const sessions = [...looks].map(([address, look]) => ({ address, look, generation: sessionGeneration(address) }))
       const scheduleSessions = [...negotiated].map((address) => ({
         address: looks.get(address)?.address ?? address,
@@ -635,16 +882,35 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       for (const { address, look, generation } of sessions) {
         if (generation === null) continue
         const stats = await options.state.getOrCreateStats(address, look.name, !look.isGuest)
-        if (nextShow) {
-          const previousShowSet = stats.showSet
-          showSetFor(stats, nextShow.policy.showKey)
-          if (stats.showSet !== previousShowSet) options.state.saveStats(address, !look.isGuest)
-        }
         refreshed.push({ address, look, generation, stats })
       }
-      if (showChanged) await checkpoint()
-      currentDay = nextDay
-      currentShow = nextShow
+      await serializeMutation(async () => {
+        await reconcileActiveDurableMutation()
+        if (nextDay !== currentDay) options.state.rollover(timestamp)
+        if (showChanged) {
+          servedAnswers.clear()
+          nextRequests.clear()
+          activeDecoders.clear()
+          activeRoundCharade = null
+          rounds.reset()
+          for (const [requestKey, entry] of completedRequests) {
+            if (entry.value.type === 'retry') completedRequests.delete(requestKey)
+          }
+        }
+        await checkpoint()
+        for (const { address, look, generation, stats } of refreshed) {
+          if (generation === null || !isCurrentSession(address, generation)) continue
+          if (nextShow) {
+            const previousShowSet = stats.showSet
+            showSetFor(stats, nextShow.policy.showKey)
+            if (stats.showSet !== previousShowSet) options.state.saveStats(address, !look.isGuest)
+          }
+        }
+        if (showChanged) await checkpoint()
+        currentDay = nextDay
+        currentShow = nextShow
+      })
+      const announced = new Set<string>()
       for (const { address, generation } of scheduleSessions) {
         if (
           generation === null ||
@@ -848,33 +1114,61 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     const look = await waitForLook(address)
     if (welcomePromises.get(key) !== owner || !isCurrentSession(key, generation)) return false
     if (!look) return false
+    pendingWelcomeLooks.set(key, { generation, look })
 
-    const previousVisitors = [...options.state.recentVisitors]
     const stats = await options.state.getOrCreateStats(key, look.name, !look.isGuest)
     await rolloverIfNeeded()
     if (welcomePromises.get(key) !== owner || !isCurrentSession(key, generation)) return false
-    if (currentShow && stats.showSet?.showKey !== currentShow.policy.showKey) {
-      showSetFor(stats, currentShow.policy.showKey)
-      options.state.saveStats(key, !look.isGuest)
-    }
-    looks.set(key, look)
-    options.state.touchVisitor(look)
-    const rankIndex = options.state.boards.decoders.findIndex((row) => canonicalAddress(row.address) === key)
-    const pending = { ...stats.pending }
     const canReceiveMail = !look.isGuest && STABLE_ADDRESS.test(look.address)
-    pending.mail = canReceiveMail
-      ? options.state.countMailForRecipient(look.address, stats.seen, currentShow?.primaryPhraseIds ?? NO_PHRASE_IDS)
-      : 0
-    const progress = progressFor(stats)
-
-    options.state.consumePending(key, !look.isGuest)
+    let previousVisitors: typeof options.state.recentVisitors = []
+    let rankIndex = -1
+    let pending = { ...stats.pending }
+    let progress = progressFor(stats)
+    let consumed = false
     try {
-      await checkpoint()
+      const persisted = await serializeMutation(async () => {
+        await reconcileActiveDurableMutation()
+        if (welcomePromises.get(key) !== owner || !isCurrentSession(key, generation)) return false
+        previousVisitors = [...options.state.recentVisitors]
+        if (currentShow && stats.showSet?.showKey !== currentShow.policy.showKey) {
+          showSetFor(stats, currentShow.policy.showKey)
+          options.state.saveStats(key, !look.isGuest)
+        }
+        looks.set(key, look)
+        options.state.touchVisitor(look)
+        rankIndex = options.state.boards.decoders.findIndex((row) => canonicalAddress(row.address) === key)
+        pending = { ...stats.pending }
+        pending.mail = canReceiveMail
+          ? options.state.countMailForRecipient(
+              look.address,
+              stats.seen,
+              currentShow?.primaryPhraseIds ?? NO_PHRASE_IDS
+            )
+          : 0
+        progress = progressFor(stats)
+        options.state.consumePending(key, !look.isGuest)
+        consumed = true
+        try {
+          await checkpoint()
+        } catch (error) {
+          if (welcomePromises.get(key) === owner && isCurrentSession(key, generation)) {
+            stats.pending = pending
+            options.state.saveStats(key, !look.isGuest)
+            consumed = false
+          }
+          throw error
+        }
+        return true
+      })
+      if (!persisted) return false
       await rolloverIfNeeded()
     } catch (error) {
-      if (welcomePromises.get(key) === owner && isCurrentSession(key, generation)) {
-        stats.pending = pending
-        options.state.saveStats(key, !look.isGuest)
+      if (consumed && welcomePromises.get(key) === owner && isCurrentSession(key, generation)) {
+        await serializeMutation(async () => {
+          await reconcileActiveDurableMutation()
+          stats.pending = pending
+          options.state.saveStats(key, !look.isGuest)
+        })
       }
       throw error
     }
@@ -890,8 +1184,11 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       await rolloverIfNeeded()
     } catch (error) {
       if (welcomePromises.get(key) === owner && isCurrentSession(key, generation)) {
-        stats.pending = pending
-        options.state.saveStats(key, !look.isGuest)
+        await serializeMutation(async () => {
+          await reconcileActiveDurableMutation()
+          stats.pending = pending
+          options.state.saveStats(key, !look.isGuest)
+        })
       }
       throw error
     }
@@ -931,6 +1228,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       .then(() => runWelcome(address, generation))
       .finally(() => {
         if (welcomePromises.get(key) === pending) welcomePromises.delete(key)
+        if (pendingWelcomeLooks.get(key)?.generation === generation) pendingWelcomeLooks.delete(key)
       })
     welcomePromises.set(key, pending)
     return pending
@@ -970,7 +1268,10 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     const pendingWelcome = welcomePromises.get(key)
     if (pendingWelcome) cancelledWelcomePromises.add(pendingWelcome)
     welcomePromises.delete(key)
-    const look = looks.get(key)
+    const pendingLook = pendingWelcomeLooks.get(key)
+    const look =
+      looks.get(key) ?? (pendingLook && pendingLook.generation === leavingGeneration ? pendingLook.look : undefined)
+    pendingWelcomeLooks.delete(key)
     looks.delete(key)
     welcomed.delete(key)
     negotiated.delete(key)
@@ -995,22 +1296,15 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     lastReactions.delete(key)
     rounds.leave(key)
     if (!rounds.current) activeRoundCharade = null
-    let failure: unknown
-    try {
-      if (look) {
-        options.state.touchVisitor(look)
-        options.state.saveStats(key, !look.isGuest)
-      }
-      await checkpoint()
-    } catch (error) {
-      failure = error
-    } finally {
-      if (!present.has(key) && sessionGenerations.get(key) === leavingGeneration) {
-        sessionGenerations.delete(key)
-        options.state.evictStats(key)
-      }
+    if (!look) {
+      if (!present.has(key) && sessionGenerations.get(key) === leavingGeneration) sessionGenerations.delete(key)
+      if (!activeLeavePersistence.has(key) && !pendingLeavePersistence.has(key)) options.state.evictStats(key)
+      return
     }
-    if (failure !== undefined) console.error('[storage] leave persistence failed', failure)
+    const mutationWasQueued = queuedMutations > 0 || activeLeavePersistence.has(key)
+    pendingLeavePersistence.set(key, { generation: leavingGeneration ?? 0, look })
+    const persistence = scheduleLeavePersistence(key)
+    if (!mutationWasQueued) await persistence
   }
 
   async function handleHello(data: HelloPayload, address: string) {
@@ -1090,6 +1384,19 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     if (!charade || !show.primaryPhraseIds.has(charade.phraseId)) return null
     const phrase = DECK.find((candidate) => candidate.id === charade.phraseId)
     if (!phrase) return null
+    if (
+      !charade.isHouse &&
+      (!isAllowedPerformance(phrase, charade.emotes) || !isDecodablePerformance(phrase, charade.emotes, show.decoyDeck))
+    ) {
+      return null
+    }
+    if (
+      charade.reply &&
+      (!isAllowedPerformance(phrase, charade.reply.emotes) ||
+        !isDecodablePerformance(phrase, charade.reply.emotes, show.decoyDeck))
+    ) {
+      return null
+    }
     const privateSeed = `${serverSecret}:${++answerSequence}:${random()}`
     const decoys = pickDecoys(phrase.id, charade.emotes, show.decoyDeck, privateSeed)
     if (decoys.length !== 2) return null
@@ -1111,7 +1418,8 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     for (const answerKey of servedAnswers.keys()) {
       if (answerKey.startsWith(`${addressKey}:`) && answerKey !== servedKey) servedAnswers.delete(answerKey)
     }
-    const served = servedAnswers.get(servedKey) ?? { prepared, retry: null }
+    const served = servedAnswers.get(servedKey) ?? { prepared, firstGuessEligibleAt: null, retry: null }
+    served.firstGuessEligibleAt = null
     servedAnswers.set(servedKey, served)
     const presentation = served.prepared
     const { charade } = presentation
@@ -1154,6 +1462,8 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         createdAt: charade.reply.createdAt
       })
     }
+    if (!isCurrentSession(address, generation) || servedAnswers.get(servedKey) !== served) return false
+    served.firstGuessEligibleAt = now() + firstGuessDelayMilliseconds
     return true
   }
 
@@ -1194,11 +1504,13 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       selection = (async () => {
         const look = looks.get(key)
         const stats = await options.state.getOrCreateStats(key, playerName(key), !(look?.isGuest ?? true))
-        const previousShowSet = stats.showSet
-        const showSet = showSetFor(stats, show.policy.showKey)
-        if (showSet !== previousShowSet || showSet.round >= SHOW_SET_SIZE) {
-          if (showSet.round >= SHOW_SET_SIZE) stats.showSet = emptyShowSet(show.policy.showKey)
-          options.state.saveStats(key, !(look?.isGuest ?? true))
+        if (stats.showSet?.showKey !== show.policy.showKey || stats.showSet.round >= SHOW_SET_SIZE) {
+          await serializeMutation(async () => {
+            await reconcileActiveDurableMutation()
+            const current = showSetFor(stats, show.policy.showKey)
+            if (current.round >= SHOW_SET_SIZE) stats.showSet = emptyShowSet(show.policy.showKey)
+            options.state.saveStats(key, !(look?.isGuest ?? true))
+          })
         }
         if (!isCurrentSession(address, generation)) {
           return prepareCharade(
@@ -1333,14 +1645,58 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       return
     }
     const idempotencyKey = requestKey(key, 'guess', data.requestId)
+    const fingerprint = guessFingerprint(data, roundId)
     const completed = cacheGet(completedRequests, idempotencyKey)
     if (completed) {
+      if (
+        (completed.type !== 'retry' && completed.type !== 'reveal') ||
+        !sameDurableFingerprint(completed.fingerprint, fingerprint)
+      ) {
+        await sendError(address, 'invalid-guess', data.requestId)
+        return
+      }
       if (!completed.durable) {
-        if (!(await checkpointOrError(address, generation, data.requestId))) return
+        if (
+          !(await checkpointCachedMutation(
+            address,
+            generation,
+            data.requestId,
+            completed.type === 'retry' ? undefined : completed.mutationId
+          ))
+        ) {
+          return
+        }
         completed.durable = true
       }
       if (!isCurrentSession(address, generation)) return
       await sendTo(address, completed.type, completed.data)
+      return
+    }
+    const activeMutation = options.state.getActiveDurableMutation(idempotencyKey)
+    if (activeMutation) {
+      if (
+        activeMutation.response.type !== 'reveal' ||
+        fingerprint.kind !== 'guess' ||
+        !sameDurableFingerprint(activeMutation.fingerprint, fingerprint)
+      ) {
+        await sendError(address, 'invalid-guess', data.requestId)
+        return
+      }
+      if (!(await recoverActiveRequest(address, generation, data.requestId, activeMutation))) return
+      const reveal = activeMutation.response.data as RevealPayload
+      if (!isCurrentSession(address, generation)) return
+      await sendTo(address, 'reveal', reveal)
+      if (reveal.titleUnlocked) await broadcastTitleUnlock(address, reveal.title)
+      if (activeMutation.charade) await refreshBoards()
+      return
+    }
+    const durableCompletion = options.state.getDurableCompletion(key, 'guess', data.requestId)
+    if (durableCompletion) {
+      if (!sameDurableFingerprint(durableCompletion.fingerprint, fingerprint)) {
+        await sendError(address, 'invalid-guess', data.requestId)
+        return
+      }
+      await sendTo(address, 'reveal', durableCompletion.response.data as RevealPayload)
       return
     }
     if (!isCurrentRoundGuess(key, roundId, data.charadeId)) {
@@ -1351,6 +1707,13 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     const servedState = servedAnswers.get(servedKey)
     if (!servedState) {
       await sendError(address, 'charade-not-served', data.requestId)
+      return
+    }
+    if (
+      servedState.retry === null &&
+      (servedState.firstGuessEligibleAt === null || now() < servedState.firstGuessEligibleAt)
+    ) {
+      await sendError(address, 'invalid-guess', data.requestId)
       return
     }
     const served = servedState.prepared
@@ -1389,6 +1752,10 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     const correct = data.answerIndex === served.correctIndex
     const storedRetry = servedState.retry
     if (storedRetry?.requestId === data.requestId) {
+      if (!sameDurableFingerprint(storedRetry.fingerprint, fingerprint)) {
+        await sendError(address, 'invalid-guess', data.requestId)
+        return
+      }
       await sendTo(address, 'retry', storedRetry.response)
       return
     }
@@ -1410,9 +1777,15 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         removedAnswerIndex: data.answerIndex,
         replayBeatIndex,
         spotlight: data.spotlight === true,
+        fingerprint,
         response: retry
       }
-      cacheSet(completedRequests, idempotencyKey, key, { type: 'retry', data: retry, durable: true })
+      cacheSet(completedRequests, idempotencyKey, key, {
+        type: 'retry',
+        data: retry,
+        durable: true,
+        fingerprint
+      })
       if (!isCurrentSession(address, generation)) return
       await sendTo(address, 'retry', retry)
       return
@@ -1442,83 +1815,162 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       return
     }
 
-    const previousTitle = progressFor(stats).title
-    const attempt = storedRetry ? 2 : 1
-    const recovered = attempt === 2 && correct
-    const spotlight = storedRetry?.spotlight ?? data.spotlight === true
+    const committed = await serializeMutation(async () => {
+      if (
+        !isCurrentSession(address, generation) ||
+        !isCurrentServed(served.showKey, servedKey, servedState) ||
+        !isCurrentRoundGuess(key, roundId, data.charadeId)
+      ) {
+        if (isCurrentSession(address, generation)) await sendError(address, 'invalid-guess', data.requestId)
+        return null
+      }
+      if (!(await reconcileActiveDurableMutationOrError(address, generation, data.requestId))) return null
+      if (
+        !isCurrentSession(address, generation) ||
+        !isCurrentServed(served.showKey, servedKey, servedState) ||
+        !isCurrentRoundGuess(key, roundId, data.charadeId)
+      ) {
+        if (isCurrentSession(address, generation)) await sendError(address, 'invalid-guess', data.requestId)
+        return null
+      }
 
-    servedAnswers.delete(servedKey)
-    for (const [request, entry] of nextRequests) {
-      if (entry.owner === key) nextRequests.delete(request)
-    }
-    activeDecoders.delete(key)
-    if (roundId !== null) rounds.guess(key, roundId, data.charadeId, !charade.isHouse && correct)
+      const mutationTime = now()
+      if (dayKey(mutationTime) > currentDay) return { retryAfterRollover: mutationTime }
+      const statsBefore = cloneStats(stats)
+      const statsAfter = cloneStats(stats)
+      const authorBefore = authorStats ? cloneStats(authorStats) : null
+      const authorAfter = authorStats ? cloneStats(authorStats) : null
+      const previousTitle = progressFor(statsAfter).title
+      const attempt = storedRetry ? 2 : 1
+      const recovered = attempt === 2 && correct
+      const understood = correct && !recovered
+      const spotlight = storedRetry?.spotlight ?? data.spotlight === true
+      const showSet = showSetFor(statsAfter, served.showKey)
+      const scoreDelta = recovered ? 50 : correct ? (spotlight ? 200 : 100) : spotlight ? -100 : 0
+      showSet.round = Math.min(showSet.round + 1, SHOW_SET_SIZE)
+      showSet.score = Math.max(0, Math.min(showSet.score + scoreDelta, SHOW_SET_SIZE * 200))
+      if (understood) {
+        showSet.streak = Math.min(showSet.streak + 1, SHOW_SET_SIZE)
+        showSet.bestStreak = Math.max(showSet.bestStreak, showSet.streak)
+        showSet.understood = Math.min(showSet.understood + 1, SHOW_SET_SIZE)
+      } else if (!correct) {
+        showSet.streak = 0
+      }
+      if (!charade.isHouse && !statsAfter.seen.includes(charade.id)) statsAfter.seen.push(charade.id)
+      let stampAwarded = false
+      if (countable) {
+        statsAfter.decoded = Math.min(statsAfter.decoded + 1, WIRE_INT_MAX)
+        statsAfter.correct = Math.min(statsAfter.correct + (understood ? 1 : 0), WIRE_INT_MAX)
+        stampAwarded = options.state.recordDailyDecode(statsAfter)
+        options.state.advanceProgressRevision(statsAfter)
+      }
+      statsAfter.lastSeenAt = mutationTime
+      const progress = progressFor(statsAfter)
+      const titleUnlocked = progress.title !== previousTitle && progress.title !== ''
+      if (authorAfter) {
+        authorAfter.pending.triedYou = Math.min(authorAfter.pending.triedYou + 1, WIRE_INT_MAX)
+        authorAfter.pending.gotYou = Math.min(authorAfter.pending.gotYou + (understood ? 1 : 0), WIRE_INT_MAX)
+        authorAfter.lastSeenAt = mutationTime
+        options.state.getPlayerProgress(authorAfter)
+      }
+      const currentCharade = options.state.getCharade(charade.id) ?? charade
+      const updatedCharade = countable
+        ? {
+            ...currentCharade,
+            guesses: {
+              total: Math.min(currentCharade.guesses.total + 1, WIRE_INT_MAX),
+              correct: Math.min(currentCharade.guesses.correct + (understood ? 1 : 0), WIRE_INT_MAX)
+            },
+            lastGuessAt: mutationTime
+          }
+        : undefined
+      const ranked = updatedCharade
+        ? options.state.previewRankedGuess(updatedCharade, key, statsAfter.name, understood)
+        : null
+      const reveal: RevealPayload = {
+        requestId: data.requestId,
+        charadeId: data.charadeId,
+        correct,
+        phraseId: phrase.id,
+        phrase: phrase.text,
+        stats: { ...(updatedCharade?.guesses ?? currentCharade.guesses) },
+        yourScore: statsAfter.correct,
+        daily: { ...options.state.getDaily(statsAfter) },
+        revision: statsAfter.revision,
+        stampAwarded,
+        attempt,
+        ...progress,
+        titleUnlocked,
+        spotlight,
+        scoreDelta,
+        setRound: showSet.round,
+        setSize: SHOW_SET_SIZE,
+        setScore: showSet.score,
+        setStreak: showSet.streak,
+        setBestStreak: showSet.bestStreak,
+        setUnderstood: showSet.understood,
+        setComplete: showSet.round === SHOW_SET_SIZE,
+        isFinale: showSet.round === SHOW_SET_SIZE
+      }
+      const mutation: DurableMutation = {
+        v: 1,
+        id: idempotencyKey,
+        owner: key,
+        requestId: data.requestId,
+        createdAt: mutationTime,
+        fingerprint: guessFingerprint(data, roundId),
+        response: { type: 'reveal', data: reveal as unknown as Record<string, unknown> },
+        ...(authorBefore && authorAfter ? { notifiedAuthor: canonicalAddress(charade.author.address) } : {}),
+        ...(updatedCharade ? { charade: updatedCharade } : {}),
+        stats: [
+          durableStatsPatch(key, !(look?.isGuest ?? true), statsBefore, statsAfter),
+          ...(authorBefore && authorAfter
+            ? [durableStatsPatch(charade.author.address, true, authorBefore, authorAfter)]
+            : [])
+        ],
+        ...(ranked?.decoder ? { decoder: ranked.decoder } : {}),
+        ...(ranked ? { boards: ranked.boards } : {})
+      }
+      try {
+        await options.state.beginDurableMutation(mutation)
+        await options.state.applyDurableMutation(mutation)
+      } catch (error) {
+        if (error instanceof StorageCapacityError) {
+          await sendError(address, 'server-busy', data.requestId)
+          return null
+        }
+        if (!(error instanceof StorageUnavailableError)) console.error('[storage] guess mutation failed', error)
+        await sendError(address, 'storage-unavailable', data.requestId)
+        return null
+      }
 
-    let stampAwarded = false
-    const showSet = showSetFor(stats, served.showKey)
-    const scoreDelta = recovered ? 50 : correct ? (spotlight ? 200 : 100) : spotlight ? -100 : 0
-    showSet.round = Math.min(showSet.round + 1, SHOW_SET_SIZE)
-    showSet.score = Math.max(0, Math.min(showSet.score + scoreDelta, SHOW_SET_SIZE * 200))
-    if (correct && !recovered) {
-      showSet.streak = Math.min(showSet.streak + 1, SHOW_SET_SIZE)
-      showSet.bestStreak = Math.max(showSet.bestStreak, showSet.streak)
-      showSet.understood = Math.min(showSet.understood + 1, SHOW_SET_SIZE)
-    } else if (!correct) {
-      showSet.streak = 0
-    }
-    if (!charade.isHouse) {
-      stats.seen.push(charade.id)
-    }
-    if (countable) {
-      stats.decoded = Math.min(stats.decoded + 1, WIRE_INT_MAX)
-      stats.correct = Math.min(stats.correct + (correct ? 1 : 0), WIRE_INT_MAX)
-      stampAwarded = options.state.recordDailyDecode(stats)
-      options.state.recordGuess(charade.id, correct)
-      options.state.recordDecoder(key, stats.name, correct)
-      options.state.advanceProgressRevision(stats)
-    }
-    if (authorStats) {
-      authorStats.pending.triedYou = Math.min(authorStats.pending.triedYou + 1, WIRE_INT_MAX)
-      authorStats.pending.gotYou = Math.min(authorStats.pending.gotYou + (correct ? 1 : 0), WIRE_INT_MAX)
-      options.state.saveStats(charade.author.address, true)
-    }
-    options.state.saveStats(key, !(look?.isGuest ?? true))
-    const progress = progressFor(stats)
-    const titleUnlocked = progress.title !== previousTitle && progress.title !== ''
+      servedAnswers.delete(servedKey)
+      for (const [requestKey, entry] of nextRequests) {
+        if (entry.owner === key) nextRequests.delete(requestKey)
+      }
+      activeDecoders.delete(key)
+      if (roundId !== null) rounds.guess(key, roundId, data.charadeId, !charade.isHouse && understood)
 
-    const updated = options.state.getCharade(charade.id) ?? charade
-    const reveal: RevealPayload = {
-      requestId: data.requestId,
-      charadeId: data.charadeId,
-      correct,
-      phraseId: phrase.id,
-      phrase: phrase.text,
-      stats: { ...updated.guesses },
-      yourScore: stats.correct,
-      daily: { ...options.state.getDaily(stats) },
-      revision: stats.revision,
-      stampAwarded,
-      attempt,
-      ...progress,
-      titleUnlocked,
-      spotlight,
-      scoreDelta,
-      setRound: showSet.round,
-      setSize: SHOW_SET_SIZE,
-      setScore: showSet.score,
-      setStreak: showSet.streak,
-      setBestStreak: showSet.bestStreak,
-      setUnderstood: showSet.understood,
-      setComplete: showSet.round === SHOW_SET_SIZE,
-      isFinale: showSet.round === SHOW_SET_SIZE
+      const request = {
+        type: 'reveal' as const,
+        data: reveal,
+        durable: false,
+        fingerprint,
+        mutationId: mutation.id
+      }
+      cacheSet(completedRequests, idempotencyKey, key, request)
+      if (!(await checkpointOrError(address, generation, data.requestId, mutation.id))) return null
+      request.durable = true
+      return { mutation, request, reveal, titleUnlocked, title: progress.title }
+    })
+    if (!committed) return
+    if ('retryAfterRollover' in committed) {
+      if (!(await rolloverOrError(address, generation, committed.retryAfterRollover, data.requestId))) return
+      return handleGuess(data, address, roundId)
     }
-    const request = { type: 'reveal' as const, data: reveal, durable: false }
-    cacheSet(completedRequests, idempotencyKey, key, request)
-    if (!(await checkpointOrError(address, generation, data.requestId))) return
-    request.durable = true
     if (!isCurrentSession(address, generation)) return
-    await sendTo(address, 'reveal', reveal)
-    if (titleUnlocked) await broadcastTitleUnlock(address, progress.title)
+    await sendTo(address, 'reveal', committed.reveal)
+    if (committed.titleUnlocked) await broadcastTitleUnlock(address, committed.title)
     if (countable) await refreshBoards()
   }
 
@@ -1550,6 +2002,10 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       await sendError(address, data.replyTo === undefined ? 'invalid-post' : 'invalid-reply', data.requestId)
       return
     }
+    if (!Array.isArray(data.emotes) || data.emotes.length !== 3 || data.emotes.some((emote) => !EMOTES.has(emote))) {
+      await sendError(address, data.replyTo === undefined ? 'invalid-post' : 'invalid-reply', data.requestId)
+      return
+    }
     const authoredPost = snapshotAuthoredPost({ ...data, touringConsent: data.touringConsent })
     const idempotencyKey = requestKey(key, 'post', data.requestId)
     const completed = cacheGet(completedRequests, idempotencyKey)
@@ -1559,11 +2015,56 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         return
       }
       if (!completed.durable) {
-        if (!(await checkpointOrError(address, generation, data.requestId))) return
+        if (!(await checkpointCachedMutation(address, generation, data.requestId, completed.mutationId))) return
         completed.durable = true
       }
       if (!isCurrentSession(address, generation)) return
       await sendTo(address, completed.type, completed.data)
+      return
+    }
+    const activeMutation = options.state.getActiveDurableMutation(idempotencyKey)
+    if (activeMutation) {
+      if (
+        activeMutation.response.type !== 'posted' ||
+        !sameDurableFingerprint(activeMutation.fingerprint, postFingerprint(authoredPost))
+      ) {
+        await sendError(address, data.replyTo === undefined ? 'invalid-post' : 'invalid-reply', data.requestId)
+        return
+      }
+      if (!(await recoverActiveRequest(address, generation, data.requestId, activeMutation))) return
+      const posted = activeMutation.response.data as PostedPayload
+      if (activeMutation.fingerprint.kind !== 'post') {
+        await sendError(address, data.replyTo === undefined ? 'invalid-post' : 'invalid-reply', data.requestId)
+        return
+      }
+      if (activeMutation.fingerprint.replyTo === undefined) lastPosts.set(key, activeMutation.createdAt)
+      cacheSet(completedRequests, idempotencyKey, key, {
+        type: 'posted',
+        data: posted,
+        durable: true,
+        authoredPost
+      })
+      if (!isCurrentSession(address, generation)) return
+      await sendTo(address, 'posted', posted)
+      if (
+        activeMutation.fingerprint.replyTo === undefined &&
+        activeMutation.fingerprint.recipient === undefined &&
+        posted.titleUnlocked
+      ) {
+        await broadcastTitleUnlock(address, posted.title)
+      }
+      if (activeMutation.fingerprint.replyTo === undefined && activeMutation.fingerprint.recipient === undefined) {
+        await refreshBoards()
+      }
+      return
+    }
+    const durableCompletion = options.state.getDurableCompletion(key, 'post', data.requestId)
+    if (durableCompletion) {
+      if (!sameDurableFingerprint(durableCompletion.fingerprint, postFingerprint(authoredPost))) {
+        await sendError(address, data.replyTo === undefined ? 'invalid-post' : 'invalid-reply', data.requestId)
+        return
+      }
+      await sendTo(address, 'posted', durableCompletion.response.data as PostedPayload)
       return
     }
     const welcomedLook = looks.get(key)
@@ -1577,9 +2078,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         !validWireString(data.requestId) ||
         !validWireString(data.replyTo) ||
         data.recipient !== undefined ||
-        !data.phraseId ||
-        data.emotes.length !== 3 ||
-        data.emotes.some((emote) => !EMOTES.has(emote))
+        !data.phraseId
       ) {
         await sendError(address, 'invalid-reply', data.requestId)
         return
@@ -1626,6 +2125,16 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         await sendTo(address, 'posted', posted)
         return
       }
+      const replyShow = currentShow
+      if (
+        !replyShow ||
+        !replyShow.primaryPhraseIds.has(target.phraseId) ||
+        !isAllowedPerformance(target.phraseId, data.emotes) ||
+        !isDecodablePerformance(target.phraseId, data.emotes, replyShow.decoyDeck)
+      ) {
+        await sendError(address, 'invalid-reply', data.requestId)
+        return
+      }
       const existingReply = target.reply
       if (existingReply) {
         await sendError(
@@ -1633,11 +2142,6 @@ export function createServerProtocol(options: ServerProtocolOptions) {
           canonicalAddress(existingReply.address) === key ? 'invalid-reply' : 'reply-taken',
           data.requestId
         )
-        return
-      }
-      const replyShow = currentShow
-      if (!replyShow || !replyShow.primaryPhraseIds.has(target.phraseId)) {
-        await sendError(address, 'invalid-reply', data.requestId)
         return
       }
       const replyLook = await waitForLook(address)
@@ -1670,60 +2174,100 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       ) {
         return
       }
-      let attached: boolean
-      try {
-        attached = options.state.attachReply(target.id, {
-          requestId: data.requestId,
-          address: replyLook.address,
-          name: replyLook.name,
-          look: replyLook,
-          emotes: [data.emotes[0], data.emotes[1], data.emotes[2]],
-          createdAt: now()
-        })
-      } catch (error) {
-        if (!(error instanceof StorageCapacityError)) throw error
-        await sendError(address, 'server-busy', data.requestId)
-        return
-      }
-      if (!attached) {
-        const winner = options.state.getCharade(target.id)
-        if (!winner?.reply || canonicalAddress(winner.reply.address) !== key) {
-          await sendError(address, 'reply-taken', data.requestId)
+      const replyCommit = await serializeMutation(async () => {
+        if (!isCurrentSession(address, generation)) return
+        if (!(await reconcileActiveDurableMutationOrError(address, generation, data.requestId))) return
+        if (!isCurrentSession(address, generation)) return
+        const currentTarget = options.state.getCharade(target.id)
+        if (!currentTarget || currentTarget.reply) {
+          await sendError(
+            address,
+            currentTarget?.reply && canonicalAddress(currentTarget.reply.address) !== key
+              ? 'reply-taken'
+              : 'invalid-reply',
+            data.requestId
+          )
           return
         }
-        if (!storedReplyMatchesPost(winner, key, data.requestId, authoredPost)) {
+        if (
+          currentShow?.policy.showKey !== replyShow.policy.showKey ||
+          !currentShow.primaryPhraseIds.has(currentTarget.phraseId)
+        ) {
           await sendError(address, 'invalid-reply', data.requestId)
           return
         }
-      } else {
-        authorStats.pending.replies = Math.min(authorStats.pending.replies + 1, WIRE_INT_MAX)
-        options.state.saveStats(target.author.address, !target.author.isGuest)
+        const mutationTime = now()
+        if (dayKey(mutationTime) > currentDay) return { retryAfterRollover: mutationTime }
+        const authorBefore = cloneStats(authorStats)
+        const authorAfter = cloneStats(authorStats)
+        authorAfter.pending.replies = Math.min(authorAfter.pending.replies + 1, WIRE_INT_MAX)
+        authorAfter.lastSeenAt = mutationTime
+        options.state.getPlayerProgress(authorAfter)
+        const updated: Charade = {
+          ...currentTarget,
+          reply: {
+            requestId: data.requestId,
+            address: replyLook.address,
+            name: replyLook.name,
+            look: replyLook,
+            emotes: [data.emotes[0], data.emotes[1], data.emotes[2]],
+            createdAt: mutationTime
+          }
+        }
+        const posted: PostedPayload = {
+          requestId: data.requestId,
+          charadeId: target.id,
+          replyTo: target.id,
+          daily: { ...options.state.getDaily(stats) },
+          revision: stats.revision,
+          stampAwarded: false,
+          ...progressFor(stats),
+          titleUnlocked: false
+        }
+        const mutation: DurableMutation = {
+          v: 1,
+          id: idempotencyKey,
+          owner: key,
+          requestId: data.requestId,
+          createdAt: mutationTime,
+          fingerprint: postFingerprint(authoredPost),
+          response: { type: 'posted', data: posted as unknown as Record<string, unknown> },
+          charade: updated,
+          stats: [durableStatsPatch(target.author.address, !target.author.isGuest, authorBefore, authorAfter)]
+        }
+        try {
+          await options.state.beginDurableMutation(mutation)
+          await options.state.applyDurableMutation(mutation)
+        } catch (error) {
+          if (error instanceof StorageCapacityError) {
+            await sendError(address, 'server-busy', data.requestId)
+            return
+          }
+          if (!(error instanceof StorageUnavailableError)) console.error('[storage] reply mutation failed', error)
+          await sendError(address, 'storage-unavailable', data.requestId)
+          return
+        }
+        const request = {
+          type: 'posted' as const,
+          data: posted,
+          durable: false,
+          authoredPost,
+          mutationId: mutation.id
+        }
+        cacheSet(completedRequests, idempotencyKey, key, request)
+        if (!(await checkpointOrError(address, generation, data.requestId, mutation.id))) return
+        request.durable = true
+        if (!isCurrentSession(address, generation)) return
+        await sendTo(address, 'posted', posted)
+      })
+      if (replyCommit && 'retryAfterRollover' in replyCommit) {
+        if (!(await rolloverOrError(address, generation, replyCommit.retryAfterRollover, data.requestId))) return
+        return handlePost(data, address)
       }
-      const posted: PostedPayload = {
-        requestId: data.requestId,
-        charadeId: target.id,
-        replyTo: target.id,
-        daily: { ...options.state.getDaily(stats) },
-        revision: stats.revision,
-        stampAwarded: false,
-        ...progressFor(stats),
-        titleUnlocked: false
-      }
-      const request = { type: 'posted' as const, data: posted, durable: false, authoredPost }
-      cacheSet(completedRequests, idempotencyKey, key, request)
-      if (!(await checkpointOrError(address, generation, data.requestId))) return
-      request.durable = true
-      if (!isCurrentSession(address, generation)) return
-      await sendTo(address, 'posted', posted)
       return
     }
     const phrase = DECK.find((candidate) => candidate.id === data.phraseId)
-    if (
-      !validWireString(data.requestId) ||
-      !phrase ||
-      data.emotes.length !== 3 ||
-      data.emotes.some((emote) => !EMOTES.has(emote))
-    ) {
+    if (!validWireString(data.requestId) || !phrase) {
       await sendError(address, 'invalid-post', data.requestId)
       return
     }
@@ -1761,7 +2305,12 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       return
     }
     const postShow = currentShow
-    if (!postShow || !postShow.primaryPhraseIds.has(phrase.id)) {
+    if (
+      !postShow ||
+      !postShow.primaryPhraseIds.has(phrase.id) ||
+      !isAllowedPerformance(phrase, data.emotes) ||
+      !isDecodablePerformance(phrase, data.emotes, postShow.decoyDeck)
+    ) {
       await sendError(address, 'invalid-post', data.requestId)
       return
     }
@@ -1898,53 +2447,110 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       return
     }
 
-    const previousTitle = progressFor(stats).title
-    try {
-      if (!options.state.upsertCharade(charade)) {
+    const postCommit = await serializeMutation(async () => {
+      if (!isCurrentSession(address, generation)) return
+      if (!(await reconcileActiveDurableMutationOrError(address, generation, data.requestId))) return
+      if (!isCurrentSession(address, generation)) return
+      if (currentShow?.policy.showKey !== postShow.policy.showKey || !currentShow.primaryPhraseIds.has(phrase.id)) {
+        await sendError(address, 'invalid-post', data.requestId)
+        return
+      }
+      const mutationTime = now()
+      if (dayKey(mutationTime) > currentDay) return { retryAfterRollover: mutationTime }
+      const latest = latestPostAt()
+      if (latest !== null && mutationTime - latest < AUTHOR_COOLDOWN_SECONDS * 1_000) {
+        await sendError(address, 'post-rate-limited', data.requestId)
+        return
+      }
+      if (options.state.getCharade(id)) {
+        await sendError(address, 'invalid-post', data.requestId)
+        return
+      }
+      const updatedCharade: Charade = { ...charade, createdAt: mutationTime }
+      if (!options.state.canUpsertCharade(updatedCharade)) {
         await sendError(address, 'server-busy', data.requestId)
         return
       }
-    } catch (error) {
-      if (!(error instanceof StorageCapacityError)) throw error
-      await sendError(address, 'server-busy', data.requestId)
-      return
-    }
-    let stampAwarded = false
-    if (!recipientLook) {
-      if (!stats.authored.includes(id)) {
-        stats.authored.push(id)
-        stats.authoredCount = Math.min(stats.authoredCount + 1, WIRE_INT_MAX)
+      const statsBefore = cloneStats(stats)
+      const statsAfter = cloneStats(stats)
+      const recipientBefore = recipientStats ? cloneStats(recipientStats) : null
+      const recipientAfter = recipientStats ? cloneStats(recipientStats) : null
+      const previousTitle = progressFor(statsAfter).title
+      let stampAwarded = false
+      if (!recipientLook) {
+        if (!statsAfter.authored.includes(id)) {
+          statsAfter.authored.push(id)
+          statsAfter.authoredCount = Math.min(statsAfter.authoredCount + 1, WIRE_INT_MAX)
+        }
+        stampAwarded = options.state.recordDailyAuthor(statsAfter)
+        options.state.advanceProgressRevision(statsAfter)
       }
-      stampAwarded = options.state.recordDailyAuthor(stats)
-      options.state.advanceProgressRevision(stats)
+      statsAfter.lastSeenAt = mutationTime
+      const progress = progressFor(statsAfter)
+      const titleUnlocked = progress.title !== previousTitle && progress.title !== ''
+      if (recipientAfter && recipientLook) {
+        recipientAfter.pending.mail = Math.min(recipientAfter.pending.mail + 1, WIRE_INT_MAX)
+        recipientAfter.lastSeenAt = mutationTime
+        options.state.getPlayerProgress(recipientAfter)
+      }
+      const posted: PostedPayload = {
+        requestId: data.requestId,
+        charadeId: id,
+        ...(recipientLook ? { recipient: recipientLook.address } : {}),
+        daily: { ...options.state.getDaily(statsAfter) },
+        revision: statsAfter.revision,
+        stampAwarded,
+        ...progress,
+        titleUnlocked
+      }
+      const mutation: DurableMutation = {
+        v: 1,
+        id: idempotencyKey,
+        owner: key,
+        requestId: data.requestId,
+        createdAt: mutationTime,
+        fingerprint: postFingerprint(authoredPost),
+        response: { type: 'posted', data: posted as unknown as Record<string, unknown> },
+        charade: updatedCharade,
+        stats: [
+          durableStatsPatch(key, !look.isGuest, statsBefore, statsAfter),
+          ...(recipientBefore && recipientAfter && recipientLook
+            ? [durableStatsPatch(recipientLook.address, true, recipientBefore, recipientAfter)]
+            : [])
+        ]
+      }
+      try {
+        await options.state.beginDurableMutation(mutation)
+        await options.state.applyDurableMutation(mutation)
+      } catch (error) {
+        if (error instanceof StorageCapacityError) {
+          await sendError(address, 'server-busy', data.requestId)
+          return
+        }
+        if (!(error instanceof StorageUnavailableError)) console.error('[storage] post mutation failed', error)
+        await sendError(address, 'storage-unavailable', data.requestId)
+        return
+      }
+      lastPosts.set(key, mutationTime)
+      const request = {
+        type: 'posted' as const,
+        data: posted,
+        durable: false,
+        authoredPost,
+        mutationId: mutation.id
+      }
+      cacheSet(completedRequests, idempotencyKey, key, request)
+      if (!(await checkpointOrError(address, generation, data.requestId, mutation.id))) return
+      request.durable = true
+      if (!isCurrentSession(address, generation)) return
+      await sendTo(address, 'posted', posted)
+      if (!recipientLook && titleUnlocked) await broadcastTitleUnlock(address, progress.title)
+      if (!recipientLook) await refreshBoards()
+    })
+    if (postCommit && 'retryAfterRollover' in postCommit) {
+      if (!(await rolloverOrError(address, generation, postCommit.retryAfterRollover, data.requestId))) return
+      return handlePost(data, address)
     }
-    options.state.saveStats(key, !look.isGuest)
-    if (recipientStats && recipientLook) {
-      recipientStats.pending.mail = Math.min(recipientStats.pending.mail + 1, WIRE_INT_MAX)
-      options.state.saveStats(recipientLook.address)
-    }
-    lastPosts.set(key, currentTime)
-
-    const progress = progressFor(stats)
-    const titleUnlocked = progress.title !== previousTitle && progress.title !== ''
-    const posted: PostedPayload = {
-      requestId: data.requestId,
-      charadeId: id,
-      ...(recipientLook ? { recipient: recipientLook.address } : {}),
-      daily: { ...options.state.getDaily(stats) },
-      revision: stats.revision,
-      stampAwarded,
-      ...progress,
-      titleUnlocked
-    }
-    const request = { type: 'posted' as const, data: posted, durable: false, authoredPost }
-    cacheSet(completedRequests, idempotencyKey, key, request)
-    if (!(await checkpointOrError(address, generation, data.requestId))) return
-    request.durable = true
-    if (!isCurrentSession(address, generation)) return
-    await sendTo(address, 'posted', posted)
-    if (!recipientLook && titleUnlocked) await broadcastTitleUnlock(address, progress.title)
-    if (!recipientLook) await refreshBoards()
   }
 
   async function handleReact(data: ReactPayload, address: string) {
@@ -2028,7 +2634,8 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       nextRequests: nextRequests.size,
       outstandingRequests: [...outstandingRequests.values()].reduce((total, count) => total + count, 0),
       requestBuckets: requestBuckets.size
-    })
+    }),
+    mutationQueueDepth: () => queuedMutations
   }
 }
 

@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { DECK, EMOTE_VOCABULARY, HOUSE_CHARADES, type PhraseId } from '../src/shared/deck'
+import {
+  HOUSE_CHARADES,
+  isAllowedPerformance,
+  performanceMatchCount,
+  PLAYABLE_DECK,
+  type Emote,
+  type PhraseId,
+  type PlayablePhrase
+} from '../src/shared/deck'
 import { themeForTimestamp } from '../src/shared/config'
 import { pickDecoys } from '../src/shared/pick'
 import { SEASON_ZERO_DECOY_APPROVAL_RECORD, SEASON_ZERO_MODERATION_RECORD } from '../src/shared/season-zero-moderation'
@@ -14,7 +22,13 @@ import {
 import { acceptedShowPolicy, showPolicyForTimestamp } from '../src/shared/show-policy'
 
 const DAY_MILLISECONDS = 24 * 60 * 60 * 1_000
-const ALL_PHRASE_IDS = DECK.map((phrase) => phrase.id).sort()
+const ALL_PHRASE_IDS = PLAYABLE_DECK.map((phrase) => phrase.id).sort()
+
+function performances(phrase: PlayablePhrase): readonly [Emote, Emote, Emote][] {
+  return phrase.beats[0].flatMap((first) =>
+    phrase.beats[1].flatMap((second) => phrase.beats[2].map((third) => [first, second, third] as const))
+  )
+}
 
 function expectedDayKey(timestamp: number) {
   return new Date(timestamp).toISOString().slice(0, 10)
@@ -83,7 +97,7 @@ describe('accepted show policy', () => {
 })
 
 describe('daily show policy', () => {
-  it('preserves full-deck primary and decoy availability with the canonical theme preference', () => {
+  it('uses only the curated playable primary and decoy deck with the canonical theme preference', () => {
     for (const timestamp of [0, SEASON_ZERO_START_AT - DAY_MILLISECONDS, SEASON_ZERO_END_AT]) {
       const policy = showPolicyForTimestamp(timestamp)!
       const theme = themeForTimestamp(timestamp)
@@ -105,7 +119,7 @@ describe('daily show policy', () => {
 })
 
 describe('Season Zero show policy', () => {
-  it('uses exactly the 30 explicitly approved references in each scheduled week', () => {
+  it('uses exactly the 28 explicitly approved references in each scheduled week', () => {
     for (const week of SEASON_ZERO_WEEKS) {
       const policy = showPolicyForTimestamp(week.eligibility.startsAt)!
       const expected = week.references
@@ -116,7 +130,7 @@ describe('Season Zero show policy', () => {
         .map((reference) => reference.phraseId)
       expect(policy.kind).toBe('season-zero')
       expect(policy.primaryPhraseIds).toEqual(expected)
-      expect(policy.primaryPhraseIds).toHaveLength(30)
+      expect(policy.primaryPhraseIds).toHaveLength(28)
     }
   })
 
@@ -127,7 +141,7 @@ describe('Season Zero show policy', () => {
     expect(showPolicyForTimestamp(timestamp, recordWith(decisions))).toBeNull()
   })
 
-  it('builds decoys only from phrase IDs explicitly approved anywhere in the supplied record', () => {
+  it('keeps a decoy that remains explicitly approved in another week', () => {
     const removed = SEASON_ZERO_WEEKS[0].references.find(
       (reference) => !HOUSE_CHARADES.some((charade) => charade.phraseId === reference.phraseId)
     )!
@@ -149,7 +163,7 @@ describe('Season Zero show policy', () => {
     }
     for (const phraseId of SEASON_ZERO_DECOY_APPROVAL_RECORD.phraseIds) approvedUnion.add(phraseId)
     expect(policy.decoyPhraseIds).toEqual([...approvedUnion])
-    expect(policy.decoyPhraseIds).not.toContain(removed.phraseId)
+    expect(policy.decoyPhraseIds).toContain(removed.phraseId)
   })
 
   it('exposes only each week’s explicitly approved House fallbacks', () => {
@@ -166,20 +180,17 @@ describe('Season Zero show policy', () => {
     for (const week of SEASON_ZERO_WEEKS) {
       const policy = showPolicyForTimestamp(week.eligibility.startsAt)!
       const allowed = new Set(policy.decoyPhraseIds)
-      const reviewedDeck = DECK.filter((phrase) => allowed.has(phrase.id as PhraseId))
-      const triplets = new Map<string, readonly string[]>()
-      for (const phrase of reviewedDeck) {
-        triplets.set([...phrase.suggested].sort().join(':'), phrase.suggested)
-      }
-      const nonmatchingTriplet = [EMOTE_VOCABULARY[0], EMOTE_VOCABULARY[0], EMOTE_VOCABULARY[0]] as const
-      expect(triplets.has([...nonmatchingTriplet].sort().join(':'))).toBe(false)
-      const performedTriplets = [...triplets.values(), nonmatchingTriplet]
+      const reviewedDeck = PLAYABLE_DECK.filter((phrase) => allowed.has(phrase.id as PhraseId))
       for (const phraseId of policy.primaryPhraseIds) {
-        for (let seed = 0; seed < performedTriplets.length; seed += 1) {
-          const performed = performedTriplets[seed]
-          const decoys = pickDecoys(phraseId, performed, reviewedDeck, `show-policy:${week.id}:${phraseId}:${seed}`)
-          expect(decoys, `${week.id}:${phraseId}:${performed.join(',')}:${seed}`).toHaveLength(2)
+        const phrase = PLAYABLE_DECK.find((candidate) => candidate.id === phraseId)!
+        for (const performed of performances(phrase)) {
+          if (!isAllowedPerformance(phrase, performed)) continue
+          const label = `${week.id}:${phraseId}:${performed.join(',')}`
+          const decoys = pickDecoys(phraseId, performed, reviewedDeck, label)
+          expect(performanceMatchCount(phrase, performed), label).toBe(3)
+          expect(decoys, label).toHaveLength(2)
           expect(decoys.every((decoy) => allowed.has(decoy.id as PhraseId))).toBe(true)
+          expect(decoys.every((decoy) => performanceMatchCount(decoy, performed) <= 1), label).toBe(true)
         }
       }
     }

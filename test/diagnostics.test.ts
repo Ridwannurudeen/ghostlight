@@ -59,8 +59,10 @@ describe('diagnostics', () => {
     tracker.sampleFrame(1 / 60)
     tracker.updateScene(null, 79, 7)
     tracker.recordCharade(true)
-    tracker.recordGuess()
+    tracker.recordGuess(true, 1)
     tracker.recordPost(true)
+    tracker.recordDisconnect()
+    tracker.recordRecovery()
 
     expect(DIAGNOSTICS_DEFAULT_ENABLED).toBe(false)
     expect(DEFAULT_CLIENT_SETTINGS.diagnosticsEnabled).toBe(false)
@@ -70,7 +72,17 @@ describe('diagnostics', () => {
       frame: { samples: 0 },
       transformEntities: null,
       avatarShapes: null,
-      loop: { charades: 0, guesses: 0, posts: 0, mailSent: 0, mailReceived: 0 }
+      loop: {
+        charades: 0,
+        guesses: 0,
+        firstTry: 0,
+        recovered: 0,
+        finalMisses: 0,
+        posts: 0,
+        mailSent: 0,
+        mailReceived: 0
+      },
+      connection: { disconnects: 0, recoveries: 0 }
     })
   })
 
@@ -85,9 +97,13 @@ describe('diagnostics', () => {
     tracker.recordPing(4, 2_000)
     tracker.recordPong(4, 2_042)
     tracker.recordCharade(true)
-    tracker.recordGuess()
+    tracker.recordGuess(true, 1)
+    tracker.recordGuess(true, 2)
+    tracker.recordGuess(false, 2)
     tracker.recordPost(false)
     tracker.recordPost(true)
+    tracker.recordDisconnect()
+    tracker.recordRecovery()
 
     expect(tracker.snapshot('pt', { ready: true, instanceId: 'server-1' })).toMatchObject({
       platform: 'mobile',
@@ -103,7 +119,17 @@ describe('diagnostics', () => {
       transformEntities: 79,
       avatarShapes: 7,
       server: { ready: true, instanceId: 'server-1', coldStartMilliseconds: 450, roundTripMilliseconds: 42 },
-      loop: { charades: 1, guesses: 1, posts: 1, mailSent: 1, mailReceived: 1 }
+      loop: {
+        charades: 1,
+        guesses: 3,
+        firstTry: 1,
+        recovered: 1,
+        finalMisses: 1,
+        posts: 1,
+        mailSent: 1,
+        mailReceived: 1
+      },
+      connection: { disconnects: 1, recoveries: 1 }
     })
   })
 
@@ -118,6 +144,8 @@ describe('diagnostics', () => {
     expect(block).toContain('frame.avg_ms=n/a')
     expect(block).toContain('server.state=waking')
     expect(block).toContain('server.instance=badinstancedisplayname')
+    expect(block).toContain('outcome.first_try=0')
+    expect(block).toContain('connection.disconnects=0')
     expect(block).not.toMatch(/undefined|null/)
   })
 

@@ -1,6 +1,14 @@
 import { engine } from '@dcl/sdk/ecs'
 import { getPlayer } from '@dcl/sdk/src/players'
-import { DECK, EMOTE_VOCABULARY, type Emote, type Phrase, type PhraseId } from '../shared/deck'
+import {
+  EMOTE_VOCABULARY,
+  PLAYABLE_DECK,
+  authorBeatChoices,
+  isAllowedPerformance,
+  type Emote,
+  type Phrase,
+  type PhraseId
+} from '../shared/deck'
 import {
   AUDIENCE_SEATS,
   HEARTBEAT_SECONDS,
@@ -17,13 +25,16 @@ import { acceptedShowPolicy, showPolicyForTimestamp, type SeasonMetadata } from 
 import type { DailyProgress, Look, NextUnlock, PlaybillPerformer } from '../shared/types'
 import {
   recordDiagnosticsCharade,
+  recordDiagnosticsDisconnect,
   recordDiagnosticsGuess,
   recordDiagnosticsPing,
   recordDiagnosticsPong,
   recordDiagnosticsPost,
+  recordDiagnosticsRecovery,
   recordDiagnosticsServerAttempt,
   recordDiagnosticsServerReady
 } from './diagnostics'
+import { hasPerformerCompletedSequence } from './ghosts'
 import { sanitizeAvatarLook } from './look'
 import type { RevealRunOptions } from './reveal'
 import { isInDecodeArea } from './theater'
@@ -152,82 +163,14 @@ export type ProgressNotice =
   | { id: string; kind: 'stamp' }
   | { id: string; kind: 'title'; title: Exclude<PlayerTitle, ''> }
 
-const AUTHOR_EMOTE_ORDERS = [
-  [
-    'wave',
-    'raiseHand',
-    'shrug',
-    'dontsee',
-    'robot',
-    'hammer',
-    'money',
-    'kiss',
-    'clap',
-    'fistpump',
-    'handsair',
-    'headexplode',
-    'disco',
-    'dab',
-    'tektonik',
-    'tik'
-  ],
-  [
-    'robot',
-    'hammer',
-    'disco',
-    'tektonik',
-    'raiseHand',
-    'clap',
-    'handsair',
-    'tik',
-    'wave',
-    'fistpump',
-    'money',
-    'dontsee',
-    'kiss',
-    'shrug',
-    'dab',
-    'headexplode'
-  ],
-  [
-    'headexplode',
-    'clap',
-    'fistpump',
-    'handsair',
-    'shrug',
-    'kiss',
-    'money',
-    'dab',
-    'wave',
-    'raiseHand',
-    'dontsee',
-    'robot',
-    'hammer',
-    'disco',
-    'tektonik',
-    'tik'
-  ]
-] as const satisfies readonly (readonly Emote[])[]
-
-export const AUTHOR_EMOTE_PAGE_COUNT = 4
-
-export function authorEmoteOrder(beatIndex: number): Emote[] {
-  return [...AUTHOR_EMOTE_ORDERS[Math.min(Math.max(beatIndex, 0), 2)]]
-}
-
-export function authorEmotePage(beatIndex: number, page: number): Emote[] {
-  const normalizedPage = ((page % AUTHOR_EMOTE_PAGE_COUNT) + AUTHOR_EMOTE_PAGE_COUNT) % AUTHOR_EMOTE_PAGE_COUNT
-  return authorEmoteOrder(beatIndex).slice(normalizedPage * 4, normalizedPage * 4 + 4)
-}
-
 export type AuthorDraft = {
   phrase: Phrase
   offeredEmotes: Emote[]
-  emotePage: number
   selectedEmotes: Emote[]
   shufflesRemaining: number
   phase: 'phrase' | 'emotes' | 'confirm'
   touringConsent: boolean
+  previewed?: boolean
   replyTo?: string
   recipient?: {
     address: string
@@ -321,6 +264,8 @@ export type FlowAction =
       playerAddress: string
       playerName: string
       playerIsGuest?: boolean
+      preserveDealtPhrases?: boolean
+      preservePendingGuess?: boolean
     }
   | {
       type: 'showSchedule'
@@ -343,7 +288,9 @@ export type FlowAction =
   | { type: 'author'; draft: AuthorDraft; returnScreen: ClientFlowState['authorReturnScreen'] }
   | { type: 'authorPhase'; phase: AuthorDraft['phase'] }
   | { type: 'authorSelect'; emote: Emote }
-  | { type: 'authorMore' }
+  | { type: 'authorUndo' }
+  | { type: 'authorPreviewStarted' }
+  | { type: 'authorPreviewed' }
   | { type: 'authorRevise' }
   | { type: 'authorToggleTouringConsent' }
   | { type: 'authorBack' }
@@ -472,8 +419,16 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
     case 'ready': {
       if (action.serverTime < state.acceptedServerTime) return state
       const newInstance = state.instanceId !== action.instanceId
+      const preservePendingGuess =
+        newInstance &&
+        action.preservePendingGuess === true &&
+        !!state.charade &&
+        state.pending.some((request) => request.kind === 'guess' || request.kind === 'roundGuess')
+      const preserveRoundGuess = preservePendingGuess && state.pending.some((request) => request.kind === 'roundGuess')
       const screen = newInstance
-        ? 'foyer'
+        ? preservePendingGuess
+          ? 'decode'
+          : 'foyer'
         : state.screen !== 'waking'
           ? state.screen
           : (state.resumeScreen ?? (state.since && !state.sinceShown ? 'since' : 'foyer'))
@@ -494,11 +449,12 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
         playerIsGuest: action.playerIsGuest ?? true,
         screen,
         resumeScreen: null,
-        charade: newInstance ? null : state.charade,
-        retry: newInstance ? null : state.retry,
+        charade: newInstance && !preservePendingGuess ? null : state.charade,
+        retry: newInstance && !preservePendingGuess ? null : state.retry,
         reveal: newInstance ? null : state.reveal,
         author: newInstance ? null : state.author,
         authorReturnScreen: newInstance ? 'foyer' : state.authorReturnScreen,
+        dealtPhraseIds: newInstance && !action.preserveDealtPhrases ? [] : state.dealtPhraseIds,
         postedCharadeId: newInstance ? '' : state.postedCharadeId,
         postedReplyTo: newInstance ? '' : state.postedReplyTo,
         postedRecipient: newInstance ? '' : state.postedRecipient,
@@ -509,10 +465,10 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
         audience: newInstance ? [] : state.audience,
         reactionEvent: newInstance ? null : state.reactionEvent,
         reactionMenuOpen: false,
-        spotlightEnabled: newInstance ? false : state.spotlightEnabled,
-        roundId: newInstance ? '' : state.roundId,
+        spotlightEnabled: newInstance && !preservePendingGuess ? false : state.spotlightEnabled,
+        roundId: newInstance && !preserveRoundGuess ? '' : state.roundId,
         latestRoundSequence: newInstance ? 0 : state.latestRoundSequence,
-        roundCharadeId: newInstance ? '' : state.roundCharadeId,
+        roundCharadeId: newInstance && !preserveRoundGuess ? '' : state.roundCharadeId,
         roundWinner: newInstance ? null : state.roundWinner,
         toast: newInstance ? null : state.toast,
         pending: newInstance ? [] : state.pending,
@@ -660,7 +616,13 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
     case 'authorPhase':
       return state.author ? { ...state, author: { ...state.author, phase: action.phase } } : state
     case 'authorSelect': {
-      if (!state.author || !EMOTE_VOCABULARY.includes(action.emote) || state.author.selectedEmotes.length >= 3) {
+      if (
+        !state.author ||
+        !EMOTE_VOCABULARY.includes(action.emote) ||
+        state.author.selectedEmotes.length >= 3 ||
+        state.author.selectedEmotes.includes(action.emote) ||
+        !authorBeatChoices(state.author.phrase, state.author.selectedEmotes.length).includes(action.emote)
+      ) {
         return state
       }
       const selectedEmotes = [...state.author.selectedEmotes, action.emote]
@@ -669,21 +631,33 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
         author: {
           ...state.author,
           selectedEmotes,
-          offeredEmotes: authorEmoteOrder(selectedEmotes.length),
-          emotePage: 0,
+          offeredEmotes: [...authorBeatChoices(state.author.phrase, selectedEmotes.length)],
+          previewed: false,
           phase: selectedEmotes.length === 3 ? 'confirm' : state.author.phase
         }
       }
     }
-    case 'authorMore':
-      return state.author?.phase === 'emotes'
-        ? {
-            ...state,
-            author: {
-              ...state.author,
-              emotePage: (state.author.emotePage + 1) % AUTHOR_EMOTE_PAGE_COUNT
-            }
-          }
+    case 'authorUndo': {
+      if (!state.author || state.author.selectedEmotes.length === 0) return state
+      const selectedEmotes = state.author.selectedEmotes.slice(0, -1)
+      return {
+        ...state,
+        author: {
+          ...state.author,
+          selectedEmotes,
+          offeredEmotes: [...authorBeatChoices(state.author.phrase, selectedEmotes.length)],
+          previewed: false,
+          phase: 'emotes'
+        }
+      }
+    }
+    case 'authorPreviewStarted':
+      return state.author && isAllowedPerformance(state.author.phrase, state.author.selectedEmotes)
+        ? { ...state, author: { ...state.author, previewed: false } }
+        : state
+    case 'authorPreviewed':
+      return state.author && isAllowedPerformance(state.author.phrase, state.author.selectedEmotes)
+        ? { ...state, author: { ...state.author, previewed: true } }
         : state
     case 'authorRevise':
       return state.author
@@ -692,8 +666,8 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
             author: {
               ...state.author,
               selectedEmotes: [],
-              offeredEmotes: authorEmoteOrder(0),
-              emotePage: 0,
+              offeredEmotes: [...authorBeatChoices(state.author.phrase, 0)],
+              previewed: false,
               phase: 'emotes'
             }
           }
@@ -958,7 +932,8 @@ export type FlowEffects = {
   showDuet?: (author: { look: Look; emotes: GhostEmotes }, reply: DecodeReply) => void
   replayPerformer?: () => void
   showRetryBeat?: (beatIndex: 0 | 1 | 2) => void
-  showPreview?: (look: Look, emotes: GhostEmotes) => void
+  showPreview?: (look: Look, emotes: GhostEmotes, onComplete: () => void) => void
+  showAuthorBeat?: (look: Look, emote: Emote) => void
   clearPreview?: () => void
   clearPerformer?: () => void
   showReward?: (address: string, title: PlayerTitle) => void
@@ -967,6 +942,7 @@ export type FlowEffects = {
   showGhostOfNight?: (ghost: GhostOfNightView | null) => void
   beginReveal?: (charade: DecodeCharade, answerIndex: number, options?: RevealRunOptions) => void
   resolveReveal?: (reveal: RevealResult, charade: DecodeCharade) => void
+  restoreReveal?: (reveal: RevealResult, charade: DecodeCharade) => void
   canAdvanceReveal?: () => boolean
   skipReveal?: () => boolean
   cancelReveal?: () => void
@@ -981,6 +957,7 @@ export type FlowRuntimeOptions = {
   getLook?: () => Look | null
   isTransportReady?: () => boolean
   canDecode?: () => boolean
+  canGuess?: () => boolean
   effects?: FlowEffects
 }
 
@@ -1127,6 +1104,8 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
   let roundMismatchRefetchAttempted = false
   let retryTransportDropped = false
   let deferredAbandonedRetryCharadeId = ''
+  let connectionInterrupted = false
+  let authorPreviewRevision = 0
   const requests = new Map<string, StoredRequest>()
   const pendingReplies = new Map<string, DecodeReply>()
   const listeners = new Set<(nextState: ClientFlowState) => void>()
@@ -1134,8 +1113,25 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
   const createRequestId = options.createRequestId ?? (() => `${Math.floor(now())}-${++requestSequence}`)
 
   function dispatch(action: FlowAction) {
+    const wasReady = state.ready
     if (action.type === 'transport' && !action.ready && state.retry) retryTransportDropped = true
     state = flowReducer(state, action)
+    if (
+      wasReady &&
+      !state.ready &&
+      (action.type === 'heartbeatTimeout' || (action.type === 'transport' && !action.ready))
+    ) {
+      connectionInterrupted = true
+      recordDiagnosticsDisconnect()
+    } else if (
+      !wasReady &&
+      state.ready &&
+      connectionInterrupted &&
+      (action.type === 'ready' || action.type === 'pong')
+    ) {
+      connectionInterrupted = false
+      recordDiagnosticsRecovery()
+    }
     for (const listener of listeners) listener(state)
   }
 
@@ -1202,7 +1198,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     )
     if (!policy) return null
     const allowedPhraseIds = new Set<string>(policy.primaryPhraseIds)
-    return DECK.filter((phrase) => allowedPhraseIds.has(phrase.id))
+    return PLAYABLE_DECK.filter((phrase) => allowedPhraseIds.has(phrase.id))
   }
 
   function canAnswerBackNow() {
@@ -1224,6 +1220,11 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     effects.cancelReveal?.()
   }
 
+  function invalidateAuthorPreview() {
+    authorPreviewRevision += 1
+    effects.clearPreview?.()
+  }
+
   function receive(message: ServerMessage) {
     switch (message.type) {
       case 'ready': {
@@ -1234,9 +1235,23 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         }
         recordDiagnosticsServerReady(receivedAt)
         const instanceChanged = state.instanceId !== message.data.instanceId
+        const sameShowInstanceChange = instanceChanged && state.showKey !== '' && state.showKey === policy.showKey
+        const retainedRequests = sameShowInstanceChange
+          ? [...requests.values()].filter(
+              (stored) =>
+                stored.message.type === 'post' ||
+                stored.message.type === 'guess' ||
+                stored.message.type === 'roundGuess'
+            )
+          : []
+        const retainedGuess = retainedRequests.find(
+          (stored) => stored.message.type === 'guess' || stored.message.type === 'roundGuess'
+        )
         const showChanged = !instanceChanged && state.showKey !== '' && state.showKey !== policy.showKey
         const abandonedRetryCharadeId =
-          state.retry && !showChanged && (instanceChanged || retryTransportDropped) ? state.retry.charadeId : ''
+          state.retry && !retainedGuess && !showChanged && (instanceChanged || retryTransportDropped)
+            ? state.retry.charadeId
+            : ''
         const candidateProfile = options.getProfile?.()
         const profile = isCompleteProfile(candidateProfile) ? candidateProfile : null
         if (instanceChanged || showChanged) {
@@ -1245,7 +1260,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           pendingReplies.clear()
           effects.cancelOpening?.()
           cancelReveal()
-          effects.clearPreview?.()
+          invalidateAuthorPreview()
           effects.clearPerformer?.()
           effects.clearStageReward?.()
         } else if (abandonedRetryCharadeId) {
@@ -1276,11 +1291,35 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           themeLabel: policy.legacyTheme.label,
           playerAddress: profile?.address ?? state.playerAddress,
           playerName: profile ? normalizePlayerName(profile.name) : state.playerName,
-          playerIsGuest: profile?.isGuest ?? state.playerIsGuest
+          playerIsGuest: profile?.isGuest ?? state.playerIsGuest,
+          preserveDealtPhrases: sameShowInstanceChange,
+          preservePendingGuess: !!retainedGuess
         })
+        if (instanceChanged || lastHelloInstance !== message.data.instanceId) sendHello(true)
+        const restoredRequests: StoredRequest[] = []
+        for (const retained of retainedRequests) {
+          const request = { ...retained.request, sentAt: receivedAt, retries: 0 }
+          const stored = { ...retained, request }
+          requests.set(request.requestId, stored)
+          dispatch({ type: 'requestSent', request })
+          restoredRequests.push(stored)
+        }
+        if (
+          retainedGuess &&
+          state.charade &&
+          (retainedGuess.message.type === 'guess' || retainedGuess.message.type === 'roundGuess')
+        ) {
+          restoreCharadePresentation()
+          if (state.retry) effects.showRetryBeat?.(state.retry.replayBeatIndex)
+          if (state.charade.isFinale) {
+            effects.beginReveal?.(state.charade, retainedGuess.message.data.answerIndex, { isFinale: true })
+          } else {
+            effects.beginReveal?.(state.charade, retainedGuess.message.data.answerIndex)
+          }
+        }
+        for (const stored of restoredRequests) emit(stored.message)
         retryTransportDropped = false
         if (abandonedRetryCharadeId) dispatch({ type: 'abandonRetry' })
-        if (instanceChanged || lastHelloInstance !== message.data.instanceId) sendHello(true)
         if (abandonedRetryCharadeId) {
           if (!requestNextCharadeExcluding(abandonedRetryCharadeId)) {
             deferredAbandonedRetryCharadeId = abandonedRetryCharadeId
@@ -1308,7 +1347,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           retryTransportDropped = false
           effects.cancelOpening?.()
           cancelReveal()
-          effects.clearPreview?.()
+          invalidateAuthorPreview()
           effects.clearPerformer?.()
           effects.clearStageReward?.()
         }
@@ -1515,7 +1554,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           ...(attempt !== undefined ? { attempt } : {})
         }
         if (state.roundCharadeId === message.data.charadeId) roundMismatchRefetchAttempted = false
-        recordDiagnosticsGuess()
+        recordDiagnosticsGuess(reveal.correct, reveal.attempt)
         dispatch({ type: 'reveal', reveal })
         if (state.playerAddress) effects.showReward?.(state.playerAddress, reveal.title)
         if (revealedCharade?.id === message.data.charadeId) effects.resolveReveal?.(reveal, revealedCharade)
@@ -1663,7 +1702,9 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         }
         if (abandonedUnservedRetryId) {
           dispatch({ type: 'abandonRetry' })
-          requestNextCharadeExcluding(abandonedUnservedRetryId)
+          if (!requestNextCharadeExcluding(abandonedUnservedRetryId)) {
+            deferredAbandonedRetryCharadeId = abandonedUnservedRetryId
+          }
         } else if (refetchUnservedCharade) requestNextCharade()
         else if (resumeDeferredRound) requestRoundCharadeIfNeeded()
         break
@@ -1767,6 +1808,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
       !state.charade ||
       state.screen !== 'decode' ||
       options.canDecode?.() === false ||
+      (!state.retry && options.canGuess?.() === false) ||
       answerIndex < 0 ||
       answerIndex >= state.charade.answers.length ||
       state.retry?.removedAnswerIndex === answerIndex
@@ -1815,25 +1857,25 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     }
     const deck = activePrimaryDeck()
     if (!deck) return false
-    if (!preserveCompletedReveal || state.reveal?.setComplete !== true) cancelReveal()
-    effects.clearStageReward?.()
     const seed = createRequestId()
     const phrase = dealPhrase(deck, state.dealtPhraseIds, seed)
     if (!phrase) {
       dispatch({ type: 'error', code: 'deck_exhausted' })
       return false
     }
+    if (!preserveCompletedReveal || state.reveal?.setComplete !== true) cancelReveal()
+    effects.clearStageReward?.()
     dispatch({
       type: 'author',
       returnScreen,
       draft: {
         phrase,
-        offeredEmotes: authorEmoteOrder(0),
-        emotePage: 0,
+        offeredEmotes: [...authorBeatChoices(phrase, 0)],
         selectedEmotes: [],
         shufflesRemaining: 2,
         phase: 'phrase',
-        touringConsent: false
+        touringConsent: false,
+        previewed: false
       }
     })
     return true
@@ -1861,12 +1903,12 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
       returnScreen: 'reveal',
       draft: {
         phrase,
-        offeredEmotes: authorEmoteOrder(0),
-        emotePage: 0,
+        offeredEmotes: [...authorBeatChoices(phrase, 0)],
         selectedEmotes: [],
         shufflesRemaining: 0,
         phase: 'phrase',
         touringConsent: false,
+        previewed: false,
         replyTo: charade.id
       }
     })
@@ -1900,25 +1942,25 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     if (!recipient) return false
     const deck = activePrimaryDeck()
     if (!deck) return false
-    cancelReveal()
-    effects.clearStageReward?.()
     const seed = createRequestId()
     const phrase = dealPhrase(deck, state.dealtPhraseIds, seed)
     if (!phrase) {
       dispatch({ type: 'error', code: 'deck_exhausted' })
       return false
     }
+    cancelReveal()
+    effects.clearStageReward?.()
     dispatch({
       type: 'author',
       returnScreen: 'mail',
       draft: {
         phrase,
-        offeredEmotes: authorEmoteOrder(0),
-        emotePage: 0,
+        offeredEmotes: [...authorBeatChoices(phrase, 0)],
         selectedEmotes: [],
         shufflesRemaining: 2,
         phase: 'phrase',
         touringConsent: false,
+        previewed: false,
         recipient: { address: recipient.address, name: normalizePlayerName(recipient.name) }
       }
     })
@@ -1937,12 +1979,12 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
       returnScreen: state.authorReturnScreen,
       draft: {
         phrase,
-        offeredEmotes: authorEmoteOrder(0),
-        emotePage: 0,
+        offeredEmotes: [...authorBeatChoices(phrase, 0)],
         selectedEmotes: [],
         shufflesRemaining: state.author.shufflesRemaining - 1,
         phase: 'phrase',
         touringConsent: state.author.touringConsent,
+        previewed: false,
         ...(state.author.recipient ? { recipient: state.author.recipient } : {})
       }
     })
@@ -1950,30 +1992,71 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
   }
 
   function selectAuthorEmote(emote: Emote) {
-    if (!state.author || state.author.selectedEmotes.length >= 3 || !EMOTE_VOCABULARY.includes(emote)) {
+    if (
+      !state.author ||
+      state.author.selectedEmotes.length >= 3 ||
+      state.author.selectedEmotes.includes(emote) ||
+      !authorBeatChoices(state.author.phrase, state.author.selectedEmotes.length).includes(emote)
+    ) {
       return false
     }
+    const selectedCount = state.author.selectedEmotes.length
     dispatch({ type: 'authorSelect', emote })
+    if (state.author?.selectedEmotes.length !== selectedCount + 1) return false
+    const look = options.getLook?.()
+    if (look) effects.showAuthorBeat?.(look, emote)
     return true
   }
 
   function previewAuthor() {
-    if (!state.author || state.author.selectedEmotes.length !== 3) return false
+    if (
+      !state.author ||
+      !effects.showPreview ||
+      !isAllowedPerformance(state.author.phrase, state.author.selectedEmotes)
+    ) {
+      return false
+    }
     const look = options.getLook?.()
     if (!look) {
       dispatch({ type: 'error', code: 'player_look_unavailable' })
       return false
     }
     const [first, second, third] = state.author.selectedEmotes
-    effects.showPreview?.(look, [first, second, third])
+    dispatch({ type: 'authorPreviewStarted' })
+    const previewRevision = ++authorPreviewRevision
+    const previewPhraseId = state.author.phrase.id
+    const previewEmotes: GhostEmotes = [first, second, third]
+    effects.showPreview(look, [first, second, third], () => {
+      const author = state.author
+      if (
+        previewRevision !== authorPreviewRevision ||
+        state.screen !== 'author' ||
+        !author ||
+        author.phase !== 'confirm' ||
+        author.phrase.id !== previewPhraseId ||
+        author.selectedEmotes.some((emote, index) => emote !== previewEmotes[index])
+      ) {
+        return
+      }
+      authorPreviewRevision += 1
+      dispatch({ type: 'authorPreviewed' })
+    })
     return true
   }
 
   function postAuthor() {
-    if (!state.ready || !state.author || state.author.selectedEmotes.length !== 3) return false
+    if (
+      !state.ready ||
+      !state.author ||
+      !state.author.previewed ||
+      !isAllowedPerformance(state.author.phrase, state.author.selectedEmotes)
+    ) {
+      return false
+    }
     if (state.pending.some((request) => request.kind === 'post')) return false
     const deck = activePrimaryDeck()
     if (!deck?.some((phrase) => phrase.id === state.author!.phrase.id)) return false
+    invalidateAuthorPreview()
     const requestId = createRequestId()
     sendRequest(
       'post',
@@ -2029,9 +2112,10 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     canAnswerBack: canAnswerBackNow,
     shuffleAuthorPhrase,
     selectAuthorEmote,
-    moreAuthorEmotes() {
-      if (!state.author || state.author.phase !== 'emotes') return false
-      dispatch({ type: 'authorMore' })
+    undoAuthorEmote() {
+      if (!state.author || state.author.phase !== 'emotes' || state.author.selectedEmotes.length === 0) return false
+      invalidateAuthorPreview()
+      dispatch({ type: 'authorUndo' })
       return true
     },
     continueAuthoring() {
@@ -2041,6 +2125,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     },
     reviseAuthorEmotes() {
       if (!state.author || state.author.phase !== 'confirm') return false
+      invalidateAuthorPreview()
       dispatch({ type: 'authorRevise' })
       return true
     },
@@ -2052,9 +2137,12 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     previewAuthor,
     postAuthor,
     backFromAuthor() {
-      effects.clearPreview?.()
+      invalidateAuthorPreview()
       dispatch({ type: 'authorBack' })
-      if (state.screen === 'reveal' || state.screen === 'decode') restoreCharadePresentation()
+      if (state.charade && state.screen !== 'mail') restoreCharadePresentation()
+      if (state.screen === 'reveal' && state.reveal && state.charade) {
+        effects.restoreReveal?.(state.reveal, state.charade)
+      }
     },
     dismissSince() {
       dispatch({ type: 'dismissSince' })
@@ -2154,7 +2242,8 @@ export const clientFlow = createFlowRuntime({
   canDecode: () => {
     const position = getPlayer()?.position
     return position !== undefined && isInDecodeArea(position)
-  }
+  },
+  canGuess: hasPerformerCompletedSequence
 })
 
 let started = false

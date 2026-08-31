@@ -7,6 +7,7 @@ import {
   createOpeningSession,
   type OpeningEffects
 } from '../src/client/opening'
+import { t } from '../src/shared/i18n'
 
 function createOpeningHarness() {
   const events: string[] = []
@@ -90,7 +91,7 @@ describe('cold open', () => {
     controller.tick(OPENING_DURATION_SECONDS)
 
     expect(events).toContain('marquee:FUNCIÓN DE HOY: Grandes emociones')
-    expect(events).toContain('instruction:Adivina qué están diciendo')
+    expect(events).toContain(`instruction:${t('opening.instruction', 'es')}`)
   })
 
   it('never runs twice in one session, including across controllers', () => {

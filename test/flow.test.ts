@@ -1,10 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
-import { DECK, EMOTE_VOCABULARY, type Emote } from '../src/shared/deck'
+import { DECK, EMOTE_VOCABULARY, PLAYABLE_DECK, authorBeatChoices, canonicalPerformance } from '../src/shared/deck'
 import { showPolicyForTimestamp } from '../src/shared/show-policy'
 import { SEASON_ZERO_WEEKS } from '../src/shared/seasons'
 import {
-  AUTHOR_EMOTE_PAGE_COUNT,
-  authorEmotePage,
   canSpectatorReact,
   canToggleTouringConsent,
   createFlowRuntime,
@@ -15,6 +13,30 @@ import {
   type ServerMessage
 } from '../src/client/flow'
 import { FIXED_NOW, makeLook } from './test-helpers'
+
+const diagnostics = vi.hoisted(() => ({
+  recordCharade: vi.fn(),
+  recordGuess: vi.fn(),
+  recordPing: vi.fn(),
+  recordPong: vi.fn(),
+  recordPost: vi.fn(),
+  recordServerAttempt: vi.fn(),
+  recordServerReady: vi.fn(),
+  recordDisconnect: vi.fn(),
+  recordRecovery: vi.fn()
+}))
+
+vi.mock('../src/client/diagnostics', () => ({
+  recordDiagnosticsCharade: diagnostics.recordCharade,
+  recordDiagnosticsGuess: diagnostics.recordGuess,
+  recordDiagnosticsPing: diagnostics.recordPing,
+  recordDiagnosticsPong: diagnostics.recordPong,
+  recordDiagnosticsPost: diagnostics.recordPost,
+  recordDiagnosticsServerAttempt: diagnostics.recordServerAttempt,
+  recordDiagnosticsServerReady: diagnostics.recordServerReady,
+  recordDiagnosticsDisconnect: diagnostics.recordDisconnect,
+  recordDiagnosticsRecovery: diagnostics.recordRecovery
+}))
 
 vi.mock('@dcl/sdk/ecs', () => ({
   engine: { addSystem: vi.fn() },
@@ -65,6 +87,7 @@ function createFlowHarness(
     look?: ReturnType<typeof makeLook> | null
     getProfile?: () => { address: string; name: string; isGuest: boolean } | null
     canDecode?: () => boolean
+    canGuess?: () => boolean
     now?: number
   } = {}
 ) {
@@ -78,7 +101,8 @@ function createFlowHarness(
     showDuet: vi.fn(),
     replayPerformer: vi.fn(),
     showRetryBeat: vi.fn(),
-    showPreview: vi.fn(),
+    showPreview: vi.fn((_look: unknown, _emotes: unknown, onComplete?: () => void) => onComplete?.()),
+    showAuthorBeat: vi.fn(),
     clearPreview: vi.fn(),
     clearPerformer: vi.fn(),
     showReward: vi.fn(),
@@ -87,6 +111,7 @@ function createFlowHarness(
     showGhostOfNight: vi.fn(),
     beginReveal: vi.fn(),
     resolveReveal: vi.fn(),
+    restoreReveal: vi.fn(),
     canAdvanceReveal: vi.fn(() => true),
     skipReveal: vi.fn(() => true),
     cancelReveal: vi.fn(),
@@ -102,6 +127,7 @@ function createFlowHarness(
     getLook: () => (overrides.look === undefined ? makeLook(address, 'Player') : overrides.look),
     isTransportReady: () => transportReady,
     canDecode: overrides.canDecode,
+    canGuess: overrides.canGuess,
     effects
   })
 
@@ -206,6 +232,41 @@ function messagesOfType<T extends OutboundMessage['type']>(sent: OutboundMessage
   return sent.filter((message): message is Extract<OutboundMessage, { type: T }> => message.type === type)
 }
 
+function chooseAuthorPerformance(runtime: ReturnType<typeof createFlowRuntime>, preview = true) {
+  const performance = canonicalPerformance(runtime.getState().author!.phrase)!
+  for (const emote of performance) expect(runtime.selectAuthorEmote(emote)).toBe(true)
+  if (preview) expect(runtime.previewAuthor()).toBe(true)
+  return performance
+}
+
+function exhaustActivePhraseDeck(
+  runtime: ReturnType<typeof createFlowRuntime>,
+  returnScreen: 'foyer' | 'reveal' | 'mail' = 'foyer'
+) {
+  const policy = showPolicyForTimestamp(runtime.getState().acceptedServerTime)
+  expect(policy).not.toBeNull()
+  const activePhraseIds = new Set<string>(policy!.primaryPhraseIds)
+  const activeDeck = PLAYABLE_DECK.filter((phrase) => activePhraseIds.has(phrase.id))
+  expect(activeDeck.length).toBeGreaterThan(0)
+  for (const phrase of activeDeck) {
+    runtime.dispatch({
+      type: 'author',
+      returnScreen,
+      draft: {
+        phrase,
+        offeredEmotes: [...authorBeatChoices(phrase, 0)],
+        selectedEmotes: [],
+        shufflesRemaining: 0,
+        phase: 'phrase',
+        touringConsent: false,
+        previewed: false
+      }
+    })
+  }
+  runtime.dispatch({ type: 'authorBack' })
+  expect(runtime.getState().dealtPhraseIds).toHaveLength(activeDeck.length)
+}
+
 describe('flow reducer', () => {
   it('keeps spectator reactions cosmetic and outside decode state transitions', () => {
     const charade = makeDecodeCharade()
@@ -298,7 +359,6 @@ describe('flow reducer', () => {
     const draft = {
       phrase,
       offeredEmotes: [...phrase.suggested],
-      emotePage: 0,
       selectedEmotes: [phrase.suggested[0]],
       shufflesRemaining: 2,
       phase: 'emotes' as const,
@@ -371,20 +431,16 @@ describe('flow lifecycle', () => {
       screen: 'author',
       authorReturnScreen: 'mail',
       author: {
-        recipient: { address: recipient, name: 'Recipient' },
-        offeredEmotes: expect.arrayContaining(EMOTE_VOCABULARY),
-        emotePage: 0
+        recipient: { address: recipient, name: 'Recipient' }
       }
     })
+    expect(runtime.getState().author?.offeredEmotes).toEqual(authorBeatChoices(runtime.getState().author!.phrase, 0))
     const firstPhrase = runtime.getState().author!.phrase.id
     expect(runtime.toggleTouringConsent()).toBe(false)
     expect(runtime.shuffleAuthorPhrase()).toBe(true)
     expect(runtime.getState().author).toMatchObject({ recipient: { address: recipient, name: 'Recipient' } })
     expect(runtime.getState().author!.phrase.id).not.toBe(firstPhrase)
-    runtime
-      .getState()
-      .author!.offeredEmotes.slice(0, 3)
-      .forEach((emote) => runtime.selectAuthorEmote(emote))
+    chooseAuthorPerformance(runtime)
     runtime.dispatch({
       type: 'author',
       returnScreen: 'mail',
@@ -444,8 +500,8 @@ describe('flow lifecycle', () => {
     receiveReveal(runtime, {
       charadeId: charade.id,
       correct: true,
-      phraseId: DECK[0].id,
-      phrase: DECK[0].text,
+      phraseId: PLAYABLE_DECK[0].id,
+      phrase: PLAYABLE_DECK[0].text,
       stats: { total: 1, correct: 1 },
       yourScore: 1
     })
@@ -495,8 +551,8 @@ describe('flow lifecycle', () => {
     receiveReveal(runtime, {
       charadeId: charade.id,
       correct: true,
-      phraseId: DECK[0].id,
-      phrase: DECK[0].text,
+      phraseId: PLAYABLE_DECK[0].id,
+      phrase: PLAYABLE_DECK[0].text,
       stats: { total: 1, correct: 1 },
       yourScore: 1
     })
@@ -506,25 +562,21 @@ describe('flow lifecycle', () => {
     expect(runtime.beginAnswerBack()).toBe(true)
     const draft = runtime.getState().author!
     expect(draft).toMatchObject({
-      phrase: DECK[0],
-      offeredEmotes: expect.arrayContaining(EMOTE_VOCABULARY),
-      emotePage: 0,
+      phrase: PLAYABLE_DECK[0],
       shufflesRemaining: 0,
       replyTo: charade.id
     })
+    expect(draft.offeredEmotes).toEqual(authorBeatChoices(draft.phrase, 0))
     expect(runtime.toggleTouringConsent()).toBe(false)
     expect(runtime.shuffleAuthorPhrase()).toBe(false)
-    draft.offeredEmotes.slice(0, 3).forEach((emote) => runtime.selectAuthorEmote(emote))
+    chooseAuthorPerformance(runtime, false)
     expect(runtime.previewAuthor()).toBe(true)
     runtime.backFromAuthor()
     expect(effects.clearPreview).toHaveBeenCalledTimes(1)
     expect(effects.showPerformer).toHaveBeenCalledWith(charade.look, charade.emotes)
     expect(effects.showStageReward).toHaveBeenCalledWith(charade.authorAddress, charade.authorTitle)
     expect(runtime.beginAnswerBack()).toBe(true)
-    runtime
-      .getState()
-      .author!.offeredEmotes.slice(0, 3)
-      .forEach((emote) => runtime.selectAuthorEmote(emote))
+    chooseAuthorPerformance(runtime)
     runtime.dispatch({
       type: 'author',
       returnScreen: 'reveal',
@@ -532,7 +584,7 @@ describe('flow lifecycle', () => {
     })
     expect(runtime.postAuthor()).toBe(true)
     expect(messagesOfType(sent, 'post').at(-1)?.data).toMatchObject({
-      phraseId: DECK[0].id,
+      phraseId: PLAYABLE_DECK[0].id,
       replyTo: charade.id,
       touringConsent: false
     })
@@ -723,10 +775,7 @@ describe('flow lifecycle', () => {
     expect(effects.resolveReveal).toHaveBeenCalledTimes(1)
 
     runtime.beginAuthoring()
-    runtime
-      .getState()
-      .author!.offeredEmotes.slice(0, 3)
-      .forEach((emote) => runtime.selectAuthorEmote(emote))
+    chooseAuthorPerformance(runtime)
     runtime.postAuthor()
     const postRequestId = runtime.getState().pending.find(({ kind }) => kind === 'post')!.requestId
     const posted = { requestId: postRequestId, revision: 2, charadeId: 'posted-first' }
@@ -827,9 +876,8 @@ describe('flow lifecycle', () => {
     expect(effects.clearStageReward).toHaveBeenCalled()
     const draft = runtime.getState().author!
     expect(runtime.getState().screen).toBe('author')
-    for (const emote of draft.offeredEmotes.slice(0, 3)) expect(runtime.selectAuthorEmote(emote)).toBe(true)
-    expect(runtime.previewAuthor()).toBe(true)
-    expect(effects.showPreview).toHaveBeenCalledWith(makeLook('0xPlayer', 'Player'), draft.offeredEmotes.slice(0, 3))
+    const performance = chooseAuthorPerformance(runtime)
+    expect(effects.showPreview).toHaveBeenCalledWith(makeLook('0xPlayer', 'Player'), performance, expect.any(Function))
     expect(runtime.postAuthor()).toBe(true)
     expect(runtime.postAuthor()).toBe(false)
     expect(messagesOfType(sent, 'post')).toHaveLength(1)
@@ -1093,6 +1141,21 @@ describe('flow lifecycle', () => {
 })
 
 describe('heartbeats and request retries', () => {
+  it('records only verified disconnect and recovery transitions after the first ready', () => {
+    const { runtime } = createFlowHarness()
+
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    expect(diagnostics.recordRecovery).not.toHaveBeenCalled()
+
+    runtime.dispatch({ type: 'heartbeatTimeout' })
+    runtime.dispatch({ type: 'heartbeatTimeout' })
+    expect(diagnostics.recordDisconnect).toHaveBeenCalledTimes(1)
+
+    runtime.receive({ type: 'pong', data: { seq: 1 } })
+    runtime.receive({ type: 'pong', data: { seq: 2 } })
+    expect(diagnostics.recordRecovery).toHaveBeenCalledTimes(1)
+  })
+
   it('cancels an unresolved reveal when the guess retry times out', () => {
     const { runtime, effects, advance } = createFlowHarness()
     runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
@@ -1541,6 +1604,101 @@ describe('audience and rounds', () => {
     }
   )
 
+  it.each([
+    { kind: 'guess' as const, live: false },
+    { kind: 'roundGuess' as const, live: true }
+  ])(
+    'resends one exact pending $kind across a same-show restart and resolves its durable reveal once',
+    ({ kind, live }) => {
+      const { runtime, sent, effects } = createFlowHarness()
+      runtime.receive({ type: 'ready', data: { instanceId: 'server-1', serverTime: FIXED_NOW } })
+      receiveShowSchedule(runtime, FIXED_NOW, 'server-1')
+      const charade = makeDecodeCharade(live ? 'live-restart' : 'solo-restart')
+      serveCharade(runtime, charade)
+      if (live) announceRound(runtime, charade.id, '4')
+      expect(runtime.guess(0)).toBe(true)
+      const pendingGuess = live ? messagesOfType(sent, 'roundGuess').at(-1)! : messagesOfType(sent, 'guess').at(-1)!
+      effects.showPerformer.mockClear()
+      effects.beginReveal.mockClear()
+      effects.resolveReveal.mockClear()
+
+      runtime.receive({ type: 'ready', data: { instanceId: 'server-2', serverTime: FIXED_NOW } })
+
+      const guesses = live ? messagesOfType(sent, 'roundGuess') : messagesOfType(sent, 'guess')
+      expect(guesses.slice(-2)).toEqual([pendingGuess, pendingGuess])
+      expect(runtime.getState()).toMatchObject({
+        screen: 'decode',
+        charade: { id: charade.id },
+        pending: [{ requestId: pendingGuess.data.requestId, kind }],
+        ...(live ? { roundId: '4', roundCharadeId: charade.id } : {})
+      })
+      expect(effects.showPerformer).toHaveBeenCalledWith(charade.look, charade.emotes)
+      expect(effects.beginReveal).toHaveBeenCalledWith(charade, 0)
+
+      const durableReveal = {
+        type: 'reveal' as const,
+        data: {
+          requestId: pendingGuess.data.requestId,
+          revision: 0,
+          charadeId: charade.id,
+          correct: true,
+          phrase: charade.answers[0],
+          stats: { total: 1, correct: 1 },
+          yourScore: 1
+        }
+      }
+      runtime.receive(durableReveal)
+      runtime.receive(durableReveal)
+
+      expect(runtime.getState()).toMatchObject({ screen: 'reveal', reveal: { charadeId: charade.id }, pending: [] })
+      expect(effects.resolveReveal).toHaveBeenCalledTimes(1)
+    }
+  )
+
+  it.each([
+    { kind: 'guess' as const, live: false },
+    { kind: 'roundGuess' as const, live: true }
+  ])('clears a pending $kind instead of resending it across a new show', ({ kind, live }) => {
+    const firstTimestamp = SEASON_ZERO_WEEKS[0].eligibility.startsAt + 60 * 60 * 1_000
+    const nextTimestamp = SEASON_ZERO_WEEKS[1].eligibility.startsAt + 60 * 60 * 1_000
+    const { runtime, sent, setNow } = createFlowHarness({ now: firstTimestamp })
+    runtime.receive({ type: 'ready', data: { instanceId: 'server-1', serverTime: firstTimestamp } })
+    receiveShowSchedule(runtime, firstTimestamp, 'server-1')
+    const charade = makeDecodeCharade(live ? 'old-live' : 'old-solo')
+    serveCharade(runtime, charade)
+    if (live) announceRound(runtime, charade.id, '4')
+    expect(runtime.guess(0)).toBe(true)
+    const pendingGuess = live ? messagesOfType(sent, 'roundGuess').at(-1)! : messagesOfType(sent, 'guess').at(-1)!
+    const guessCount = live ? messagesOfType(sent, 'roundGuess').length : messagesOfType(sent, 'guess').length
+
+    setNow(nextTimestamp)
+    runtime.receive({ type: 'ready', data: { instanceId: 'server-2', serverTime: nextTimestamp } })
+
+    expect(live ? messagesOfType(sent, 'roundGuess') : messagesOfType(sent, 'guess')).toHaveLength(guessCount)
+    expect(runtime.getState()).toMatchObject({
+      screen: 'foyer',
+      charade: null,
+      retry: null,
+      pending: [],
+      roundId: '',
+      roundCharadeId: ''
+    })
+    runtime.receive({
+      type: 'reveal',
+      data: {
+        requestId: pendingGuess.data.requestId,
+        revision: 0,
+        charadeId: charade.id,
+        correct: true,
+        phrase: charade.answers[0],
+        stats: { total: 1, correct: 1 },
+        yourScore: 1
+      }
+    })
+    expect(runtime.getState()).toMatchObject({ screen: 'foyer', reveal: null })
+    expect(runtime.getState().pending.some((request) => request.kind === kind)).toBe(false)
+  })
+
   it('drops stale decode and round state when a new server instance is ready', () => {
     const { runtime, effects } = createFlowHarness()
     runtime.receive({ type: 'ready', data: { instanceId: 'one', serverTime: FIXED_NOW } })
@@ -1649,6 +1807,271 @@ describe('audience and rounds', () => {
 })
 
 describe('author controls and request guards', () => {
+  it.each(['make', 'answer-back'] as const)(
+    'restores the completed reveal so %s stays interactive after Back',
+    (entry) => {
+      const { runtime, effects } = createFlowHarness()
+      let revealInteractive = true
+      effects.canAdvanceReveal.mockImplementation(() => revealInteractive)
+      effects.cancelReveal.mockImplementation(() => {
+        revealInteractive = false
+      })
+      effects.restoreReveal.mockImplementation(() => {
+        revealInteractive = true
+      })
+      runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+      receiveShowSchedule(runtime, FIXED_NOW)
+      const charade = makeDecodeCharade(`return-${entry}`)
+      serveCharade(runtime, charade)
+      expect(runtime.guess(0)).toBe(true)
+      receiveReveal(runtime, {
+        charadeId: charade.id,
+        correct: true,
+        phraseId: PLAYABLE_DECK[0].id,
+        phrase: PLAYABLE_DECK[0].text,
+        stats: { total: 1, correct: 1 },
+        yourScore: 1
+      })
+      revealInteractive = true
+
+      expect(entry === 'make' ? runtime.beginAuthoring() : runtime.beginAnswerBack()).toBe(true)
+      expect(revealInteractive).toBe(false)
+      runtime.backFromAuthor()
+
+      expect(runtime.getState()).toMatchObject({
+        screen: 'reveal',
+        charade: { id: charade.id },
+        reveal: { charadeId: charade.id }
+      })
+      expect(effects.restoreReveal).toHaveBeenCalledWith(runtime.getState().reveal, runtime.getState().charade)
+      expect(revealInteractive).toBe(true)
+      expect(entry === 'make' ? runtime.beginAuthoring() : runtime.beginAnswerBack()).toBe(true)
+    }
+  )
+
+  it.each(['solo', 'duet'] as const)(
+    'restores a retained %s charade after regular authoring returns to the foyer',
+    (mode) => {
+      const { runtime, effects } = createFlowHarness()
+      runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+      receiveShowSchedule(runtime, FIXED_NOW)
+      const solo = makeDecodeCharade(`foyer-${mode}`)
+      const reply: NonNullable<DecodeCharade['reply']> = {
+        address: '0xReply',
+        name: 'Reply',
+        look: makeLook('0xReply', 'Reply'),
+        emotes: ['dance', 'wave', 'clap'],
+        createdAt: FIXED_NOW + 1
+      }
+      serveCharade(runtime, solo)
+      if (mode === 'duet') {
+        runtime.receive({
+          type: 'charadeReply',
+          data: { charadeId: solo.id, ...reply }
+        })
+      }
+      const charade = runtime.getState().charade!
+      runtime.showFoyer()
+      effects.showPerformer.mockClear()
+      effects.showDuet.mockClear()
+      effects.showStageReward.mockClear()
+
+      expect(runtime.beginAuthoring()).toBe(true)
+      expect(runtime.continueAuthoring()).toBe(true)
+      expect(runtime.selectAuthorEmote(runtime.getState().author!.offeredEmotes[0])).toBe(true)
+      runtime.backFromAuthor()
+
+      expect(runtime.getState()).toMatchObject({ screen: 'foyer', charade: { id: charade.id } })
+      if (mode === 'duet') {
+        expect(effects.showDuet).toHaveBeenCalledWith({ look: charade.look, emotes: charade.emotes }, reply)
+        expect(effects.showPerformer).not.toHaveBeenCalled()
+      } else {
+        expect(effects.showPerformer).toHaveBeenCalledWith(charade.look, charade.emotes)
+        expect(effects.showDuet).not.toHaveBeenCalled()
+      }
+      expect(effects.showStageReward).toHaveBeenCalledWith(charade.authorAddress, charade.authorTitle)
+    }
+  )
+
+  it('offers only the current phrase beat, rejects duplicates, previews selections, and supports undo', () => {
+    const { runtime, effects } = createFlowHarness()
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    receiveShowSchedule(runtime, FIXED_NOW)
+    expect(runtime.beginAuthoring()).toBe(true)
+    expect(runtime.continueAuthoring()).toBe(true)
+
+    const phrase = runtime.getState().author!.phrase
+    const firstChoices = authorBeatChoices(phrase, 0)
+    expect(runtime.getState().author?.offeredEmotes).toEqual(firstChoices)
+    expect(runtime.selectAuthorEmote(firstChoices[0])).toBe(true)
+    expect(effects.showAuthorBeat).toHaveBeenCalledWith(makeLook('0xPlayer', 'Player'), firstChoices[0])
+    expect(runtime.getState().author?.offeredEmotes).toEqual(authorBeatChoices(phrase, 1))
+    expect(runtime.selectAuthorEmote(firstChoices[0])).toBe(false)
+
+    expect(runtime.undoAuthorEmote()).toBe(true)
+    expect(runtime.getState().author).toMatchObject({ selectedEmotes: [], previewed: false, phase: 'emotes' })
+    expect(runtime.getState().author?.offeredEmotes).toEqual(firstChoices)
+    expect(runtime.undoAuthorEmote()).toBe(false)
+  })
+
+  it('requires preview playback completion before posting and ignores cancelled or superseded callbacks', () => {
+    const { runtime, sent, effects } = createFlowHarness()
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    receiveShowSchedule(runtime, FIXED_NOW)
+    runtime.beginAuthoring()
+    runtime.continueAuthoring()
+    chooseAuthorPerformance(runtime, false)
+    effects.showPreview.mockImplementation(() => undefined)
+
+    expect(runtime.getState().author).toMatchObject({ phase: 'confirm', previewed: false })
+    expect(runtime.postAuthor()).toBe(false)
+    expect(runtime.previewAuthor()).toBe(true)
+    const cancelled = effects.showPreview.mock.calls.at(-1)?.[2] as (() => void) | undefined
+    expect(cancelled).toBeTypeOf('function')
+    expect(runtime.getState().author?.previewed).toBe(false)
+    expect(runtime.postAuthor()).toBe(false)
+    expect(runtime.reviseAuthorEmotes()).toBe(true)
+    cancelled?.()
+    expect(runtime.getState().author).toMatchObject({ phase: 'emotes', previewed: false, selectedEmotes: [] })
+
+    chooseAuthorPerformance(runtime, false)
+    expect(runtime.previewAuthor()).toBe(true)
+    const superseded = effects.showPreview.mock.calls.at(-1)?.[2] as (() => void) | undefined
+    expect(runtime.previewAuthor()).toBe(true)
+    const completed = effects.showPreview.mock.calls.at(-1)?.[2] as (() => void) | undefined
+    superseded?.()
+    expect(runtime.getState().author?.previewed).toBe(false)
+    completed?.()
+    expect(runtime.getState().author?.previewed).toBe(true)
+
+    expect(runtime.previewAuthor()).toBe(true)
+    expect(runtime.getState().author?.previewed).toBe(false)
+    const replayed = effects.showPreview.mock.calls.at(-1)?.[2] as (() => void) | undefined
+    replayed?.()
+    expect(runtime.getState().author?.previewed).toBe(true)
+    expect(runtime.reviseAuthorEmotes()).toBe(true)
+    expect(runtime.getState().author).toMatchObject({ phase: 'emotes', previewed: false, selectedEmotes: [] })
+
+    chooseAuthorPerformance(runtime, false)
+    expect(runtime.postAuthor()).toBe(false)
+    expect(messagesOfType(sent, 'post')).toEqual([])
+  })
+
+  it('keeps an in-flight preview valid when touring consent changes', () => {
+    const { runtime, effects } = createFlowHarness()
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    receiveShowSchedule(runtime, FIXED_NOW)
+    runtime.beginAuthoring()
+    runtime.continueAuthoring()
+    chooseAuthorPerformance(runtime, false)
+    effects.showPreview.mockImplementation(() => undefined)
+
+    expect(runtime.previewAuthor()).toBe(true)
+    const completed = effects.showPreview.mock.calls.at(-1)?.[2] as (() => void) | undefined
+    expect(runtime.toggleTouringConsent()).toBe(true)
+    completed?.()
+
+    expect(runtime.getState().author).toMatchObject({ touringConsent: true, previewed: true })
+    expect(runtime.postAuthor()).toBe(true)
+  })
+
+  it('cancels preview callbacks after back, a new ready, or post', () => {
+    const back = createFlowHarness()
+    back.runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    receiveShowSchedule(back.runtime, FIXED_NOW)
+    back.runtime.beginAuthoring()
+    back.runtime.continueAuthoring()
+    chooseAuthorPerformance(back.runtime, false)
+    back.effects.showPreview.mockImplementation(() => undefined)
+    expect(back.runtime.previewAuthor()).toBe(true)
+    const afterBack = back.effects.showPreview.mock.calls.at(-1)?.[2] as (() => void) | undefined
+    back.runtime.backFromAuthor()
+    afterBack?.()
+    expect(back.runtime.getState()).toMatchObject({ screen: 'foyer', author: { previewed: false } })
+
+    const ready = createFlowHarness()
+    ready.runtime.receive({ type: 'ready', data: { instanceId: 'server-1', serverTime: FIXED_NOW } })
+    receiveShowSchedule(ready.runtime, FIXED_NOW, 'server-1')
+    ready.runtime.beginAuthoring()
+    ready.runtime.continueAuthoring()
+    chooseAuthorPerformance(ready.runtime, false)
+    ready.effects.showPreview.mockImplementation(() => undefined)
+    expect(ready.runtime.previewAuthor()).toBe(true)
+    const afterReady = ready.effects.showPreview.mock.calls.at(-1)?.[2] as (() => void) | undefined
+    ready.runtime.receive({ type: 'ready', data: { instanceId: 'server-2', serverTime: FIXED_NOW } })
+    afterReady?.()
+    expect(ready.runtime.getState()).toMatchObject({ screen: 'foyer', author: null })
+
+    const posted = createFlowHarness()
+    posted.runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    receiveShowSchedule(posted.runtime, FIXED_NOW)
+    posted.runtime.beginAuthoring()
+    posted.runtime.continueAuthoring()
+    chooseAuthorPerformance(posted.runtime, false)
+    posted.effects.showPreview.mockImplementation(() => undefined)
+    expect(posted.runtime.previewAuthor()).toBe(true)
+    const afterPost = posted.effects.showPreview.mock.calls.at(-1)?.[2] as (() => void) | undefined
+    afterPost?.()
+    const listener = vi.fn()
+    posted.runtime.subscribe(listener)
+    expect(posted.runtime.postAuthor()).toBe(true)
+    const updatesAfterPost = listener.mock.calls.length
+    afterPost?.()
+    expect(listener).toHaveBeenCalledTimes(updatesAfterPost)
+  })
+
+  it.each(['ordinary', 'answer-back', 'ghost-mail'] as const)(
+    'resends one exact pending %s post across a same-show restart and clears it across a new show',
+    (shape) => {
+      const firstTimestamp = SEASON_ZERO_WEEKS[0].eligibility.startsAt + 60 * 60 * 1_000
+      const nextTimestamp = SEASON_ZERO_WEEKS[1].eligibility.startsAt + 60 * 60 * 1_000
+      const { runtime, sent, setNow } = createFlowHarness({ now: firstTimestamp })
+      runtime.receive({ type: 'ready', data: { instanceId: 'server-1', serverTime: firstTimestamp } })
+      receiveShowSchedule(runtime, firstTimestamp, 'server-1')
+      runtime.beginAuthoring()
+      if (shape !== 'ordinary') {
+        runtime.dispatch({
+          type: 'author',
+          returnScreen: 'foyer',
+          draft: {
+            ...runtime.getState().author!,
+            ...(shape === 'answer-back'
+              ? { replyTo: 'charade-to-answer' }
+              : { recipient: { address: `0x${'7'.repeat(40)}`, name: 'Recipient' } })
+          }
+        })
+      }
+      runtime.continueAuthoring()
+      chooseAuthorPerformance(runtime)
+      expect(runtime.postAuthor()).toBe(true)
+      const pendingPost = messagesOfType(sent, 'post').at(-1)!
+      if (shape === 'ordinary') {
+        expect(pendingPost.data).not.toHaveProperty('replyTo')
+        expect(pendingPost.data).not.toHaveProperty('recipient')
+      } else if (shape === 'answer-back') {
+        expect(pendingPost.data).toMatchObject({ replyTo: 'charade-to-answer' })
+      } else {
+        expect(pendingPost.data).toMatchObject({ recipient: `0x${'7'.repeat(40)}` })
+      }
+
+      runtime.receive({ type: 'ready', data: { instanceId: 'server-2', serverTime: firstTimestamp } })
+
+      expect(messagesOfType(sent, 'post').slice(-2)).toEqual([pendingPost, pendingPost])
+      expect(runtime.getState()).toMatchObject({
+        screen: 'foyer',
+        author: null,
+        pending: [{ requestId: pendingPost.data.requestId, kind: 'post' }]
+      })
+
+      const replayCount = messagesOfType(sent, 'post').length
+      setNow(nextTimestamp)
+      runtime.receive({ type: 'ready', data: { instanceId: 'server-3', serverTime: nextTimestamp } })
+
+      expect(messagesOfType(sent, 'post')).toHaveLength(replayCount)
+      expect(runtime.getState().pending).toEqual([])
+    }
+  )
+
   it('defaults touring consent off and includes false in an ordinary post', () => {
     const { runtime, sent } = createFlowHarness()
     runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
@@ -1658,10 +2081,7 @@ describe('author controls and request guards', () => {
     expect(runtime.getState().author?.touringConsent).toBe(false)
     expect(runtime.toggleTouringConsent()).toBe(false)
     expect(runtime.continueAuthoring()).toBe(true)
-    runtime
-      .getState()
-      .author!.offeredEmotes.slice(0, 3)
-      .forEach((emote) => runtime.selectAuthorEmote(emote))
+    chooseAuthorPerformance(runtime)
 
     expect(canToggleTouringConsent(runtime.getState().author)).toBe(true)
     expect(runtime.postAuthor()).toBe(true)
@@ -1674,19 +2094,13 @@ describe('author controls and request guards', () => {
     receiveShowSchedule(runtime, FIXED_NOW)
     runtime.beginAuthoring()
     runtime.continueAuthoring()
-    runtime
-      .getState()
-      .author!.offeredEmotes.slice(0, 3)
-      .forEach((emote) => runtime.selectAuthorEmote(emote))
+    chooseAuthorPerformance(runtime)
 
     expect(runtime.toggleTouringConsent()).toBe(true)
     expect(runtime.getState().author?.touringConsent).toBe(true)
     expect(runtime.reviseAuthorEmotes()).toBe(true)
     expect(runtime.getState().author?.touringConsent).toBe(true)
-    runtime
-      .getState()
-      .author!.offeredEmotes.slice(0, 3)
-      .forEach((emote) => runtime.selectAuthorEmote(emote))
+    chooseAuthorPerformance(runtime)
     expect(runtime.postAuthor()).toBe(true)
     const firstPost = messagesOfType(sent, 'post').at(-1)!
     expect(firstPost.data.touringConsent).toBe(true)
@@ -1707,6 +2121,27 @@ describe('author controls and request guards', () => {
     expect(runtime.guess(0)).toBe(false)
   })
 
+  it('waits for the full three-beat performance before the first guess but permits the retry', () => {
+    let performanceComplete = false
+    const { runtime } = createFlowHarness({ canGuess: () => performanceComplete })
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    serveCharade(runtime, makeDecodeCharade())
+
+    expect(runtime.guess(0)).toBe(false)
+    expect(runtime.getState().pending).toEqual([])
+
+    performanceComplete = true
+    expect(runtime.guess(1)).toBe(true)
+    const requestId = runtime.getState().pending.find((request) => request.kind === 'guess')!.requestId
+    runtime.receive({
+      type: 'retry',
+      data: { requestId, charadeId: 'charade-1', removedAnswerIndex: 1, replayBeatIndex: 2 }
+    })
+
+    performanceComplete = false
+    expect(runtime.guess(0)).toBe(true)
+  })
+
   it('auto-advances authoring after the third emote and blocks authoring during a pending guess', () => {
     const { runtime } = createFlowHarness()
     runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
@@ -1714,8 +2149,7 @@ describe('author controls and request guards', () => {
     expect(runtime.beginAuthoring()).toBe(true)
     expect(runtime.getState().author?.phase).toBe('phrase')
     expect(runtime.continueAuthoring()).toBe(true)
-    const offered = runtime.getState().author!.offeredEmotes
-    offered.slice(0, 3).forEach((emote) => runtime.selectAuthorEmote(emote))
+    chooseAuthorPerformance(runtime, false)
     expect(runtime.getState().author?.phase).toBe('confirm')
 
     runtime.backFromAuthor()
@@ -1729,7 +2163,7 @@ describe('author controls and request guards', () => {
     receiveShowSchedule(runtime, FIXED_NOW)
     expect(runtime.beginAuthoring()).toBe(true)
     const first = runtime.getState().author!
-    const chosen = [first.offeredEmotes[2], first.offeredEmotes[0], first.offeredEmotes[1]]
+    const chosen = canonicalPerformance(first.phrase)!
     for (const emote of chosen) runtime.selectAuthorEmote(emote)
     expect(runtime.getState().author?.selectedEmotes).toEqual(chosen)
 
@@ -1743,6 +2177,113 @@ describe('author controls and request guards', () => {
     expect(runtime.shuffleAuthorPhrase()).toBe(false)
     expect(runtime.getState().dealtPhraseIds).toEqual([first.phrase.id, second.phrase.id, third.phrase.id])
     expect(new Set(runtime.getState().dealtPhraseIds).size).toBe(3)
+  })
+
+  it('preserves dealt phrases across a same-show restart and clears them across a new-show restart', () => {
+    const firstTimestamp = SEASON_ZERO_WEEKS[0].eligibility.startsAt + 60 * 60 * 1000
+    const nextTimestamp = SEASON_ZERO_WEEKS[1].eligibility.startsAt + 60 * 60 * 1000
+    const { runtime, setNow } = createFlowHarness({ now: firstTimestamp })
+    runtime.receive({ type: 'ready', data: { instanceId: 'server-1', serverTime: firstTimestamp } })
+    receiveShowSchedule(runtime, firstTimestamp, 'server-1')
+    expect(runtime.beginAuthoring()).toBe(true)
+    expect(runtime.shuffleAuthorPhrase()).toBe(true)
+    const dealt = [...runtime.getState().dealtPhraseIds]
+    expect(dealt).toHaveLength(2)
+
+    runtime.receive({ type: 'ready', data: { instanceId: 'server-2', serverTime: firstTimestamp } })
+    expect(runtime.getState().dealtPhraseIds).toEqual(dealt)
+
+    receiveShowSchedule(runtime, firstTimestamp, 'server-2')
+    setNow(nextTimestamp)
+    runtime.receive({ type: 'ready', data: { instanceId: 'server-3', serverTime: nextTimestamp } })
+    expect(runtime.getState().dealtPhraseIds).toEqual([])
+  })
+
+  it('keeps an active reveal intact when the author phrase deck is exhausted', () => {
+    const { runtime, effects } = createFlowHarness()
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    receiveShowSchedule(runtime, FIXED_NOW)
+    exhaustActivePhraseDeck(runtime)
+    const charade = makeDecodeCharade('exhausted-reveal')
+    serveCharade(runtime, charade)
+    expect(runtime.guess(0)).toBe(true)
+    receiveReveal(runtime, {
+      charadeId: charade.id,
+      correct: true,
+      phrase: charade.answers[0],
+      stats: { total: 1, correct: 1 },
+      yourScore: 1
+    })
+    effects.cancelReveal.mockClear()
+    effects.clearStageReward.mockClear()
+
+    expect(runtime.beginAuthoring()).toBe(false)
+
+    expect(runtime.getState()).toMatchObject({
+      screen: 'reveal',
+      charade: { id: charade.id },
+      reveal: { charadeId: charade.id },
+      errorCode: 'deck_exhausted'
+    })
+    expect(effects.cancelReveal).not.toHaveBeenCalled()
+    expect(effects.clearStageReward).not.toHaveBeenCalled()
+  })
+
+  it('keeps a foyer charade staged when the author phrase deck is exhausted', () => {
+    const { runtime, effects } = createFlowHarness()
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    receiveShowSchedule(runtime, FIXED_NOW)
+    exhaustActivePhraseDeck(runtime)
+    const charade = makeDecodeCharade('exhausted-foyer')
+    serveCharade(runtime, charade)
+    runtime.showFoyer()
+    effects.cancelReveal.mockClear()
+    effects.clearStageReward.mockClear()
+
+    expect(runtime.beginAuthoring()).toBe(false)
+
+    expect(runtime.getState()).toMatchObject({
+      screen: 'foyer',
+      charade: { id: charade.id },
+      errorCode: 'deck_exhausted'
+    })
+    expect(effects.cancelReveal).not.toHaveBeenCalled()
+    expect(effects.clearStageReward).not.toHaveBeenCalled()
+  })
+
+  it('keeps Ghost Mail and its staged charade intact when the author phrase deck is exhausted', () => {
+    const sender = `0x${'1'.repeat(40)}`
+    const recipient = `0x${'2'.repeat(40)}`
+    const { runtime, effects } = createFlowHarness({ address: sender })
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    receiveShowSchedule(runtime, FIXED_NOW)
+    exhaustActivePhraseDeck(runtime)
+    const charade = makeDecodeCharade('exhausted-mail')
+    serveCharade(runtime, charade)
+    runtime.receive({
+      type: 'boards',
+      data: {
+        topDecoders: [],
+        hardestGhosts: [],
+        ghostOfNightId: '',
+        playbill: [{ address: recipient, name: 'Recipient', isGuest: false, title: '', performedAt: FIXED_NOW }]
+      }
+    })
+    expect(runtime.showMail()).toBe(true)
+    expect(runtime.selectGhostMailRecipient(recipient)).toBe(true)
+    effects.cancelReveal.mockClear()
+    effects.clearStageReward.mockClear()
+
+    expect(runtime.beginGhostMail()).toBe(false)
+
+    expect(runtime.getState()).toMatchObject({
+      screen: 'mail',
+      charade: { id: charade.id },
+      mailRecipient: { address: recipient, name: 'Recipient' },
+      errorCode: 'deck_exhausted'
+    })
+    expect(effects.cancelReveal).not.toHaveBeenCalled()
+    expect(effects.clearStageReward).not.toHaveBeenCalled()
   })
 
   it('blocks actions until ready, invalid answer indexes, incomplete previews/posts, and duplicate pending requests', () => {
@@ -1773,47 +2314,14 @@ describe('author controls and request guards', () => {
     expect(runtime.beginAuthoring()).toBe(true)
     expect(runtime.previewAuthor()).toBe(false)
     expect(runtime.postAuthor()).toBe(false)
-    const offered = runtime.getState().author!.offeredEmotes
-    offered.slice(0, 3).forEach((emote) => runtime.selectAuthorEmote(emote))
+    chooseAuthorPerformance(runtime, false)
     expect(runtime.previewAuthor()).toBe(false)
     expect(runtime.getState().errorCode).toBe('player_look_unavailable')
-    expect(runtime.postAuthor()).toBe(true)
+    expect(runtime.postAuthor()).toBe(false)
     expect(runtime.postAuthor()).toBe(false)
     expect(messagesOfType(sent, 'nextCharade')).toHaveLength(1)
     expect(messagesOfType(sent, 'guess')).toHaveLength(1)
-    expect(messagesOfType(sent, 'post')).toHaveLength(1)
-  })
-
-  it('pages through all 16 emotes for every beat and allows a repeated three-beat performance', () => {
-    const { runtime } = createFlowHarness()
-    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
-    receiveShowSchedule(runtime, FIXED_NOW)
-    runtime.beginAuthoring()
-    runtime.continueAuthoring()
-    for (let beat = 0; beat < 3; beat += 1) {
-      const paged = new Set<Emote>()
-      for (let page = 0; page < AUTHOR_EMOTE_PAGE_COUNT; page += 1) {
-        authorEmotePage(beat, page).forEach((emote) => paged.add(emote))
-      }
-      expect([...paged].sort()).toEqual([...EMOTE_VOCABULARY].sort())
-    }
-    for (let page = 0; page < AUTHOR_EMOTE_PAGE_COUNT; page += 1) {
-      expect(runtime.moreAuthorEmotes()).toBe(true)
-      const nextPage = (page + 1) % AUTHOR_EMOTE_PAGE_COUNT
-      expect(runtime.getState().author?.emotePage).toBe(nextPage)
-      expect(runtime.getState().author?.offeredEmotes.slice(nextPage * 4, nextPage * 4 + 4)).toEqual(
-        authorEmotePage(0, nextPage)
-      )
-    }
-
-    runtime.selectAuthorEmote('wave')
-    runtime.selectAuthorEmote('wave')
-    runtime.selectAuthorEmote('wave')
-
-    expect(runtime.getState().author?.selectedEmotes).toEqual(['wave', 'wave', 'wave'])
-    expect(runtime.getState().author?.phase).toBe('confirm')
-    expect(runtime.reviseAuthorEmotes()).toBe(true)
-    expect(runtime.getState().author).toMatchObject({ selectedEmotes: [], emotePage: 0, phase: 'emotes' })
+    expect(messagesOfType(sent, 'post')).toHaveLength(0)
   })
 })
 
@@ -1852,10 +2360,7 @@ describe('show schedule author policy', () => {
 
     receiveShowSchedule(runtime, firstTimestamp)
     expect(runtime.beginAuthoring()).toBe(true)
-    runtime
-      .getState()
-      .author!.offeredEmotes.slice(0, 3)
-      .forEach((emote) => runtime.selectAuthorEmote(emote))
+    chooseAuthorPerformance(runtime, false)
 
     setNow(nextTimestamp)
     runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: nextTimestamp } })
@@ -1911,23 +2416,22 @@ describe('show schedule author policy', () => {
     }
   )
 
-  it('keeps the complete 120-phrase deck available outside Season Zero', () => {
+  it('keeps the complete playable phrase deck available outside Season Zero', () => {
     const { runtime } = createFlowHarness({ now: FIXED_NOW })
     runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
     const policy = receiveShowSchedule(runtime, FIXED_NOW)
     expect(policy.kind).toBe('daily')
-    expect(policy.primaryPhraseIds).toHaveLength(DECK.length)
+    expect(policy.primaryPhraseIds).toHaveLength(PLAYABLE_DECK.length)
 
-    const target = DECK.at(-1)!
-    for (const phrase of DECK) {
+    const target = PLAYABLE_DECK.at(-1)!
+    for (const phrase of PLAYABLE_DECK) {
       if (phrase.id === target.id) continue
       runtime.dispatch({
         type: 'author',
         returnScreen: 'foyer',
         draft: {
           phrase,
-          offeredEmotes: [...EMOTE_VOCABULARY],
-          emotePage: 0,
+          offeredEmotes: [...authorBeatChoices(phrase, 0)],
           selectedEmotes: [],
           shufflesRemaining: 2,
           phase: 'phrase',
@@ -1957,10 +2461,7 @@ describe('show schedule author policy', () => {
     })
     expect(runtime.selectGhostMailRecipient(recipient)).toBe(true)
     expect(runtime.beginAuthoring()).toBe(true)
-    runtime
-      .getState()
-      .author!.offeredEmotes.slice(0, 3)
-      .forEach((emote) => runtime.selectAuthorEmote(emote))
+    chooseAuthorPerformance(runtime)
     setNow(8_640_000_000_000_001)
 
     expect(runtime.beginAuthoring()).toBe(false)
@@ -1975,10 +2476,7 @@ describe('show schedule author policy', () => {
     runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
     const firstPolicy = receiveShowSchedule(runtime, FIXED_NOW)
     expect(runtime.beginAuthoring()).toBe(true)
-    runtime
-      .getState()
-      .author!.offeredEmotes.slice(0, 3)
-      .forEach((emote) => runtime.selectAuthorEmote(emote))
+    chooseAuthorPerformance(runtime)
     expect(runtime.postAuthor()).toBe(true)
     const pendingPost = messagesOfType(sent, 'post').at(-1)!
     const charade = makeDecodeCharade('old-show-decode')
@@ -2335,10 +2833,7 @@ describe('show schedule author policy', () => {
     postHarness.runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: beforeMidnight } })
     receiveShowSchedule(postHarness.runtime, beforeMidnight)
     expect(postHarness.runtime.beginAuthoring()).toBe(true)
-    postHarness.runtime
-      .getState()
-      .author!.offeredEmotes.slice(0, 3)
-      .forEach((emote) => postHarness.runtime.selectAuthorEmote(emote))
+    chooseAuthorPerformance(postHarness.runtime)
     expect(postHarness.runtime.postAuthor()).toBe(true)
     const postRequest = postHarness.runtime.getState().pending.find((request) => request.kind === 'post')!
     postHarness.setNow(afterMidnight)
@@ -2437,7 +2932,6 @@ describe('show schedule author policy', () => {
       draft: {
         phrase: offPolicy,
         offeredEmotes: [...EMOTE_VOCABULARY],
-        emotePage: 0,
         selectedEmotes: [],
         shufflesRemaining: 2,
         phase: 'emotes',
@@ -2550,6 +3044,97 @@ describe('second-chance client flow', () => {
 
     expect(runtime.getState()).toMatchObject({ screen: 'reveal', retry: null, reveal: { attempt: 2 } })
     expect(runtime.guess(2)).toBe(false)
+  })
+
+  it('keeps and exactly resends a pending final retry guess across a same-show restart', () => {
+    const harness = createFlowHarness()
+    const { runtime, sent, effects } = harness
+    enterRetry(harness)
+    expect(runtime.guess(0)).toBe(true)
+    const pendingGuess = messagesOfType(sent, 'guess').at(-1)!
+    const nextRequestsBefore = messagesOfType(sent, 'nextCharade').length
+    effects.showPerformer.mockClear()
+    effects.showRetryBeat.mockClear()
+    effects.beginReveal.mockClear()
+    effects.resolveReveal.mockClear()
+
+    runtime.receive({ type: 'ready', data: { instanceId: 'restarted-server', serverTime: FIXED_NOW } })
+
+    expect(messagesOfType(sent, 'guess').slice(-2)).toEqual([pendingGuess, pendingGuess])
+    expect(messagesOfType(sent, 'nextCharade')).toHaveLength(nextRequestsBefore)
+    expect(runtime.getState()).toMatchObject({
+      screen: 'decode',
+      charade: { id: 'charade-1' },
+      retry: { charadeId: 'charade-1', removedAnswerIndex: 1, replayBeatIndex: 2 },
+      pending: [{ requestId: pendingGuess.data.requestId, kind: 'guess' }]
+    })
+    expect(effects.showPerformer).toHaveBeenCalledWith(
+      runtime.getState().charade!.look,
+      runtime.getState().charade!.emotes
+    )
+    expect(effects.showRetryBeat).toHaveBeenCalledWith(2)
+    expect(effects.beginReveal).toHaveBeenCalledWith(runtime.getState().charade, 0)
+
+    const durableReveal = {
+      type: 'reveal' as const,
+      data: {
+        requestId: pendingGuess.data.requestId,
+        revision: 0,
+        charadeId: 'charade-1',
+        correct: true,
+        phrase: 'Answer one',
+        stats: { total: 1, correct: 1 },
+        yourScore: 50,
+        attempt: 2
+      }
+    }
+    runtime.receive(durableReveal)
+    runtime.receive(durableReveal)
+
+    expect(runtime.getState()).toMatchObject({ screen: 'reveal', retry: null, reveal: { attempt: 2 }, pending: [] })
+    expect(effects.resolveReveal).toHaveBeenCalledTimes(1)
+  })
+
+  it('abandons a resent final retry only when the restarted server reports it was never served', () => {
+    const harness = createFlowHarness({ canDecode: () => true })
+    const { runtime, sent } = harness
+    enterRetry(harness)
+    expect(runtime.guess(0)).toBe(true)
+    const pendingGuess = messagesOfType(sent, 'guess').at(-1)!
+
+    runtime.receive({ type: 'ready', data: { instanceId: 'restarted-server', serverTime: FIXED_NOW } })
+
+    expect(messagesOfType(sent, 'guess').slice(-2)).toEqual([pendingGuess, pendingGuess])
+    expect(runtime.getState()).toMatchObject({
+      screen: 'decode',
+      charade: { id: 'charade-1' },
+      retry: { charadeId: 'charade-1', removedAnswerIndex: 1, replayBeatIndex: 2 },
+      pending: [{ requestId: pendingGuess.data.requestId, kind: 'guess' }]
+    })
+    runtime.receive({
+      type: 'requestError',
+      data: { code: 'charade-not-served', requestId: pendingGuess.data.requestId }
+    })
+    receiveShowSchedule(runtime, FIXED_NOW, 'restarted-server')
+
+    expect(runtime.getState()).toMatchObject({ screen: 'foyer', charade: null, retry: null })
+    expect(runtime.getState().pending.some((request) => request.kind === 'guess')).toBe(false)
+    expect(messagesOfType(sent, 'nextCharade').at(-1)?.data.exclude).toEqual(['charade-1'])
+  })
+
+  it('clears a pending final retry guess instead of resending it across a new show', () => {
+    const harness = createFlowHarness()
+    const { runtime, sent, setNow } = harness
+    enterRetry(harness)
+    expect(runtime.guess(0)).toBe(true)
+    const guessCount = messagesOfType(sent, 'guess').length
+    const nextShow = FIXED_NOW + 24 * 60 * 60 * 1_000
+
+    setNow(nextShow)
+    runtime.receive({ type: 'ready', data: { instanceId: 'next-show-server', serverTime: nextShow } })
+
+    expect(messagesOfType(sent, 'guess')).toHaveLength(guessCount)
+    expect(runtime.getState()).toMatchObject({ screen: 'foyer', charade: null, retry: null, pending: [] })
   })
 
   it('abandons retry after a real same-instance transport drop and excludes that charade from the refetch', () => {

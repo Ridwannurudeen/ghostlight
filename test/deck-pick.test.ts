@@ -2,13 +2,21 @@ import { describe, expect, it, vi } from 'vitest'
 import { decodeEvent, encodeEvent } from '@dcl/sdk/network/events/protocol'
 import { PROTOCOL_VERSION, THEMES, themeForTimestamp } from '../src/shared/config'
 import {
+  authorBeatChoices,
+  canonicalPerformance,
   CATEGORIES,
   DECK,
   EMOTE_VOCABULARY,
   HOUSE_CHARADE,
   HOUSE_CHARADES,
+  isAllowedPerformance,
+  isDecodablePerformance,
+  performanceMatchCount,
+  PLAYABLE_DECK,
+  playablePhrase,
   type Category,
-  type Phrase
+  type Phrase,
+  type PlayablePhrase
 } from '../src/shared/deck'
 import { Messages } from '../src/shared/messages'
 import {
@@ -41,8 +49,8 @@ const charade = (id: string, authorAddress: string, total: number, createdAt: nu
   v: STORAGE_SCHEMA_VERSION,
   id,
   author: look(authorAddress),
-  phraseId: DECK[0].id,
-  emotes: [...DECK[0].suggested],
+  phraseId: PLAYABLE_DECK[0].id,
+  emotes: canonicalPerformance(PLAYABLE_DECK[0])!,
   createdAt,
   guesses: { total, correct: 0 },
   lastGuessAt: 0,
@@ -51,13 +59,11 @@ const charade = (id: string, authorAddress: string, total: number, createdAt: nu
 
 const firstWord = (text: string) => text.trim().split(/\s+/u)[0].toLocaleLowerCase()
 
-const canonicalTriplet = (phrase: Phrase) => [...phrase.suggested].sort().join(':')
-
-const COLLISION_GROUPS = [
-  ['food-share-the-popcorn', 'food-toast-a-marshmallow', 'food-serve-breakfast'],
-  ['awkward-wave-at-wrong-person', 'awkward-enter-wrong-room'],
-  ['food-steal-some-fries', 'food-hunt-a-midnight-snack']
-] as const
+function performances(phrase: PlayablePhrase): Array<[string, string, string]> {
+  return phrase.beats[0].flatMap((first) =>
+    phrase.beats[1].flatMap((second) => phrase.beats[2].map((third) => [first, second, third]))
+  )
+}
 
 describe('phrase deck', () => {
   it('contains 120 unique, short player phrases split evenly across six categories', () => {
@@ -96,6 +102,79 @@ describe('phrase deck', () => {
     }
   })
 
+  it('keeps the reviewed 30-phrase release deck at five per theme and two choices per ordered beat', () => {
+    const vocabulary = new Set<string>(EMOTE_VOCABULARY)
+
+    expect(PLAYABLE_DECK).toHaveLength(30)
+    expect(PLAYABLE_DECK.length).toBeLessThan(DECK.length)
+    expect(new Set(PLAYABLE_DECK.map((phrase) => phrase.id)).size).toBe(PLAYABLE_DECK.length)
+    for (const category of CATEGORIES) {
+      expect(
+        PLAYABLE_DECK.filter((phrase) => phrase.category === category),
+        category
+      ).toHaveLength(5)
+    }
+
+    for (const phrase of PLAYABLE_DECK) {
+      expect(playablePhrase(phrase), phrase.id).toBe(phrase)
+      expect(playablePhrase(phrase.id), phrase.id).toBe(phrase)
+      expect(phrase.beats).toHaveLength(3)
+      for (let beat = 0; beat < 3; beat += 1) {
+        const choices = authorBeatChoices(phrase, beat)
+        expect(choices, `${phrase.id}:${beat}`).toHaveLength(2)
+        expect(new Set(choices).size, `${phrase.id}:${beat}`).toBe(choices.length)
+        expect(
+          choices.every((emote) => vocabulary.has(emote)),
+          `${phrase.id}:${beat}`
+        ).toBe(true)
+      }
+      const canonical = canonicalPerformance(phrase)
+      expect(canonical, phrase.id).not.toBeNull()
+      expect(phrase.suggested, phrase.id).toEqual(canonical)
+      expect(new Set(canonical).size, phrase.id).toBe(3)
+      expect(isAllowedPerformance(phrase, canonical!), phrase.id).toBe(true)
+      expect(performanceMatchCount(phrase, canonical!), phrase.id).toBe(3)
+    }
+
+    expect(playablePhrase('everyday-brush-your-teeth')).toBeNull()
+    expect(playablePhrase('missing')).toBeNull()
+    expect(canonicalPerformance('missing')).toBeNull()
+    expect(authorBeatChoices('missing', 0)).toEqual([])
+    expect(authorBeatChoices(PLAYABLE_DECK[0], -1)).toEqual([])
+    expect(authorBeatChoices(PLAYABLE_DECK[0], 3)).toEqual([])
+  })
+
+  it('admits only distinct, position-valid performances and gives every valid performance two fair decoys', () => {
+    const ambiguous: string[] = []
+
+    for (const phrase of PLAYABLE_DECK) {
+      for (const performed of performances(phrase)) {
+        const label = `${phrase.id}:${performed.join(',')}`
+        const distinct = new Set(performed).size === 3
+        expect(isAllowedPerformance(phrase, performed), label).toBe(distinct)
+        if (!distinct) continue
+        expect(performanceMatchCount(phrase, performed), label).toBe(3)
+        if (!isDecodablePerformance(phrase, performed, PLAYABLE_DECK)) {
+          ambiguous.push(label)
+          continue
+        }
+        const decoys = pickDecoys(phrase.id, performed, PLAYABLE_DECK, label)
+        expect(decoys, label).toHaveLength(2)
+        expect(
+          decoys.every((decoy) => performanceMatchCount(decoy, performed) <= 1),
+          label
+        ).toBe(true)
+      }
+    }
+
+    expect(ambiguous).toEqual([])
+
+    const phrase = PLAYABLE_DECK[0]
+    const repeated = [phrase.beats[0][0], phrase.beats[0][0], phrase.beats[0][0]]
+    expect(isAllowedPerformance(phrase, repeated)).toBe(false)
+    expect(isDecodablePerformance(phrase, repeated, PLAYABLE_DECK)).toBe(false)
+  })
+
   it('gives every phrase at least two usable same-category decoys', () => {
     for (const phrase of DECK) {
       const sourceFirstWord = firstWord(phrase.text)
@@ -111,14 +190,14 @@ describe('phrase deck', () => {
     }
   })
 
-  it('keeps eleven labelled house charades outside the player deck and every real-content count', () => {
-    expect(HOUSE_CHARADES).toHaveLength(11)
+  it('keeps one reviewed House fallback per category outside the player deck and every real-content count', () => {
+    expect(HOUSE_CHARADES).toHaveLength(CATEGORIES.length)
     expect(HOUSE_CHARADES[0]).toBe(HOUSE_CHARADE)
     expect(new Set(HOUSE_CHARADES.map((charade) => charade.id)).size).toBe(HOUSE_CHARADES.length)
     expect(HOUSE_CHARADES.filter((charade) => !charade.isHouse)).toHaveLength(0)
 
     for (const charade of HOUSE_CHARADES) {
-      const phrase = DECK.find((candidate) => candidate.id === charade.phraseId)
+      const phrase = playablePhrase(charade.phraseId)
       expect(charade.isHouse, charade.id).toBe(true)
       expect(charade.author.name, charade.id).toBe('House')
       expect(
@@ -126,7 +205,8 @@ describe('phrase deck', () => {
         charade.id
       ).toBe(false)
       expect(phrase, charade.id).toBeDefined()
-      expect(charade.emotes, charade.id).toEqual(phrase?.suggested)
+      expect(charade.emotes, charade.id).toEqual(canonicalPerformance(phrase!))
+      expect(isAllowedPerformance(phrase!, charade.emotes), charade.id).toBe(true)
     }
 
     expect(new Set(HOUSE_CHARADES.map((charade) => phraseTheme(charade.phraseId)))).toEqual(new Set(CATEGORIES))
@@ -241,184 +321,40 @@ describe('chooseHouseCharade', () => {
 
 describe('pickDecoys', () => {
   it('returns two stable same-category decoys with distinct first words', () => {
-    const phrase = DECK[0]
-    const first = pickDecoys(phrase.id, phrase.suggested, DECK, 'charade-7')
-    const second = pickDecoys(phrase.id, phrase.suggested, DECK, 'charade-7')
+    const phrase = PLAYABLE_DECK[0]
+    const performed = canonicalPerformance(phrase)!
+    const first = pickDecoys(phrase.id, performed, PLAYABLE_DECK, 'charade-7')
+    const second = pickDecoys(phrase.id, performed, PLAYABLE_DECK, 'charade-7')
 
     expect(first).toEqual(second)
     expect(first).toHaveLength(2)
     expect(first.every((candidate) => candidate.category === phrase.category)).toBe(true)
     expect(first.every((candidate) => candidate.id !== phrase.id)).toBe(true)
     expect(new Set([firstWord(phrase.text), ...first.map((candidate) => firstWord(candidate.text))]).size).toBe(3)
+    expect(first.every((candidate) => performanceMatchCount(candidate, performed) <= 1)).toBe(true)
   })
 
-  it('rejects truth and performed triplet collisions, then picks the closest and most distant decoys', () => {
-    const fixture: Phrase[] = [
-      {
-        id: 'everyday-source',
-        text: 'Act the source',
-        category: 'everyday',
-        theme: 'everyday',
-        suggested: ['wave', 'clap', 'kiss']
-      },
-      {
-        id: 'everyday-ordered-collision',
-        text: 'Copy it exactly',
-        category: 'everyday',
-        theme: 'everyday',
-        suggested: ['wave', 'clap', 'kiss']
-      },
-      {
-        id: 'everyday-unordered-collision',
-        text: 'Reorder that copy',
-        category: 'everyday',
-        theme: 'everyday',
-        suggested: ['kiss', 'wave', 'clap']
-      },
-      {
-        id: 'everyday-performed-collision',
-        text: 'Match every move',
-        category: 'everyday',
-        theme: 'everyday',
-        suggested: ['dab', 'wave', 'clap']
-      },
-      {
-        id: 'everyday-close',
-        text: 'Echo two moves',
-        category: 'everyday',
-        theme: 'everyday',
-        suggested: ['wave', 'clap', 'robot']
-      },
-      {
-        id: 'everyday-middle',
-        text: 'Echo one move',
-        category: 'everyday',
-        theme: 'everyday',
-        suggested: ['wave', 'robot', 'money']
-      },
-      {
-        id: 'everyday-distant',
-        text: 'Stand far apart',
-        category: 'everyday',
-        theme: 'everyday',
-        suggested: ['robot', 'money', 'shrug']
-      }
-    ]
-
-    expect(pickDecoys('everyday-source', ['wave', 'clap', 'dab'], fixture, 'performance-aware')).toEqual([
-      fixture[4],
-      fixture[6]
-    ])
-  })
-
-  it('never serves any known canonical-collision pair together', () => {
-    for (const ids of COLLISION_GROUPS) {
-      const collisionKey = canonicalTriplet(DECK.find((phrase) => phrase.id === ids[0])!)
-      expect(ids.map((id) => canonicalTriplet(DECK.find((phrase) => phrase.id === id)!))).toEqual(
-        ids.map(() => collisionKey)
-      )
-
-      for (const phraseId of ids) {
-        const phrase = DECK.find((candidate) => candidate.id === phraseId)!
-        const servedIds = new Set([
-          phrase.id,
-          ...pickDecoys(phrase.id, phrase.suggested, DECK, `collision:${phrase.id}`).map((decoy) => decoy.id)
-        ])
-        expect(
-          ids.filter((id) => servedIds.has(id)),
-          phrase.id
-        ).toEqual([phrase.id])
-      }
-    }
-  })
-
-  it('excludes every same-category canonical-collision pair in the full deck', () => {
-    const collisionPairs = DECK.flatMap((left, index) =>
-      DECK.slice(index + 1)
-        .filter((right) => right.category === left.category && canonicalTriplet(right) === canonicalTriplet(left))
-        .map((right) => [left, right] as const)
-    )
-    expect(new Set(collisionPairs.flatMap((pair) => pair.map((phrase) => phrase.id))).size).toBe(21)
-
-    for (const [left, right] of collisionPairs) {
-      for (const phrase of [left, right]) {
-        const decoyIds = pickDecoys(phrase.id, phrase.suggested, DECK, `pair:${left.id}:${right.id}:${phrase.id}`).map(
-          (decoy) => decoy.id
-        )
-        expect(decoyIds, `${phrase.id}:${left.id}:${right.id}`).not.toContain(phrase === left ? right.id : left.id)
-      }
-    }
-  })
-
-  it('keeps all three served canonical triplets pairwise distinguishable for every phrase and seeded performance', () => {
-    for (const phrase of DECK) {
-      for (let seed = 0; seed < EMOTE_VOCABULARY.length; seed += 1) {
-        const performed = [
-          EMOTE_VOCABULARY[seed],
-          EMOTE_VOCABULARY[(seed + 5) % EMOTE_VOCABULARY.length],
-          EMOTE_VOCABULARY[(seed + 11) % EMOTE_VOCABULARY.length]
-        ]
-        const decoys = pickDecoys(phrase.id, performed, DECK, `deck:${phrase.id}:${seed}`)
-        const options = [phrase, ...decoys]
-        const performedTriplet = [...performed].sort().join(':')
-
-        expect(decoys, `${phrase.id}:${seed}`).toHaveLength(2)
-        expect(
-          decoys.every((decoy) => canonicalTriplet(decoy) !== performedTriplet),
-          `${phrase.id}:${seed}:performed`
-        ).toBe(true)
-        expect(new Set(options.map(canonicalTriplet)).size, `${phrase.id}:${seed}`).toBe(3)
-      }
-    }
-  })
-
-  it('returns no decoys for an unknown phrase', () => {
-    expect(pickDecoys('missing', ['wave', 'clap', 'dab'], DECK, 'seed')).toEqual([])
+  it('returns no decoys for an unknown, retired, repeated, or off-plan performance', () => {
+    const phrase = PLAYABLE_DECK[0]
+    expect(pickDecoys('missing', ['wave', 'clap', 'dab'], PLAYABLE_DECK, 'seed')).toEqual([])
+    expect(pickDecoys('everyday-brush-your-teeth', ['wave', 'clap', 'dab'], PLAYABLE_DECK, 'seed')).toEqual([])
+    expect(pickDecoys(phrase.id, ['wave', 'wave', 'wave'], PLAYABLE_DECK, 'seed')).toEqual([])
+    expect(pickDecoys(phrase.id, ['wave', 'clap', 'dab'], PLAYABLE_DECK, 'seed')).toEqual([])
   })
 })
 
 describe('chooseRetryBeat', () => {
-  const fixture: Phrase[] = [
-    {
-      id: 'one',
-      text: 'One',
-      category: 'everyday',
-      theme: 'everyday',
-      suggested: ['wave', 'clap', 'kiss']
-    },
-    {
-      id: 'two',
-      text: 'Two',
-      category: 'everyday',
-      theme: 'everyday',
-      suggested: ['wave', 'robot', 'money']
-    },
-    {
-      id: 'removed',
-      text: 'Removed',
-      category: 'everyday',
-      theme: 'everyday',
-      suggested: ['dab', 'shrug', 'dontsee']
-    }
-  ]
-
-  it('prefers a beat present in exactly one remaining canonical triplet, then zero, then two', () => {
-    expect(chooseRetryBeat(['wave', 'clap', 'dab'], ['one', 'two', 'removed'], 2, 'frequency', fixture)).toBe(1)
-    expect([1, 2]).toContain(
-      chooseRetryBeat(['wave', 'dab', 'shrug'], ['one', 'two', 'removed'], 2, 'zero-before-two', fixture)
-    )
-    expect(
-      chooseRetryBeat(['wave', 'wave', 'wave'], ['one', 'two', 'removed'], 2, 'all-common', fixture)
-    ).toBeGreaterThanOrEqual(0)
-  })
-
-  it('is deterministic and depends only on performed beats, public answers, removal, and seed', () => {
-    const args = [['clap', 'robot', 'dab'], ['one', 'two', 'removed'], 2, 'stable', fixture] as const
+  it('replays a position that distinguishes the two remaining answers and is deterministic', () => {
+    const phrase = PLAYABLE_DECK[0]
+    const performed = canonicalPerformance(phrase)!
+    const decoys = pickDecoys(phrase.id, performed, PLAYABLE_DECK, 'retry-options')
+    const answerIds = [phrase.id, decoys[0].id, decoys[1].id]
+    const args = [performed, answerIds, 1, 'stable', PLAYABLE_DECK] as const
     const selected = chooseRetryBeat(...args)
 
     expect(selected).toBe(chooseRetryBeat(...args))
-    expect(selected).toBeGreaterThanOrEqual(0)
-    expect(selected).toBeLessThan(3)
+    expect(authorBeatChoices(phrase, selected)).toContain(performed[selected])
+    expect(authorBeatChoices(decoys[1], selected)).not.toContain(performed[selected])
   })
 })
 
@@ -670,10 +606,7 @@ describe('installed protocol codec', () => {
       serverTime: 1_777_000_000_000,
       showKey: 'daily:2026-04-24'
     }
-    const decodedDailySchedule = decodeEvent(
-      encodeEvent('showSchedule', dailySchedule as never, Messages),
-      Messages
-    )
+    const decodedDailySchedule = decodeEvent(encodeEvent('showSchedule', dailySchedule as never, Messages), Messages)
     expect(decodedDailySchedule.payload).toEqual(dailySchedule)
     expect(decodedDailySchedule.eventType).toBe('showSchedule')
 

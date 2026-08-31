@@ -1,6 +1,15 @@
 import { describe, expect, it, vi } from 'vitest'
-import { PROTOCOL_VERSION, themeForTimestamp } from '../src/shared/config'
-import { DECK, HOUSE_CHARADE, HOUSE_CHARADES } from '../src/shared/deck'
+import { EMOTE_STEP_SECONDS, PROTOCOL_VERSION, themeForTimestamp } from '../src/shared/config'
+import {
+  authorBeatChoices,
+  canonicalPerformance,
+  DECK,
+  EMOTE_VOCABULARY,
+  HOUSE_CHARADE,
+  HOUSE_CHARADES,
+  PLAYABLE_DECK,
+  playablePhrase
+} from '../src/shared/deck'
 import { pickDecoys, shuffleSeeded } from '../src/shared/pick'
 import { showPolicyForTimestamp } from '../src/shared/show-policy'
 import { SEASON_ZERO_WEEKS } from '../src/shared/seasons'
@@ -10,15 +19,34 @@ import {
   type ProtocolSend,
   type ServerProtocolOptions
 } from '../src/server/server'
-import { GhostlightState } from '../src/server/state'
+import {
+  DURABLE_MUTATION_JOURNAL_KEY,
+  GhostlightState,
+  MAX_DAILY_DECODERS,
+  MAX_DURABLE_COMPLETIONS,
+  MAX_DURABLE_JOURNAL_BYTES,
+  dayKey,
+  type DurableMutation
+} from '../src/server/state'
 import {
   MAX_DIRTY_ENTRIES,
+  MAX_STORAGE_VALUE_BYTES,
   PLAYER_STATS_KEY,
+  RECENT_VISITORS_KEY,
   StorageCapacityError,
   StorageUnavailableError,
+  decoderAggregateKey,
   createStorageRepository
 } from '../src/server/storage'
-import { FIXED_NOW, FakeStorage, deferred, makeCharade, makeLook, makeReply, makeStats } from './test-helpers'
+import {
+  FIXED_NOW,
+  FakeStorage,
+  deferred,
+  makeCharade as makeStoredCharade,
+  makeLook,
+  makeReply as makeStoredReply,
+  makeStats
+} from './test-helpers'
 
 vi.mock('@dcl/sdk/server', () => ({
   Storage: {
@@ -107,6 +135,28 @@ function dataOf<T>(message: SentMessage): T {
 }
 
 let nextRequestSequence = 0
+const TEST_PHRASE = PLAYABLE_DECK[0]
+const TEST_PERFORMANCE = canonicalPerformance(TEST_PHRASE)!
+
+function makeCharade(
+  id: Parameters<typeof makeStoredCharade>[0],
+  overrides: Parameters<typeof makeStoredCharade>[1] = {}
+) {
+  const phrase = playablePhrase(overrides.phraseId ?? '') ?? PLAYABLE_DECK[0]
+  return makeStoredCharade(id, {
+    phraseId: phrase.id,
+    emotes: canonicalPerformance(phrase)!,
+    ...overrides
+  })
+}
+
+function makeReply(
+  address?: Parameters<typeof makeStoredReply>[0],
+  name?: Parameters<typeof makeStoredReply>[1],
+  overrides: Parameters<typeof makeStoredReply>[2] = {}
+) {
+  return makeStoredReply(address, name, { emotes: TEST_PERFORMANCE, ...overrides })
+}
 
 function nextCharadeRequest(exclude: string[] = []) {
   return { requestId: `next-${++nextRequestSequence}`, exclude }
@@ -139,6 +189,7 @@ async function createHarness(
       | 'lookRetryMilliseconds'
       | 'random'
       | 'roundDurationMilliseconds'
+      | 'firstGuessDelayMilliseconds'
       | 'send'
     >
   > = {},
@@ -166,7 +217,8 @@ async function createHarness(
     lookAttempts: overrides.lookAttempts ?? 1,
     lookRetryMilliseconds: overrides.lookRetryMilliseconds ?? 0,
     random: overrides.random ?? (() => 0.5),
-    roundDurationMilliseconds: overrides.roundDurationMilliseconds
+    roundDurationMilliseconds: overrides.roundDurationMilliseconds,
+    firstGuessDelayMilliseconds: overrides.firstGuessDelayMilliseconds ?? 0
   })
   const protocol = {
     ...rawProtocol,
@@ -359,7 +411,7 @@ describe('server readiness and welcome', () => {
     await protocol.handleEnter('player')
     await protocol.handleNextCharade(nextCharadeRequest(), 'player')
     await protocol.handlePost(
-      { phraseId: DECK[0].id, emotes: [...DECK[0].suggested], requestId: 'blocked-post' },
+      { phraseId: TEST_PHRASE.id, emotes: TEST_PERFORMANCE, requestId: 'blocked-post' },
       'player'
     )
     await protocol.handleReact({ kind: 'genius' }, 'player')
@@ -733,7 +785,7 @@ describe('server readiness and welcome', () => {
     sent.length = 0
 
     const posting = protocol.handlePost(
-      { requestId: 'stale-post', phraseId: DECK[0].id, emotes: [...DECK[0].suggested] },
+      { requestId: 'stale-post', phraseId: TEST_PHRASE.id, emotes: TEST_PERFORMANCE },
       'player'
     )
     await vi.waitFor(() => expect(snapshotLook).toHaveBeenCalledTimes(2))
@@ -763,6 +815,64 @@ describe('server readiness and welcome', () => {
       outstandingRequests: 0,
       requestBuckets: 0
     })
+  })
+
+  it('coalesces reconnect leave churn behind a slow checkpoint without starving mutations', async () => {
+    const checkpointStarted = deferred<void>()
+    const checkpointGate = deferred<void>()
+    let holdCheckpoint = false
+    let aliceLookSequence = 0
+    const snapshotLook = vi.fn(async (address: string) =>
+      makeLook(address, address === 'alice' ? `Alice ${++aliceLookSequence}` : 'Bob')
+    )
+    const { storage, repository, state, sent, checkpoint, protocol } = await createHarness({
+      snapshotLook,
+      flush: async () => {
+        if (!holdCheckpoint) return
+        checkpointStarted.resolve()
+        await checkpointGate.promise
+      }
+    })
+    await negotiate(protocol, 'alice')
+    await negotiate(protocol, 'bob')
+    checkpoint.mockClear()
+    holdCheckpoint = true
+
+    const firstLeave = protocol.handleLeave('alice')
+    await checkpointStarted.promise
+    const secondNegotiation = negotiate(protocol, 'alice')
+    await vi.waitFor(() => expect(protocol.mutationQueueDepth()).toBe(2))
+    await protocol.handleLeave('alice')
+    const thirdNegotiation = negotiate(protocol, 'alice')
+    await vi.waitFor(() => expect(protocol.mutationQueueDepth()).toBe(3))
+    await protocol.handleLeave('alice')
+    const posting = protocol.handlePost(
+      { requestId: 'post-after-leave-churn', phraseId: TEST_PHRASE.id, emotes: TEST_PERFORMANCE },
+      'bob'
+    )
+    await Promise.resolve()
+    expect(messagesOfType(sent, 'posted')).toEqual([])
+
+    checkpointGate.resolve()
+    await Promise.all([firstLeave, secondNegotiation, thirdNegotiation, posting])
+    await vi.waitFor(() => {
+      expect(checkpoint).toHaveBeenCalledTimes(3)
+      expect(protocol.mutationQueueDepth()).toBe(0)
+    })
+    await repository.flushNow()
+
+    expect(messagesOfType(sent, 'posted')).toEqual([
+      expect.objectContaining({
+        to: ['bob'],
+        data: expect.objectContaining({ requestId: 'post-after-leave-churn' })
+      })
+    ])
+    expect(state.recentVisitors[0]).toMatchObject({ address: 'alice', name: 'Alice 3' })
+    expect(storage.readJSON<Array<{ address: string; name: string }>>(RECENT_VISITORS_KEY)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ address: 'alice', name: 'Alice 3' })])
+    )
+    expect(storage.readPlayerJSON<{ name: string }>('alice', PLAYER_STATS_KEY)).toMatchObject({ name: 'Alice 3' })
+    expect(protocol.resourceCounts()).toMatchObject({ present: 1, sessionGenerations: 1 })
   })
 
   it('cleans protocol and round state when leave persistence exceeds the dirty budget', async () => {
@@ -798,8 +908,8 @@ describe('server readiness and welcome', () => {
     const before = themeForTimestamp(timestamp)
     const after = themeForTimestamp(timestamp + 1)
     const { state, sent, protocol } = await createHarness({ now: () => timestamp })
-    const beforePhrase = DECK.find((phrase) => phrase.theme === before.id)!
-    const afterPhrase = DECK.find((phrase) => phrase.theme === after.id)!
+    const beforePhrase = PLAYABLE_DECK.find((phrase) => phrase.theme === before.id)!
+    const afterPhrase = PLAYABLE_DECK.find((phrase) => phrase.theme === after.id)!
     state.upsertCharade(
       makeCharade('before-midnight', {
         phraseId: beforePhrase.id,
@@ -834,6 +944,179 @@ describe('server readiness and welcome', () => {
     expect(dataOf<CharadeMessage>(messagesOfType(sent, 'charade')[0]).id).toBe('after-midnight')
   })
 
+  it('queues a midnight rollover behind a healthy durable guess commit', async () => {
+    let timestamp = Date.UTC(2026, 7, 23, 23, 59, 59, 999)
+    const checkpointGate = deferred<void>()
+    let blockNextCheckpoint = false
+    const flush = vi.fn(async () => {
+      if (!blockNextCheckpoint) return
+      blockNextCheckpoint = false
+      await checkpointGate.promise
+    })
+    const { state, sent, protocol } = await createHarness({ now: () => timestamp, flush })
+    const charade = makeCharade('rollover-queued-guess', { author: { address: 'author' } })
+    state.upsertCharade(charade)
+    await negotiate(protocol, 'player')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'player')
+    const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+    blockNextCheckpoint = true
+    const flushCount = flush.mock.calls.length
+    const guessing = protocol.handleGuess(
+      {
+        charadeId: served.id,
+        answerIndex: correctAnswerIndex(state, served),
+        requestId: 'rollover-queued-guess-request'
+      },
+      'player'
+    )
+    await vi.waitFor(() => expect(flush).toHaveBeenCalledTimes(flushCount + 1))
+
+    timestamp += 1
+    let pingCompleted = false
+    const pinging = protocol.handlePing({ seq: 99 }, 'player').then(() => {
+      pingCompleted = true
+    })
+    await Promise.resolve()
+
+    expect(pingCompleted).toBe(false)
+    expect(
+      messagesOfType(sent, 'error').filter((message) => dataOf<ErrorMessage>(message).code === 'storage-unavailable')
+    ).toEqual([])
+
+    checkpointGate.resolve()
+    await Promise.all([guessing, pinging])
+
+    expect(messagesOfType(sent, 'reveal')).toHaveLength(1)
+    expect(
+      messagesOfType(sent, 'error').filter((message) => dataOf<ErrorMessage>(message).code === 'storage-unavailable')
+    ).toEqual([])
+    expect(dataOf<{ serverTime: number }>(messagesOfType(sent, 'ready').at(-1)!)).toMatchObject({
+      serverTime: timestamp
+    })
+  })
+
+  it('revalidates a queued guess inside the mutation lane when midnight passes behind another commit', async () => {
+    let timestamp = Date.UTC(2026, 7, 23, 23, 59, 59, 999)
+    const checkpointStarted = deferred<void>()
+    const checkpointGate = deferred<void>()
+    let holdCheckpoint = false
+    const policy = showPolicyForTimestamp(timestamp)!
+    const phrase = PLAYABLE_DECK.find((candidate) => policy.primaryPhraseIds.includes(candidate.id))!
+    const { state, sent, protocol } = await createHarness({
+      now: () => timestamp,
+      flush: async () => {
+        if (!holdCheckpoint) return
+        checkpointStarted.resolve()
+        await checkpointGate.promise
+      }
+    })
+    const target = makeCharade('queued-midnight-guess', {
+      phraseId: phrase.id,
+      author: { address: 'outside', name: 'Outside' }
+    })
+    state.upsertCharade(target)
+    await negotiate(protocol, 'alice')
+    await negotiate(protocol, 'bob')
+    await negotiate(protocol, 'observer')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'bob')
+    const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+    holdCheckpoint = true
+    const blocking = protocol.handlePost(
+      { requestId: 'midnight-guess-blocker', phraseId: phrase.id, emotes: canonicalPerformance(phrase)! },
+      'alice'
+    )
+    await checkpointStarted.promise
+    sent.length = 0
+
+    const guessing = protocol.handleGuess(
+      {
+        requestId: 'queued-before-midnight-guess',
+        charadeId: served.id,
+        answerIndex: correctAnswerIndex(state, served)
+      },
+      'bob'
+    )
+    await vi.waitFor(() => expect(protocol.mutationQueueDepth()).toBe(2))
+    timestamp += 1
+    let rolloverCompleted = false
+    const rollingOver = protocol.handlePing({ seq: 103 }, 'observer').then(() => {
+      rolloverCompleted = true
+    })
+    await vi.waitFor(() => expect(protocol.mutationQueueDepth()).toBe(3))
+    expect(rolloverCompleted).toBe(false)
+    checkpointGate.resolve()
+    await Promise.all([blocking, guessing, rollingOver])
+
+    expect(messagesOfType(sent, 'reveal')).toEqual([])
+    expect(messagesOfType(sent, 'error')).toEqual([
+      {
+        type: 'requestError',
+        data: { code: 'charade-not-served', requestId: 'queued-before-midnight-guess' },
+        to: ['bob']
+      }
+    ])
+    expect(state.getCharade(target.id)?.guesses).toEqual({ total: 0, correct: 0 })
+    expect(state.playerStats.get('bob')).toMatchObject({ decoded: 0, correct: 0, revision: 0 })
+  })
+
+  it('revalidates a queued post inside the mutation lane when the show changes at midnight', async () => {
+    const firstWeek = SEASON_ZERO_WEEKS[0]
+    const secondWeek = SEASON_ZERO_WEEKS[1]
+    let timestamp = firstWeek.eligibility.endsAt - 1
+    const firstPolicy = showPolicyForTimestamp(timestamp)!
+    const secondPolicy = showPolicyForTimestamp(secondWeek.eligibility.startsAt)!
+    const oldPhrase = PLAYABLE_DECK.find(
+      (phrase) => firstPolicy.primaryPhraseIds.includes(phrase.id) && !secondPolicy.primaryPhraseIds.includes(phrase.id)
+    )!
+    const checkpointStarted = deferred<void>()
+    const checkpointGate = deferred<void>()
+    let holdCheckpoint = false
+    const { state, sent, protocol } = await createHarness({
+      now: () => timestamp,
+      flush: async () => {
+        if (!holdCheckpoint) return
+        checkpointStarted.resolve()
+        await checkpointGate.promise
+      }
+    })
+    await negotiate(protocol, 'alice')
+    await negotiate(protocol, 'bob')
+    await negotiate(protocol, 'observer')
+    holdCheckpoint = true
+    const blocking = protocol.handlePost(
+      { requestId: 'midnight-post-blocker', phraseId: oldPhrase.id, emotes: canonicalPerformance(oldPhrase)! },
+      'alice'
+    )
+    await checkpointStarted.promise
+    sent.length = 0
+
+    const queued = protocol.handlePost(
+      { requestId: 'queued-before-midnight-post', phraseId: oldPhrase.id, emotes: canonicalPerformance(oldPhrase)! },
+      'bob'
+    )
+    await vi.waitFor(() => expect(protocol.mutationQueueDepth()).toBe(2))
+    timestamp = secondWeek.eligibility.startsAt
+    let rolloverCompleted = false
+    const rollingOver = protocol.handlePing({ seq: 104 }, 'observer').then(() => {
+      rolloverCompleted = true
+    })
+    await vi.waitFor(() => expect(protocol.mutationQueueDepth()).toBe(3))
+    expect(rolloverCompleted).toBe(false)
+    checkpointGate.resolve()
+    await Promise.all([blocking, queued, rollingOver])
+
+    expect(messagesOfType(sent, 'posted').filter((message) => message.to?.[0] === 'bob')).toEqual([])
+    expect(messagesOfType(sent, 'error')).toEqual([
+      {
+        type: 'requestError',
+        data: { code: 'invalid-post', requestId: 'queued-before-midnight-post' },
+        to: ['bob']
+      }
+    ])
+    expect(state.getPlayerCharades().filter((charade) => charade.author.address.toLowerCase() === 'bob')).toEqual([])
+    expect(state.playerStats.get('bob')).toMatchObject({ authoredCount: 0, revision: 0 })
+  })
+
   it('does not send rollover state to a session that leaves during a player-stats read', async () => {
     let timestamp = Date.UTC(2026, 7, 23, 23, 59, 59, 999)
     const { state, sent, protocol } = await createHarness({ now: () => timestamp })
@@ -860,7 +1143,7 @@ describe('active Season Zero show enforcement', () => {
     const policy = showPolicyForTimestamp(timestamp)
     expect(policy?.kind).toBe('season-zero')
     if (!policy || policy.kind !== 'season-zero') throw new Error('Expected an active Season Zero policy')
-    const allowedPhrase = DECK.find((phrase) => phrase.id === policy.primaryPhraseIds[0])!
+    const allowedPhrase = PLAYABLE_DECK.find((phrase) => policy.primaryPhraseIds.includes(phrase.id))!
     const offPolicyPhrase = DECK.find((phrase) => !policy.primaryPhraseIds.includes(phrase.id))!
     const sender = `0x${'1'.repeat(40)}`
     const recipient = `0x${'2'.repeat(40)}`
@@ -940,7 +1223,7 @@ describe('active Season Zero show enforcement', () => {
 
     sent.length = 0
     await protocol.handlePost(
-      { requestId: 'in-policy-public', phraseId: allowedPhrase.id, emotes: [...allowedPhrase.suggested] },
+      { requestId: 'in-policy-public', phraseId: allowedPhrase.id, emotes: canonicalPerformance(allowedPhrase)! },
       sender
     )
 
@@ -963,10 +1246,7 @@ describe('active Season Zero show enforcement', () => {
     if (!firstPolicy || firstPolicy.kind !== 'season-zero' || !secondPolicy || secondPolicy.kind !== 'season-zero') {
       throw new Error('Expected adjacent active Season Zero policies')
     }
-    const secondPhraseIds = new Set<string>(secondPolicy.primaryPhraseIds)
-    const oldWeekPhraseId = firstPolicy.primaryPhraseIds.find((phraseId) => !secondPhraseIds.has(phraseId))
-    if (!oldWeekPhraseId) throw new Error('Expected a first-week-only phrase')
-    const oldWeekPhrase = DECK.find((phrase) => phrase.id === oldWeekPhraseId)!
+    const oldWeekPhrase = PLAYABLE_DECK.find((phrase) => firstPolicy.primaryPhraseIds.includes(phrase.id))!
     const lookGate = deferred<ReturnType<typeof makeLook> | null>()
     const snapshotLook = vi
       .fn<ServerProtocolOptions['snapshotLook']>()
@@ -979,7 +1259,7 @@ describe('active Season Zero show enforcement', () => {
     checkpoint.mockClear()
 
     const posting = protocol.handlePost(
-      { requestId: 'cross-week-post', phraseId: oldWeekPhrase.id, emotes: [...oldWeekPhrase.suggested] },
+      { requestId: 'cross-week-post', phraseId: oldWeekPhrase.id, emotes: canonicalPerformance(oldWeekPhrase)! },
       'player'
     )
     await vi.waitFor(() => expect(snapshotLook).toHaveBeenCalledTimes(2))
@@ -1009,7 +1289,7 @@ describe('active Season Zero show enforcement', () => {
     expect(policy?.kind).toBe('season-zero')
     if (!policy || policy.kind !== 'season-zero') throw new Error('Expected an active Season Zero policy')
     const recipient = `0x${'2'.repeat(40)}`
-    const allowedPhraseId = policy.primaryPhraseIds[0]
+    const allowedPhraseId = PLAYABLE_DECK.find((phrase) => policy.primaryPhraseIds.includes(phrase.id))!.id
     const offPolicyPhraseId = DECK.find((phrase) => !policy.primaryPhraseIds.includes(phrase.id))!.id
     const { state, sent, protocol } = await createHarness({ now: () => timestamp })
     const offPolicyMail = makeCharade('older-off-policy-mail', {
@@ -1035,7 +1315,7 @@ describe('active Season Zero show enforcement', () => {
     expect(state.getCharade(offPolicyMail.id)).toEqual(offPolicyMail)
   })
 
-  it('does not emit an old-show mail count when welcome persistence crosses a show boundary', async () => {
+  it('recomputes an eligible mail count when welcome persistence crosses a show boundary', async () => {
     const firstWeek = SEASON_ZERO_WEEKS[0]
     const secondWeek = SEASON_ZERO_WEEKS[1]
     let timestamp = firstWeek.eligibility.endsAt - 1
@@ -1046,9 +1326,7 @@ describe('active Season Zero show enforcement', () => {
     if (!firstPolicy || firstPolicy.kind !== 'season-zero' || !secondPolicy || secondPolicy.kind !== 'season-zero') {
       throw new Error('Expected adjacent active Season Zero policies')
     }
-    const secondPrimaryIds = new Set<string>(secondPolicy.primaryPhraseIds)
-    const firstOnlyPhraseId = firstPolicy.primaryPhraseIds.find((phraseId) => !secondPrimaryIds.has(phraseId))
-    if (!firstOnlyPhraseId) throw new Error('Expected a first-week-only phrase')
+    const firstOnlyPhraseId = PLAYABLE_DECK.find((phrase) => firstPolicy.primaryPhraseIds.includes(phrase.id))!.id
     const recipient = `0x${'5'.repeat(40)}`
     const welcomeCheckpointStarted = deferred<void>()
     const welcomeCheckpointGate = deferred<void>()
@@ -1076,15 +1354,22 @@ describe('active Season Zero show enforcement', () => {
     const welcoming = negotiate(protocol, recipient)
     await welcomeCheckpointStarted.promise
     timestamp = secondWeek.eligibility.startsAt
-    await protocol.handlePing({ seq: 101 }, 'rollover-player')
+    let pingCompleted = false
+    const pinging = protocol.handlePing({ seq: 101 }, 'rollover-player').then(() => {
+      pingCompleted = true
+    })
+    await Promise.resolve()
+    expect(pingCompleted).toBe(false)
     welcomeCheckpointGate.resolve()
-    await welcoming
+    await Promise.all([welcoming, pinging])
 
-    expect(messagesOfType(sent, 'since').filter((message) => message.to?.[0] === recipient)).toEqual([])
+    expect(messagesOfType(sent, 'since').filter((message) => message.to?.[0] === recipient)).toEqual([
+      { type: 'since', data: expect.objectContaining({ mail: 1 }), to: [recipient] }
+    ])
     expect(state.playerStats.get(recipient)?.showSet?.showKey).toBe(`season-zero:${secondWeek.id}`)
   })
 
-  it('does not emit an old-show mail count when the welcome progress send crosses a show boundary', async () => {
+  it('recomputes an eligible mail count when the welcome progress send crosses a show boundary', async () => {
     const firstWeek = SEASON_ZERO_WEEKS[0]
     const secondWeek = SEASON_ZERO_WEEKS[1]
     let timestamp = firstWeek.eligibility.endsAt - 1
@@ -1095,9 +1380,7 @@ describe('active Season Zero show enforcement', () => {
     if (!firstPolicy || firstPolicy.kind !== 'season-zero' || !secondPolicy || secondPolicy.kind !== 'season-zero') {
       throw new Error('Expected adjacent active Season Zero policies')
     }
-    const secondPrimaryIds = new Set<string>(secondPolicy.primaryPhraseIds)
-    const firstOnlyPhraseId = firstPolicy.primaryPhraseIds.find((phraseId) => !secondPrimaryIds.has(phraseId))
-    if (!firstOnlyPhraseId) throw new Error('Expected a first-week-only phrase')
+    const firstOnlyPhraseId = PLAYABLE_DECK.find((phrase) => firstPolicy.primaryPhraseIds.includes(phrase.id))!.id
     const recipient = `0x${'6'.repeat(40)}`
     const progressSendStarted = deferred<void>()
     const progressSendGate = deferred<void>()
@@ -1129,7 +1412,9 @@ describe('active Season Zero show enforcement', () => {
     progressSendGate.resolve()
     await welcoming
 
-    expect(messagesOfType(sent, 'since').filter((message) => message.to?.[0] === recipient)).toEqual([])
+    expect(messagesOfType(sent, 'since').filter((message) => message.to?.[0] === recipient)).toEqual([
+      { type: 'since', data: expect.objectContaining({ mail: 1 }), to: [recipient] }
+    ])
     expect(state.playerStats.get(recipient)?.showSet?.showKey).toBe(`season-zero:${secondWeek.id}`)
   })
 
@@ -1140,7 +1425,7 @@ describe('active Season Zero show enforcement', () => {
     const firstPolicy = showPolicyForTimestamp(timestamp)!
     const { state, sent, protocol } = await createHarness({ now: () => timestamp })
     const charade = makeCharade('pre-boundary-retry', {
-      phraseId: firstPolicy.primaryPhraseIds[0],
+      phraseId: PLAYABLE_DECK.find((phrase) => firstPolicy.primaryPhraseIds.includes(phrase.id))!.id,
       author: { address: 'outside-author' },
       createdAt: timestamp
     })
@@ -1176,7 +1461,7 @@ describe('active Season Zero show enforcement', () => {
     const firstPolicy = showPolicyForTimestamp(timestamp)!
     const { state, sent, protocol } = await createHarness({ now: () => timestamp })
     const charade = makeCharade('pre-boundary-in-flight-guess', {
-      phraseId: firstPolicy.primaryPhraseIds[0],
+      phraseId: PLAYABLE_DECK.find((phrase) => firstPolicy.primaryPhraseIds.includes(phrase.id))!.id,
       author: { address: 'outside-author' },
       createdAt: timestamp
     })
@@ -1229,7 +1514,7 @@ describe('active Season Zero show enforcement', () => {
     const firstPolicy = showPolicyForTimestamp(timestamp)!
     const { state, sent, protocol } = await createHarness({ now: () => timestamp })
     const charade = makeCharade('pre-boundary-player-prerequisite', {
-      phraseId: firstPolicy.primaryPhraseIds[0],
+      phraseId: PLAYABLE_DECK.find((phrase) => firstPolicy.primaryPhraseIds.includes(phrase.id))!.id,
       author: { address: 'outside-author' },
       createdAt: timestamp
     })
@@ -1295,6 +1580,7 @@ describe('active Season Zero show enforcement', () => {
       if (!policy || policy.kind !== 'season-zero') throw new Error(`Expected an active policy for ${week.id}`)
       const allowedPrimaries = new Set<string>(policy.primaryPhraseIds)
       const allowedDecoys = new Set<string>(policy.decoyPhraseIds)
+      const playablePrimaryIds = policy.primaryPhraseIds.filter((phraseId) => playablePhrase(phraseId) !== null)
       const primaryHarness = await createHarness({ now: () => timestamp })
       const offPolicyPhrase =
         DECK.find((phrase) => !allowedPrimaries.has(phrase.id) && phrase.theme === themeForTimestamp(timestamp).id) ??
@@ -1308,7 +1594,7 @@ describe('active Season Zero show enforcement', () => {
         })
       )
 
-      policy.primaryPhraseIds.forEach((phraseId, index) => {
+      playablePrimaryIds.forEach((phraseId, index) => {
         primaryHarness.state.upsertCharade(
           makeCharade(`${week.id}-primary-${index}`, {
             phraseId,
@@ -1321,7 +1607,7 @@ describe('active Season Zero show enforcement', () => {
       primaryHarness.sent.length = 0
 
       const servedPrimaries = new Set<string>()
-      for (let index = 0; index < policy.primaryPhraseIds.length; index += 1) {
+      for (let index = 0; index < playablePrimaryIds.length; index += 1) {
         timestamp += 250
         await primaryHarness.protocol.handleNextCharade(
           { requestId: `${week.id}-primary-next-${index}`, exclude: [] },
@@ -1344,7 +1630,7 @@ describe('active Season Zero show enforcement', () => {
         )
       }
 
-      expect.soft([...servedPrimaries].sort()).toEqual([...policy.primaryPhraseIds].sort())
+      expect.soft([...servedPrimaries].sort()).toEqual([...playablePrimaryIds].sort())
     }
 
     expect.soft(primaryViolations).toEqual([])
@@ -1396,10 +1682,10 @@ describe('active Season Zero show enforcement', () => {
     if (!firstPolicy || firstPolicy.kind !== 'season-zero' || !secondPolicy || secondPolicy.kind !== 'season-zero') {
       throw new Error('Expected adjacent active Season Zero policies')
     }
-    const secondPrimaryIds = new Set<string>(secondPolicy.primaryPhraseIds)
-    const firstPhraseId = firstPolicy.primaryPhraseIds.find((phraseId) => !secondPrimaryIds.has(phraseId))!
-    const firstPrimaryIds = new Set<string>(firstPolicy.primaryPhraseIds)
-    const secondPhraseId = secondPolicy.primaryPhraseIds.find((phraseId) => !firstPrimaryIds.has(phraseId))!
+    const firstPhraseId = PLAYABLE_DECK.find((phrase) => firstPolicy.primaryPhraseIds.includes(phrase.id))!.id
+    const secondPhraseId = PLAYABLE_DECK.find(
+      (phrase) => secondPolicy.primaryPhraseIds.includes(phrase.id) && phrase.id !== firstPhraseId
+    )!.id
     const snapshotLook = async (address: string) => makeLook(address, address)
     const { state, sent, protocol } = await createHarness({ snapshotLook, now: () => timestamp })
     const firstCharade = makeCharade('pre-boundary-charade', {
@@ -1467,6 +1753,207 @@ describe('active Season Zero show enforcement', () => {
 })
 
 describe('charade serving and guesses', () => {
+  it('uses the production three-beat first-guess delay when the option is omitted', async () => {
+    let timestamp = FIXED_NOW
+    const storage = new FakeStorage()
+    const repository = createStorageRepository(storage)
+    const state = new GhostlightState(repository, () => timestamp)
+    await state.hydrate()
+    const sent: SentMessage[] = []
+    const protocol = createServerProtocol({
+      state,
+      send: async (type, data, to) => {
+        sent.push({ type, data, to })
+      },
+      snapshotLook: async (address) => makeLook(address, 'Player'),
+      flush: () => repository.flushNow(),
+      now: () => timestamp,
+      instanceId: 'default-delay-test',
+      lookAttempts: 1,
+      lookRetryMilliseconds: 0,
+      random: () => 0.5
+    })
+    const delay = EMOTE_STEP_SECONDS * 3 * 1_000
+    expect(delay).toBe(7_500)
+    const charade = makeCharade('default-first-guess-delay', { author: { address: 'outside' } })
+    state.upsertCharade(charade)
+    await negotiate(protocol, 'player')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'player')
+    const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+    const guess = {
+      charadeId: served.id,
+      answerIndex: correctAnswerIndex(state, served),
+      requestId: 'default-delay-guess'
+    }
+
+    timestamp += delay - 1
+    sent.length = 0
+    await protocol.handleGuess(guess, 'player')
+    expect(messagesOfType(sent, 'reveal')).toEqual([])
+    expect(messagesOfType(sent, 'error')).toEqual([
+      { type: 'requestError', data: { code: 'invalid-guess', requestId: guess.requestId }, to: ['player'] }
+    ])
+
+    timestamp += 1
+    sent.length = 0
+    await protocol.handleGuess(guess, 'player')
+    expect(messagesOfType(sent, 'reveal')).toHaveLength(1)
+  })
+
+  it('rejects a live first guess just before all three beats finish and accepts it at the exact deadline', async () => {
+    let timestamp = FIXED_NOW
+    const delay = EMOTE_STEP_SECONDS * 3 * 1_000
+    const { state, sent, protocol } = await createHarness({
+      now: () => timestamp,
+      firstGuessDelayMilliseconds: delay,
+      snapshotLook: async (address) => makeLook(address, address === 'alice' ? 'Alice' : 'Bob')
+    })
+    const charade = makeCharade('timed-live-round', { author: { address: 'outside', name: 'Outside' } })
+    state.upsertCharade(charade)
+    await negotiate(protocol, 'alice')
+    await negotiate(protocol, 'bob')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'alice')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'bob')
+    const served = dataOf<CharadeMessage>(
+      messagesOfType(sent, 'charade').find((message) => message.to?.[0] === 'alice')!
+    )
+    const guess = {
+      charadeId: served.id,
+      answerIndex: correctAnswerIndex(state, served),
+      requestId: 'timed-live-guess'
+    }
+    sent.length = 0
+
+    timestamp += delay - 1
+    await handleCurrentRoundGuess(protocol, guess, 'alice')
+
+    expect(messagesOfType(sent, 'reveal')).toEqual([])
+    expect(messagesOfType(sent, 'roundWinner')).toEqual([])
+    expect(messagesOfType(sent, 'error')).toEqual([
+      { type: 'requestError', data: { code: 'invalid-guess', requestId: guess.requestId }, to: ['alice'] }
+    ])
+    expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 0, correct: 0 })
+    expect(protocol.rounds.current?.winner).toBeNull()
+
+    timestamp += 1
+    sent.length = 0
+    await handleCurrentRoundGuess(protocol, guess, 'alice')
+
+    expect(messagesOfType(sent, 'reveal')).toHaveLength(1)
+    expect(messagesOfType(sent, 'roundWinner')).toEqual([
+      expect.objectContaining({ data: expect.objectContaining({ address: 'alice', charadeId: charade.id }) })
+    ])
+    expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 1, correct: 1 })
+  })
+
+  it('starts the first-guess deadline only after the exact charade send finishes', async () => {
+    let timestamp = FIXED_NOW
+    const delay = EMOTE_STEP_SECONDS * 3 * 1_000
+    const { state, sent, protocol } = await createHarness({
+      now: () => timestamp,
+      firstGuessDelayMilliseconds: delay,
+      send: async (type) => {
+        if (type === 'charade') timestamp += 20_000
+      }
+    })
+    const charade = makeCharade('delayed-charade-send', { author: { address: 'outside' } })
+    state.upsertCharade(charade)
+    await negotiate(protocol, 'player')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'player')
+    const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+    const guess = {
+      charadeId: served.id,
+      answerIndex: correctAnswerIndex(state, served),
+      requestId: 'post-send-deadline'
+    }
+    sent.length = 0
+
+    await protocol.handleGuess(guess, 'player')
+    expect(messagesOfType(sent, 'error')).toEqual([
+      { type: 'requestError', data: { code: 'invalid-guess', requestId: guess.requestId }, to: ['player'] }
+    ])
+
+    timestamp += delay
+    sent.length = 0
+    await protocol.handleGuess(guess, 'player')
+    expect(messagesOfType(sent, 'reveal')).toHaveLength(1)
+  })
+
+  it('resets first-guess eligibility when the same served charade is sent again', async () => {
+    let timestamp = FIXED_NOW
+    const delay = EMOTE_STEP_SECONDS * 3 * 1_000
+    const { state, sent, protocol } = await createHarness({
+      now: () => timestamp,
+      firstGuessDelayMilliseconds: delay
+    })
+    const charade = makeCharade('same-served-deadline', { author: { address: 'outside' } })
+    state.upsertCharade(charade)
+    await negotiate(protocol, 'player')
+    const next = { requestId: 'same-served-next', exclude: [] as string[] }
+    await protocol.handleNextCharade(next, 'player')
+    const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+    timestamp += delay
+    await protocol.handleNextCharade(next, 'player')
+    sent.length = 0
+
+    await protocol.handleGuess(
+      {
+        charadeId: served.id,
+        answerIndex: correctAnswerIndex(state, served),
+        requestId: 'same-served-early'
+      },
+      'player'
+    )
+
+    expect(messagesOfType(sent, 'reveal')).toEqual([])
+    expect(messagesOfType(sent, 'error')).toEqual([
+      {
+        type: 'requestError',
+        data: { code: 'invalid-guess', requestId: 'same-served-early' },
+        to: ['player']
+      }
+    ])
+    expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 0, correct: 0 })
+  })
+
+  it('allows an immediate retry and replays its completed response regardless of the first-guess deadline', async () => {
+    let timestamp = FIXED_NOW
+    const delay = EMOTE_STEP_SECONDS * 3 * 1_000
+    const { state, sent, protocol } = await createHarness({
+      now: () => timestamp,
+      firstGuessDelayMilliseconds: delay
+    })
+    const charade = makeCharade('timed-retry', { author: { address: 'outside' } })
+    state.upsertCharade(charade)
+    await negotiate(protocol, 'player')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'player')
+    const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+    timestamp += delay
+    await protocol.handleGuess(
+      {
+        charadeId: served.id,
+        answerIndex: wrongAnswerIndexes(state, served)[0],
+        requestId: 'timed-first-miss'
+      },
+      'player'
+    )
+    const finalGuess = {
+      charadeId: served.id,
+      answerIndex: correctAnswerIndex(state, served),
+      requestId: 'timed-recovery'
+    }
+    timestamp = FIXED_NOW
+    sent.length = 0
+
+    await protocol.handleGuess(finalGuess, 'player')
+    const reveal = messagesOfType(sent, 'reveal').at(-1)!.data
+    await protocol.handleGuess(finalGuess, 'player')
+
+    expect(messagesOfType(sent, 'reveal').map((message) => message.data)).toEqual([reveal, reveal])
+    expect(messagesOfType(sent, 'error')).toEqual([])
+    expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 1, correct: 0 })
+  })
+
   it('rejects oversized identifiers and exclusion sets before constructing request state', async () => {
     const { sent, protocol } = await createHarness()
     await negotiate(protocol, 'player')
@@ -1481,7 +1968,7 @@ describe('charade serving and guesses', () => {
     await protocol.handleNextCharade({ requestId: 'bounded-2', exclude: [oversized] }, 'player')
     await protocol.handleGuess({ requestId: oversized, charadeId: 'charade', answerIndex: 0 }, 'player')
     await protocol.handleGuess({ requestId: 'guess', charadeId: oversized, answerIndex: 0 }, 'player')
-    await protocol.handlePost({ requestId: oversized, phraseId: DECK[0].id, emotes: [...DECK[0].suggested] }, 'player')
+    await protocol.handlePost({ requestId: oversized, phraseId: TEST_PHRASE.id, emotes: TEST_PERFORMANCE }, 'player')
 
     expect(messagesOfType(sent, 'error').map((message) => dataOf<ErrorMessage>(message).code)).toEqual([
       'invalid-next-charade',
@@ -1532,7 +2019,7 @@ describe('charade serving and guesses', () => {
       answerIndex: correctAnswerIndex(state, first)
     }
     await protocol.handleGuess(firstGuess, 'player')
-    for (let index = 0; index < 33; index += 1) {
+    for (let index = 0; index < MAX_DURABLE_COMPLETIONS + 1; index += 1) {
       timestamp += 1_000
       await protocol.handleNextCharade({ requestId: `next-${index}`, exclude: [] }, 'player')
       const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
@@ -1682,6 +2169,20 @@ describe('charade serving and guesses', () => {
     expect(state.playerStats.get('0xauthor')?.pending).toEqual({ triedYou: 1, gotYou: 1, replies: 0, mail: 0 })
     expect(checkpoint).toHaveBeenCalledOnce()
 
+    for (const changed of [
+      { ...guess, charadeId: 'different-charade' },
+      { ...guess, answerIndex: (answerIndex + 1) % 3 },
+      { ...guess, spotlight: true }
+    ]) {
+      sent.length = 0
+      await protocol.handleGuess(changed, '0xPlayer')
+      expect(messagesOfType(sent, 'reveal')).toEqual([])
+      expect(messagesOfType(sent, 'error')).toEqual([
+        { type: 'requestError', data: { code: 'invalid-guess', requestId: guess.requestId }, to: ['0xPlayer'] }
+      ])
+    }
+
+    sent.length = 0
     await protocol.handleGuess({ ...guess, requestId: 'guess-2' }, '0xPlayer')
     expect(dataOf<ErrorMessage>(messagesOfType(sent, 'error').at(-1)!).code).toBe('charade-not-served')
     expect(state.getCharade(charade.id)?.guesses.total).toBe(1)
@@ -1739,19 +2240,74 @@ describe('charade serving and guesses', () => {
     }).toEqual(before)
     expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 1, retryStates: 1, activeDecoders: 1 })
 
-    await protocol.handleGuess(
-      { ...request, answerIndex: correctAnswerIndex(state, served), spotlight: false },
-      'player'
-    )
+    await protocol.handleGuess(request, 'player')
     timestamp += 16_000
-    await protocol.handleGuess(
-      { ...request, answerIndex: wrongAnswerIndexes(state, served)[1], spotlight: false },
-      'player'
-    )
+    await protocol.handleGuess(request, 'player')
+    await protocol.handleGuess({ ...request, answerIndex: correctAnswerIndex(state, served) }, 'player')
+    await protocol.handleGuess({ ...request, spotlight: false }, 'player')
 
     expect(messagesOfType(sent, 'retry').map((message) => message.data)).toEqual([retry, retry, retry])
     expect(messagesOfType(sent, 'reveal')).toEqual([])
+    expect(messagesOfType(sent, 'error')).toEqual([
+      { type: 'requestError', data: { code: 'invalid-guess', requestId: request.requestId }, to: ['player'] },
+      { type: 'requestError', data: { code: 'invalid-guess', requestId: request.requestId }, to: ['player'] }
+    ])
     expect(checkpoint).not.toHaveBeenCalled()
+  })
+
+  it('rejects plain and live-round cross-shape replays that reuse a completed request id', async () => {
+    const plain = await createHarness()
+    const plainTarget = makeCharade('plain-cross-shape', { author: { address: 'outside' } })
+    plain.state.upsertCharade(plainTarget)
+    await negotiate(plain.protocol, 'player')
+    await plain.protocol.handleNextCharade(nextCharadeRequest(), 'player')
+    const plainServed = dataOf<CharadeMessage>(messagesOfType(plain.sent, 'charade').at(-1)!)
+    const plainGuess = {
+      requestId: 'plain-cross-shape-request',
+      charadeId: plainServed.id,
+      answerIndex: correctAnswerIndex(plain.state, plainServed)
+    }
+    await plain.protocol.handleGuess(plainGuess, 'player')
+    plain.sent.length = 0
+
+    await plain.protocol.handleRoundGuess({ ...plainGuess, roundId: '1' }, 'player')
+
+    expect(messagesOfType(plain.sent, 'reveal')).toEqual([])
+    expect(messagesOfType(plain.sent, 'error')).toEqual([
+      {
+        type: 'requestError',
+        data: { code: 'invalid-guess', requestId: plainGuess.requestId },
+        to: ['player']
+      }
+    ])
+
+    const live = await createHarness()
+    const liveTarget = makeCharade('round-cross-shape', { author: { address: 'outside' } })
+    live.state.upsertCharade(liveTarget)
+    await negotiate(live.protocol, 'alice')
+    await negotiate(live.protocol, 'bob')
+    await live.protocol.handleNextCharade(nextCharadeRequest(), 'alice')
+    await live.protocol.handleNextCharade(nextCharadeRequest(), 'bob')
+    const liveServed = dataOf<CharadeMessage>(messagesOfType(live.sent, 'charade').at(-1)!)
+    const roundId = live.protocol.rounds.current!.roundId
+    const liveGuess = {
+      requestId: 'round-cross-shape-request',
+      charadeId: liveServed.id,
+      answerIndex: correctAnswerIndex(live.state, liveServed)
+    }
+    await live.protocol.handleRoundGuess({ ...liveGuess, roundId }, 'alice')
+    live.sent.length = 0
+
+    await live.protocol.handleGuess(liveGuess, 'alice')
+
+    expect(messagesOfType(live.sent, 'reveal')).toEqual([])
+    expect(messagesOfType(live.sent, 'error')).toEqual([
+      {
+        type: 'requestError',
+        data: { code: 'invalid-guess', requestId: liveGuess.requestId },
+        to: ['alice']
+      }
+    ])
   })
 
   it('records a recovery exactly once, holds streak and understood, and rejects a third request', async () => {
@@ -1809,24 +2365,65 @@ describe('charade serving and guesses', () => {
     })
     expect(state.playerStats.get('player')).toMatchObject({
       decoded: 1,
-      correct: 1,
+      correct: 0,
       revision: 1,
       seen: [charade.id],
       daily: { decoded: 3, authored: 1, stamped: true },
       showSet: { round: 5, score: 650, streak: 2, bestStreak: 3, understood: 1 }
     })
-    expect(state.playerStats.get('author')?.pending).toEqual({ triedYou: 1, gotYou: 1, replies: 0, mail: 0 })
-    expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 1, correct: 1 })
-    expect(state.boards.decoders).toEqual([{ address: 'player', name: 'PLAYER', correct: 1, total: 1 }])
+    expect(state.playerStats.get('author')?.pending).toEqual({ triedYou: 1, gotYou: 0, replies: 0, mail: 0 })
+    expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 1, correct: 0 })
+    expect(state.boards.decoders).toEqual([{ address: 'player', name: 'PLAYER', correct: 0, total: 1 }])
     expect(checkpoint).toHaveBeenCalledOnce()
     expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 0, retryStates: 0, activeDecoders: 0 })
 
-    await protocol.handleGuess({ ...final, answerIndex: wrongIndex, spotlight: true }, 'player')
+    await protocol.handleGuess(final, 'player')
     expect(messagesOfType(sent, 'reveal').at(-1)!.data).toEqual(reveal)
     expect(checkpoint).toHaveBeenCalledOnce()
     await protocol.handleGuess({ ...final, requestId: 'third-request' }, 'player')
     expect(dataOf<ErrorMessage>(messagesOfType(sent, 'error').at(-1)!).code).toBe('charade-not-served')
+    expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 1, correct: 0 })
+  })
+
+  it('commits a registered 257th decoder without exceeding the capped daily aggregate', async () => {
+    const storage = new FakeStorage()
+    const day = dayKey(FIXED_NOW)
+    const aggregate = Array.from({ length: MAX_DAILY_DECODERS }, (_, index) => ({
+      address: `0x${index.toString(16).padStart(40, '0')}`,
+      name: `Decoder ${index}`,
+      correct: index % 2,
+      total: 1
+    }))
+    storage.putJSON(decoderAggregateKey(day), aggregate)
+    const { state, sent, repository, protocol } = await createHarness({}, storage)
+    const charade = makeCharade('decoder-cap-target', { author: { address: 'author', name: 'Author' } })
+    state.upsertCharade(charade)
+    await negotiate(protocol, 'new-decoder')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'new-decoder')
+    const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+    sent.length = 0
+
+    await protocol.handleGuess(
+      {
+        requestId: 'decoder-cap-guess',
+        charadeId: served.id,
+        answerIndex: correctAnswerIndex(state, served)
+      },
+      'new-decoder'
+    )
+
+    expect(messagesOfType(sent, 'error')).toEqual([])
+    expect(messagesOfType(sent, 'reveal')).toHaveLength(1)
     expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 1, correct: 1 })
+    expect(state.playerStats.get('new-decoder')).toMatchObject({ decoded: 1, correct: 1, seen: [charade.id] })
+    expect(state.boards.decoders.some((row) => row.address === 'new-decoder')).toBe(false)
+    await repository.flushNow()
+    expect(storage.readJSON<unknown[]>(decoderAggregateKey(day))).toHaveLength(MAX_DAILY_DECODERS)
+    expect(
+      storage
+        .readJSON<Array<{ address: string }>>(decoderAggregateKey(day))
+        ?.some((row) => row.address === 'new-decoder')
+    ).toBe(false)
   })
 
   it('records a Spotlight second miss exactly once across every public statistic surface', async () => {
@@ -1919,6 +2516,62 @@ describe('charade serving and guesses', () => {
     expect(state.getCharade(charade.id)?.guesses.total).toBe(1)
   })
 
+  it('replays a committed final reveal after restart when the original reveal send was dropped', async () => {
+    const storage = new FakeStorage()
+    const decoder = `0x${'1'.repeat(40)}`
+    const author = `0x${'2'.repeat(40)}`
+    let flushFirst = async () => undefined
+    const first = await createHarness(
+      {
+        snapshotLook: async (address) => makeLook(address, address === decoder ? 'Decoder' : 'Author'),
+        flush: () => flushFirst(),
+        send: async (type) => {
+          if (type === 'reveal') throw new Error('dropped reveal')
+        }
+      },
+      storage
+    )
+    flushFirst = () => first.repository.flushNow().then(() => undefined)
+    const charade = makeCharade('restart-reveal', { author: makeLook(author, 'Author') })
+    first.state.upsertCharade(charade)
+    await first.repository.flushNow()
+    await negotiate(first.protocol, decoder)
+    await first.protocol.handleNextCharade(nextCharadeRequest(), decoder)
+    const served = dataOf<CharadeMessage>(messagesOfType(first.sent, 'charade').at(-1)!)
+    const guess = {
+      charadeId: served.id,
+      answerIndex: correctAnswerIndex(first.state, served),
+      requestId: 'restart-final-reveal'
+    }
+    first.sent.length = 0
+
+    await expect(first.protocol.handleGuess(guess, decoder)).rejects.toThrow('dropped reveal')
+    const committedReveal = dataOf<Record<string, unknown>>(messagesOfType(first.sent, 'reveal')[0])
+
+    let flushSecond = async () => undefined
+    const second = await createHarness(
+      {
+        snapshotLook: async (address) => makeLook(address, 'Decoder'),
+        flush: () => flushSecond()
+      },
+      storage
+    )
+    flushSecond = () => second.repository.flushNow().then(() => undefined)
+    await negotiate(second.protocol, decoder)
+    second.sent.length = 0
+    await second.protocol.handleGuess(guess, decoder)
+
+    expect(messagesOfType(second.sent, 'reveal').map((message) => message.data)).toEqual([committedReveal])
+    expect(second.state.getCharade(charade.id)?.guesses).toEqual({ total: 1, correct: 1 })
+    expect(second.state.playerStats.get(decoder)).toMatchObject({ decoded: 1, correct: 1, revision: 1 })
+    expect((await second.state.getOrCreateStats(author, 'Author')).pending).toEqual({
+      triedYou: 1,
+      gotYou: 1,
+      replies: 0,
+      mail: 0
+    })
+  })
+
   it('does not deliver a stale checkpoint error after the same address re-enters', async () => {
     const checkpointGate = deferred<void>()
     let holdAndFail = false
@@ -1947,12 +2600,17 @@ describe('charade serving and guesses', () => {
     await vi.waitFor(() => expect(flush).toHaveBeenCalledTimes(2))
     holdAndFail = false
     await protocol.handleLeave('player')
-    await negotiate(protocol, 'player')
+    const reentering = negotiate(protocol, 'player')
+    await vi.waitFor(() => expect(messagesOfType(sent, 'ready').length).toBeGreaterThan(0))
     sent.length = 0
     checkpointGate.resolve()
-    await guessing
+    await Promise.all([guessing, reentering])
 
-    expect(sent).toEqual([])
+    expect(
+      messagesOfType(sent, 'error').filter(
+        (message) => dataOf<ErrorMessage>(message).requestId === 'stale-checkpoint-guess'
+      )
+    ).toEqual([])
   })
 
   it('keeps a served guess retryable when the persistent author record is corrupt', async () => {
@@ -1999,7 +2657,7 @@ describe('charade serving and guesses', () => {
 
     expect(messagesOfType(sent, 'reveal')).toHaveLength(1)
     expect(messagesOfType(sent, 'reveal')[0].data).toMatchObject({ correct: true, attempt: 2, scoreDelta: 50 })
-    expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 1, correct: 1 })
+    expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 1, correct: 0 })
   })
 
   it('rejects invalid guesses and guesses for charades not served to that player', async () => {
@@ -2346,7 +3004,58 @@ describe('charade serving and guesses', () => {
     expect(messagesOfType(sent, 'error')).toEqual([])
   })
 
-  it('forgets served answers and completed requests when a player leaves', async () => {
+  it('fails closed to House for unclear legacy ordinary, mail, and reply performances', async () => {
+    const phrase = PLAYABLE_DECK[0]
+    const canonical = canonicalPerformance(phrase)!
+
+    const ordinary = await createHarness()
+    ordinary.state.upsertCharade(
+      makeCharade('unclear-ordinary', {
+        phraseId: phrase.id,
+        emotes: [canonical[0], canonical[0], canonical[2]]
+      })
+    )
+    await negotiate(ordinary.protocol, 'ordinary-player')
+    ordinary.sent.length = 0
+    await ordinary.protocol.handleNextCharade(nextCharadeRequest(), 'ordinary-player')
+
+    const recipient = `0x${'2'.repeat(40)}`
+    const mail = await createHarness({ snapshotLook: async (address) => makeLook(address) })
+    mail.state.upsertCharade(
+      makeCharade('unclear-mail', {
+        phraseId: phrase.id,
+        emotes: [canonical[0], canonical[0], canonical[2]],
+        recipient
+      })
+    )
+    await negotiate(mail.protocol, recipient)
+    mail.sent.length = 0
+    await mail.protocol.handleNextCharade(nextCharadeRequest(), recipient)
+
+    const answerBack = await createHarness()
+    answerBack.state.upsertCharade(
+      makeCharade('unclear-reply', {
+        phraseId: phrase.id,
+        emotes: canonical,
+        reply: makeReply('replier', 'Replier', {
+          emotes: [canonical[0], canonical[0], canonical[2]]
+        })
+      })
+    )
+    await negotiate(answerBack.protocol, 'reply-player')
+    answerBack.sent.length = 0
+    await answerBack.protocol.handleNextCharade(nextCharadeRequest(), 'reply-player')
+
+    for (const harness of [ordinary, mail, answerBack]) {
+      expect(dataOf<CharadeMessage>(messagesOfType(harness.sent, 'charade').at(-1)!)).toMatchObject({
+        isHouse: true
+      })
+      expect(messagesOfType(harness.sent, 'charadeReply')).toEqual([])
+      expect(messagesOfType(harness.sent, 'error')).toEqual([])
+    }
+  })
+
+  it('forgets served answers but durably replays a completed request when a player leaves', async () => {
     const { state, sent, protocol } = await createHarness()
     const charade = makeCharade('leave-cleanup')
     state.upsertCharade(charade)
@@ -2360,16 +3069,16 @@ describe('charade serving and guesses', () => {
       requestId: 'cleanup-request'
     }
     await protocol.handleGuess(guess, 'player')
+    const reveal = messagesOfType(sent, 'reveal').at(-1)!.data
     await protocol.handleLeave('player')
     await negotiate(protocol, 'player')
     sent.length = 0
 
     await protocol.handleGuess(guess, 'player')
 
-    expect(messagesOfType(sent, 'reveal')).toEqual([])
-    expect(messagesOfType(sent, 'error')).toEqual([
-      { type: 'requestError', data: { code: 'charade-not-served', requestId: 'cleanup-request' }, to: ['player'] }
-    ])
+    expect(messagesOfType(sent, 'reveal').map((message) => message.data)).toEqual([reveal])
+    expect(messagesOfType(sent, 'error')).toEqual([])
+    expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 1, correct: 1 })
   })
 
   it('rejects skipping an unresolved retry and cleans served state on leave and replacement', async () => {
@@ -2505,13 +3214,13 @@ describe('authoring protocol', () => {
     sent.length = 0
 
     await rawProtocol.handlePost(
-      { phraseId: DECK[0].id, emotes: [...DECK[0].suggested], requestId: 'missing-consent' },
+      { phraseId: TEST_PHRASE.id, emotes: TEST_PERFORMANCE, requestId: 'missing-consent' },
       'player'
     )
     await rawProtocol.handlePost(
       {
-        phraseId: DECK[0].id,
-        emotes: [...DECK[0].suggested],
+        phraseId: TEST_PHRASE.id,
+        emotes: TEST_PERFORMANCE,
         requestId: 'invalid-consent',
         touringConsent: 'yes'
       },
@@ -2519,8 +3228,8 @@ describe('authoring protocol', () => {
     )
     await rawProtocol.handlePost(
       {
-        phraseId: DECK[0].id,
-        emotes: [...DECK[0].suggested],
+        phraseId: TEST_PHRASE.id,
+        emotes: TEST_PERFORMANCE,
         requestId: 'touring-opt-in',
         touringConsent: true
       },
@@ -2529,8 +3238,8 @@ describe('authoring protocol', () => {
     await negotiate(rawProtocol, 'player-two')
     await rawProtocol.handlePost(
       {
-        phraseId: DECK[0].id,
-        emotes: [...DECK[0].suggested],
+        phraseId: TEST_PHRASE.id,
+        emotes: TEST_PERFORMANCE,
         requestId: 'touring-opt-out',
         touringConsent: false
       },
@@ -2553,8 +3262,8 @@ describe('authoring protocol', () => {
       const { state, sent, rawProtocol } = await createHarness()
       await negotiate(rawProtocol, 'player')
       const post = {
-        phraseId: DECK[0].id,
-        emotes: [...DECK[0].suggested],
+        phraseId: TEST_PHRASE.id,
+        emotes: TEST_PERFORMANCE,
         requestId: 'consent-cache-replay',
         touringConsent: originalConsent
       }
@@ -2593,8 +3302,8 @@ describe('authoring protocol', () => {
       const first = await createHarness({}, storage)
       await negotiate(first.rawProtocol, 'player')
       const post = {
-        phraseId: DECK[0].id,
-        emotes: [...DECK[0].suggested],
+        phraseId: TEST_PHRASE.id,
+        emotes: TEST_PERFORMANCE,
         requestId: 'consent-durable-replay',
         touringConsent: originalConsent
       }
@@ -2643,8 +3352,8 @@ describe('authoring protocol', () => {
 
     await rawProtocol.handlePost(
       {
-        phraseId: DECK[0].id,
-        emotes: [...DECK[0].suggested],
+        phraseId: TEST_PHRASE.id,
+        emotes: TEST_PERFORMANCE,
         requestId: 'touring-mail',
         touringConsent: true,
         recipient
@@ -2654,7 +3363,7 @@ describe('authoring protocol', () => {
     await rawProtocol.handlePost(
       {
         phraseId: target.phraseId,
-        emotes: [...DECK[0].suggested],
+        emotes: TEST_PERFORMANCE,
         requestId: 'touring-reply',
         touringConsent: true,
         replyTo: target.id
@@ -2663,8 +3372,8 @@ describe('authoring protocol', () => {
     )
     await rawProtocol.handlePost(
       {
-        phraseId: DECK[0].id,
-        emotes: [...DECK[0].suggested],
+        phraseId: TEST_PHRASE.id,
+        emotes: TEST_PERFORMANCE,
         requestId: 'private-mail',
         touringConsent: false,
         recipient
@@ -2732,7 +3441,7 @@ describe('authoring protocol', () => {
     })
     const { state, sent, protocol } = await createHarness({ flush })
     await negotiate(protocol, 'player')
-    const post = { phraseId: DECK[0].id, emotes: [...DECK[0].suggested], requestId: 'durable-post' }
+    const post = { phraseId: TEST_PHRASE.id, emotes: TEST_PERFORMANCE, requestId: 'durable-post' }
     sent.length = 0
     failCheckpoint = true
 
@@ -2753,6 +3462,209 @@ describe('authoring protocol', () => {
     expect(state.playerStats.get('player')?.authoredCount).toBe(1)
   })
 
+  it('reconciles an active journal after apply exhausts the dirty queue and replays the exact request after re-entry', async () => {
+    let timestamp = FIXED_NOW
+    const { storage, repository, state, sent, protocol } = await createHarness({ now: () => timestamp })
+    await negotiate(protocol, 'player')
+    await repository.flushNow()
+    for (let index = 0; index < MAX_DIRTY_ENTRIES; index += 1) {
+      repository.markDirty(`journal-pressure-${index}`, { index })
+    }
+    const post = { requestId: 'recover-active-apply', phraseId: TEST_PHRASE.id, emotes: TEST_PERFORMANCE }
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    sent.length = 0
+
+    await protocol.handlePost(post, 'player')
+
+    expect(messagesOfType(sent, 'posted')).toEqual([])
+    expect(messagesOfType(sent, 'error').map((message) => dataOf<ErrorMessage>(message).code)).toEqual(['server-busy'])
+    expect(storage.readJSON<{ active: DurableMutation | null }>(DURABLE_MUTATION_JOURNAL_KEY)?.active).toMatchObject({
+      id: 'player:post:recover-active-apply'
+    })
+
+    sent.length = 0
+    await protocol.handleLeave('player')
+    expect(storage.readJSON<{ active: DurableMutation | null }>(DURABLE_MUTATION_JOURNAL_KEY)?.active).toBeNull()
+    timestamp += 1_000
+    await negotiate(protocol, 'player')
+    expect(messagesOfType(sent, 'error')).toEqual([])
+    sent.length = 0
+    await protocol.handlePost(post, 'player')
+    logSpy.mockRestore()
+
+    expect(messagesOfType(sent, 'posted')).toHaveLength(1)
+    expect(messagesOfType(sent, 'error')).toEqual([])
+    expect(state.getPool()).toHaveLength(1)
+    expect(state.playerStats.get('player')).toMatchObject({ authoredCount: 1, revision: 1 })
+    expect(storage.readJSON<{ active: DurableMutation | null }>(DURABLE_MUTATION_JOURNAL_KEY)?.active).toBeNull()
+  })
+
+  it('lets an unrelated player mutation reconcile a stranded active journal without a lifecycle transition', async () => {
+    const { storage, repository, state, sent, protocol } = await createHarness()
+    await negotiate(protocol, 'alice')
+    await negotiate(protocol, 'bob')
+    await repository.flushNow()
+    for (let index = 0; index < MAX_DIRTY_ENTRIES; index += 1) {
+      repository.markDirty(`cross-player-pressure-${index}`, { index })
+    }
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    await protocol.handlePost(
+      { requestId: 'stranded-alice', phraseId: TEST_PHRASE.id, emotes: TEST_PERFORMANCE },
+      'alice'
+    )
+    expect(storage.readJSON<{ active: DurableMutation | null }>(DURABLE_MUTATION_JOURNAL_KEY)?.active).toMatchObject({
+      id: 'alice:post:stranded-alice'
+    })
+    sent.length = 0
+
+    await protocol.handlePost(
+      { requestId: 'reconciling-bob', phraseId: TEST_PHRASE.id, emotes: TEST_PERFORMANCE },
+      'bob'
+    )
+    logSpy.mockRestore()
+
+    expect(messagesOfType(sent, 'posted')).toEqual([
+      expect.objectContaining({ to: ['bob'], data: expect.objectContaining({ requestId: 'reconciling-bob' }) })
+    ])
+    expect(messagesOfType(sent, 'error')).toEqual([])
+    expect(state.getPool()).toHaveLength(2)
+    expect(state.playerStats.get('alice')).toMatchObject({ authoredCount: 1, revision: 1 })
+    expect(state.playerStats.get('bob')).toMatchObject({ authoredCount: 1, revision: 1 })
+    expect(storage.readJSON<{ active: DurableMutation | null }>(DURABLE_MUTATION_JOURNAL_KEY)?.active).toBeNull()
+  })
+
+  it('settles a recovered House guess before an unrelated mutation can leave it guessable twice', async () => {
+    const { storage, repository, state, sent, protocol } = await createHarness()
+    await negotiate(protocol, 'alice')
+    await negotiate(protocol, 'bob')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'alice')
+    const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+    expect(served.isHouse).toBe(true)
+    await repository.flushNow()
+    for (let index = 0; index < MAX_DIRTY_ENTRIES; index += 1) {
+      repository.markDirty(`house-recovery-pressure-${index}`, { index })
+    }
+    const firstGuess = {
+      requestId: 'stranded-house-guess',
+      charadeId: served.id,
+      answerIndex: correctAnswerIndex(state, served)
+    }
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    sent.length = 0
+
+    await protocol.handleGuess(firstGuess, 'alice')
+
+    expect(messagesOfType(sent, 'reveal')).toEqual([])
+    expect(messagesOfType(sent, 'error')).toEqual([
+      {
+        type: 'requestError',
+        data: { code: 'server-busy', requestId: firstGuess.requestId },
+        to: ['alice']
+      }
+    ])
+    expect(storage.readJSON<{ active: DurableMutation | null }>(DURABLE_MUTATION_JOURNAL_KEY)?.active).toMatchObject({
+      id: 'alice:guess:stranded-house-guess'
+    })
+    sent.length = 0
+
+    await protocol.handlePost(
+      { requestId: 'bob-after-house-recovery', phraseId: TEST_PHRASE.id, emotes: TEST_PERFORMANCE },
+      'bob'
+    )
+
+    expect(messagesOfType(sent, 'posted')).toHaveLength(1)
+    expect(messagesOfType(sent, 'error')).toEqual([])
+    expect(state.playerStats.get('alice')?.showSet).toMatchObject({ round: 1, score: 100, understood: 1 })
+    expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 0, activeDecoders: 0 })
+    sent.length = 0
+
+    await protocol.handleGuess({ ...firstGuess, requestId: 'second-house-guess' }, 'alice')
+    logSpy.mockRestore()
+
+    expect(messagesOfType(sent, 'reveal')).toEqual([])
+    expect(messagesOfType(sent, 'error')).toEqual([
+      {
+        type: 'requestError',
+        data: { code: 'charade-not-served', requestId: 'second-house-guess' },
+        to: ['alice']
+      }
+    ])
+    expect(state.playerStats.get('alice')?.showSet).toMatchObject({ round: 1, score: 100, understood: 1 })
+  })
+
+  it('settles a recovered live-round winner exactly once during an unrelated mutation', async () => {
+    const snapshotLook = async (address: string) => makeLook(address, address === 'alice' ? 'Alice' : 'Bob')
+    const { storage, repository, state, sent, protocol } = await createHarness({ snapshotLook })
+    const target = makeCharade('recovered-live-winner', {
+      author: { ...makeLook('outside', 'Outside'), isGuest: false }
+    })
+    state.upsertCharade(target)
+    await negotiate(protocol, 'alice')
+    await negotiate(protocol, 'bob')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'alice')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'bob')
+    const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade')[0])
+    const roundId = protocol.rounds.current!.roundId
+    await repository.flushNow()
+    for (let index = 0; index < MAX_DIRTY_ENTRIES; index += 1) {
+      repository.markDirty(`live-recovery-pressure-${index}`, { index })
+    }
+    const guess = {
+      roundId,
+      requestId: 'stranded-live-guess',
+      charadeId: served.id,
+      answerIndex: correctAnswerIndex(state, served)
+    }
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    sent.length = 0
+
+    await protocol.handleRoundGuess(guess, 'alice')
+
+    expect(messagesOfType(sent, 'reveal')).toEqual([])
+    expect(messagesOfType(sent, 'error')).toEqual([
+      {
+        type: 'requestError',
+        data: { code: 'server-busy', requestId: guess.requestId },
+        to: ['alice']
+      }
+    ])
+    expect(storage.readJSON<{ active: DurableMutation | null }>(DURABLE_MUTATION_JOURNAL_KEY)?.active).toMatchObject({
+      id: 'alice:guess:stranded-live-guess'
+    })
+    sent.length = 0
+
+    await protocol.handlePost(
+      { requestId: 'bob-after-live-recovery', phraseId: TEST_PHRASE.id, emotes: TEST_PERFORMANCE },
+      'bob'
+    )
+
+    expect(messagesOfType(sent, 'posted')).toHaveLength(1)
+    expect(messagesOfType(sent, 'error')).toEqual([])
+    expect(protocol.rounds.current).toMatchObject({
+      roundId,
+      guessed: ['alice'],
+      winner: { address: 'alice', name: 'Alice' }
+    })
+    sent.length = 0
+    await protocol.handlePing({ seq: 1 }, 'alice')
+    expect(messagesOfType(sent, 'roundWinner')).toHaveLength(1)
+    sent.length = 0
+
+    await protocol.handleRoundGuess({ ...guess, requestId: 'second-live-guess' }, 'alice')
+    logSpy.mockRestore()
+
+    expect(messagesOfType(sent, 'reveal')).toEqual([])
+    expect(messagesOfType(sent, 'error')).toEqual([
+      {
+        type: 'requestError',
+        data: { code: 'charade-not-served', requestId: 'second-live-guess' },
+        to: ['alice']
+      }
+    ])
+    expect(protocol.rounds.current?.winner).toEqual({ address: 'alice', name: 'Alice' })
+  })
+
   it('returns server-busy without progression when the durable charade budget is full', async () => {
     const { state, sent, protocol } = await createHarness()
     for (let index = 0; index < 128; index += 1) {
@@ -2769,7 +3681,7 @@ describe('authoring protocol', () => {
     sent.length = 0
 
     await protocol.handlePost(
-      { requestId: 'over-capacity', phraseId: DECK[0].id, emotes: [...DECK[0].suggested] },
+      { requestId: 'over-capacity', phraseId: TEST_PHRASE.id, emotes: TEST_PERFORMANCE },
       'player'
     )
 
@@ -2805,6 +3717,100 @@ describe('authoring protocol', () => {
     expect(state.getPool()).toEqual([])
   })
 
+  it('rejects repeated, off-plan, and retired ambiguous performances before persistence or accounting', async () => {
+    const snapshotLook = vi.fn(async (address: string) => makeLook(address))
+    const { state, sent, checkpoint, protocol } = await createHarness({ snapshotLook })
+    await negotiate(protocol, 'player')
+    snapshotLook.mockClear()
+    checkpoint.mockClear()
+    sent.length = 0
+    const phrase = PLAYABLE_DECK[0]
+    const canonical = canonicalPerformance(phrase)!
+    const offPlanFirst = EMOTE_VOCABULARY.find(
+      (emote) => !authorBeatChoices(phrase, 0).includes(emote) && emote !== canonical[1] && emote !== canonical[2]
+    )!
+    const retiredAmbiguous = ['food-share-the-popcorn', 'food-toast-a-marshmallow', 'food-serve-breakfast']
+      .map((id) => DECK.find((candidate) => candidate.id === id)!)
+      .find((candidate) => playablePhrase(candidate) === null)!
+
+    await protocol.handlePost(
+      {
+        phraseId: phrase.id,
+        emotes: [canonical[0], canonical[0], canonical[2]],
+        requestId: 'repeated-performance'
+      },
+      'player'
+    )
+    await protocol.handlePost(
+      {
+        phraseId: phrase.id,
+        emotes: [offPlanFirst, canonical[1], canonical[2]],
+        requestId: 'off-plan-performance'
+      },
+      'player'
+    )
+    await protocol.handlePost(
+      {
+        phraseId: retiredAmbiguous.id,
+        emotes: [...retiredAmbiguous.suggested],
+        requestId: 'ambiguous-performance'
+      },
+      'player'
+    )
+
+    expect(messagesOfType(sent, 'error').map((message) => dataOf<ErrorMessage>(message).code)).toEqual([
+      'invalid-post',
+      'invalid-post',
+      'invalid-post'
+    ])
+    expect(messagesOfType(sent, 'posted')).toEqual([])
+    expect(snapshotLook).not.toHaveBeenCalled()
+    expect(checkpoint).not.toHaveBeenCalled()
+    expect(state.getPool()).toEqual([])
+    expect(state.playerStats.get('player')).toMatchObject({ authored: [], authoredCount: 0, revision: 0 })
+  })
+
+  it('binds durable replay to the original performance after persisted semantics are rewritten', async () => {
+    const storage = new FakeStorage()
+    const phrase = PLAYABLE_DECK[0]
+    const canonical = canonicalPerformance(phrase)!
+    const legacyEmotes: [string, string, string] = [canonical[0], canonical[0], canonical[2]]
+    const post = { phraseId: phrase.id, emotes: canonical, requestId: 'legacy-durable-post' }
+    const first = await createHarness({}, storage)
+    await negotiate(first.protocol, 'player')
+    await first.protocol.handlePost(post, 'player')
+    const posted = dataOf<PostedMessage>(messagesOfType(first.sent, 'posted').at(-1)!)
+    const stored = first.state.getCharade(posted.charadeId)!
+    first.state.upsertCharade({ ...stored, emotes: legacyEmotes })
+    await first.repository.flushNow()
+
+    const snapshotLook = vi.fn(async (address: string) => makeLook(address))
+    const second = await createHarness({ snapshotLook }, storage)
+    await negotiate(second.protocol, 'player')
+    snapshotLook.mockClear()
+    second.sent.length = 0
+
+    await second.protocol.handlePost({ ...post, emotes: legacyEmotes }, 'player')
+
+    expect(messagesOfType(second.sent, 'posted')).toEqual([])
+    expect(messagesOfType(second.sent, 'error')).toEqual([
+      {
+        type: 'requestError',
+        data: { code: 'invalid-post', requestId: post.requestId },
+        to: ['player']
+      }
+    ])
+    second.sent.length = 0
+
+    await second.protocol.handlePost(post, 'player')
+
+    expect(messagesOfType(second.sent, 'posted')).toHaveLength(1)
+    expect(messagesOfType(second.sent, 'error')).toEqual([])
+    expect(snapshotLook).not.toHaveBeenCalled()
+    expect(second.state.getPlayerCharades()).toHaveLength(1)
+    expect(second.state.playerStats.get('player')).toMatchObject({ authoredCount: 1, revision: 1 })
+  })
+
   it('posts from a fresh authoritative snapshot, replays the request, and rate-limits a new request', async () => {
     const welcomeLook = makeLook('0xPlayer', 'Welcome Look')
     const postLook = {
@@ -2817,7 +3823,8 @@ describe('authoring protocol', () => {
     await negotiate(protocol, '0xPlayer')
     sent.length = 0
     checkpoint.mockClear()
-    const post = { phraseId: DECK[3].id, emotes: ['wave', 'wave', 'clap'], requestId: 'post-1' }
+    const phrase = PLAYABLE_DECK[0]
+    const post = { phraseId: phrase.id, emotes: canonicalPerformance(phrase)!, requestId: 'post-1' }
 
     await protocol.handlePost(post, '0xPlayer')
     const firstPosted = dataOf<PostedMessage>(messagesOfType(sent, 'posted')[0])
@@ -2848,7 +3855,7 @@ describe('authoring protocol', () => {
     first.sent.length = 0
 
     await first.protocol.handlePost(
-      { phraseId: DECK[0].id, emotes: [...DECK[0].suggested], requestId: 'first-performance' },
+      { phraseId: TEST_PHRASE.id, emotes: TEST_PERFORMANCE, requestId: 'first-performance' },
       'player'
     )
 
@@ -2876,6 +3883,144 @@ describe('authoring protocol', () => {
     })
   })
 
+  it('replays the exact one-time stamp and title response after cache expiry and restart', async () => {
+    const storage = new FakeStorage()
+    const player = `0x${'3'.repeat(40)}`
+    let timestamp = FIXED_NOW
+    let flushFirst = async () => undefined
+    const first = await createHarness(
+      {
+        now: () => timestamp,
+        snapshotLook: async (address) => makeLook(address, 'Performer'),
+        flush: () => flushFirst()
+      },
+      storage
+    )
+    flushFirst = () => first.repository.flushNow().then(() => undefined)
+    await negotiate(first.protocol, player)
+    const stats = first.state.playerStats.get(player)!
+    stats.daily = { day: dayKey(FIXED_NOW), decoded: 3, authored: 0, stamped: false }
+    first.state.saveStats(player)
+    await first.repository.flushNow()
+    const post = {
+      phraseId: TEST_PHRASE.id,
+      emotes: TEST_PERFORMANCE,
+      requestId: 'exact-restart-post'
+    }
+    first.sent.length = 0
+    await first.protocol.handlePost(post, player)
+    const posted = dataOf<Record<string, unknown>>(messagesOfType(first.sent, 'posted')[0])
+    expect(posted).toMatchObject({ stampAwarded: true, title: 'Understudy', titleUnlocked: true })
+
+    timestamp += 16_000
+    first.sent.length = 0
+    await first.protocol.handlePost(post, player)
+    expect(messagesOfType(first.sent, 'posted').map((message) => message.data)).toEqual([posted])
+
+    let flushSecond = async () => undefined
+    const second = await createHarness(
+      {
+        now: () => timestamp,
+        snapshotLook: async (address) => makeLook(address, 'Performer'),
+        flush: () => flushSecond()
+      },
+      storage
+    )
+    flushSecond = () => second.repository.flushNow().then(() => undefined)
+    await negotiate(second.protocol, player)
+    second.sent.length = 0
+    await second.protocol.handlePost(post, player)
+
+    expect(messagesOfType(second.sent, 'posted').map((message) => message.data)).toEqual([posted])
+    expect(second.state.getPlayerCharades()).toHaveLength(1)
+    expect(second.state.playerStats.get(player)).toMatchObject({ authoredCount: 1, revision: 1 })
+  })
+
+  it('rejects a trailing emote on completed ordinary, mail, and reply requests after restart', async () => {
+    const trailingEmotes = [...TEST_PERFORMANCE, TEST_PERFORMANCE[0]]
+
+    const ordinaryStorage = new FakeStorage()
+    const ordinary = { phraseId: TEST_PHRASE.id, emotes: TEST_PERFORMANCE, requestId: 'ordinary-three-emotes' }
+    const ordinaryFirst = await createHarness({}, ordinaryStorage)
+    await negotiate(ordinaryFirst.protocol, 'ordinary-player')
+    await ordinaryFirst.protocol.handlePost(ordinary, 'ordinary-player')
+    await ordinaryFirst.repository.flushNow()
+    const ordinaryRestart = await createHarness({}, ordinaryStorage)
+    await negotiate(ordinaryRestart.protocol, 'ordinary-player')
+    ordinaryRestart.sent.length = 0
+
+    await ordinaryRestart.protocol.handlePost({ ...ordinary, emotes: trailingEmotes }, 'ordinary-player')
+
+    expect(messagesOfType(ordinaryRestart.sent, 'posted')).toEqual([])
+    expect(messagesOfType(ordinaryRestart.sent, 'error')).toEqual([
+      {
+        type: 'requestError',
+        data: { code: 'invalid-post', requestId: ordinary.requestId },
+        to: ['ordinary-player']
+      }
+    ])
+
+    const mailStorage = new FakeStorage()
+    const mailSender = `0x${'1'.repeat(40)}`
+    const mailRecipient = `0x${'2'.repeat(40)}`
+    const mail = {
+      phraseId: TEST_PHRASE.id,
+      emotes: TEST_PERFORMANCE,
+      requestId: 'mail-three-emotes',
+      recipient: mailRecipient
+    }
+    const mailFirst = await createHarness({}, mailStorage)
+    mailFirst.state.recentVisitors = [{ ...makeLook(mailRecipient, 'Recipient'), lastSeenAt: FIXED_NOW }]
+    await negotiate(mailFirst.protocol, mailSender)
+    await mailFirst.protocol.handlePost(mail, mailSender)
+    await mailFirst.repository.flushNow()
+    const mailRestart = await createHarness({}, mailStorage)
+    await negotiate(mailRestart.protocol, mailSender)
+    mailRestart.sent.length = 0
+
+    await mailRestart.protocol.handlePost({ ...mail, emotes: trailingEmotes }, mailSender)
+
+    expect(messagesOfType(mailRestart.sent, 'posted')).toEqual([])
+    expect(messagesOfType(mailRestart.sent, 'error')).toEqual([
+      {
+        type: 'requestError',
+        data: { code: 'invalid-post', requestId: mail.requestId },
+        to: [mailSender]
+      }
+    ])
+
+    const replyStorage = new FakeStorage()
+    const replyTarget = makeCharade('reply-three-emotes-target', {
+      author: { address: 'reply-author', name: 'Author' }
+    })
+    const reply = {
+      phraseId: replyTarget.phraseId,
+      emotes: TEST_PERFORMANCE,
+      requestId: 'reply-three-emotes',
+      replyTo: replyTarget.id
+    }
+    const replyFirst = await createHarness({}, replyStorage)
+    replyFirst.state.upsertCharade(replyTarget)
+    await negotiate(replyFirst.protocol, 'replier')
+    replyFirst.state.playerStats.get('replier')!.seen.push(replyTarget.id)
+    await replyFirst.protocol.handlePost(reply, 'replier')
+    await replyFirst.repository.flushNow()
+    const replyRestart = await createHarness({}, replyStorage)
+    await negotiate(replyRestart.protocol, 'replier')
+    replyRestart.sent.length = 0
+
+    await replyRestart.protocol.handlePost({ ...reply, emotes: trailingEmotes }, 'replier')
+
+    expect(messagesOfType(replyRestart.sent, 'posted')).toEqual([])
+    expect(messagesOfType(replyRestart.sent, 'error')).toEqual([
+      {
+        type: 'requestError',
+        data: { code: 'invalid-reply', requestId: reply.requestId },
+        to: ['replier']
+      }
+    ])
+  })
+
   it('coalesces concurrent copies of the same post into one charade and one authored id', async () => {
     const gate = deferred<ReturnType<typeof makeLook> | null>()
     const welcomeLook = makeLook('player', 'Player')
@@ -2888,7 +4033,7 @@ describe('authoring protocol', () => {
     await negotiate(protocol, 'player')
     sent.length = 0
     checkpoint.mockClear()
-    const post = { phraseId: DECK[5].id, emotes: [...DECK[5].suggested], requestId: 'same-request' }
+    const post = { phraseId: TEST_PHRASE.id, emotes: TEST_PERFORMANCE, requestId: 'same-request' }
 
     const first = protocol.handlePost(post, 'player')
     const second = protocol.handlePost(post, 'player')
@@ -2918,11 +4063,11 @@ describe('authoring protocol', () => {
     checkpoint.mockClear()
 
     const first = protocol.handlePost(
-      { phraseId: DECK[6].id, emotes: [...DECK[6].suggested], requestId: 'different-1' },
+      { phraseId: PLAYABLE_DECK[0].id, emotes: canonicalPerformance(PLAYABLE_DECK[0])!, requestId: 'different-1' },
       'player'
     )
     const second = protocol.handlePost(
-      { phraseId: DECK[7].id, emotes: [...DECK[7].suggested], requestId: 'different-2' },
+      { phraseId: PLAYABLE_DECK[1].id, emotes: canonicalPerformance(PLAYABLE_DECK[1])!, requestId: 'different-2' },
       'player'
     )
     gate.resolve(makeLook('player', 'Post Look'))
@@ -2983,8 +4128,8 @@ describe('Ghost Mail protocol', () => {
     storage.players.set(recipientAddress, new Map([[PLAYER_STATS_KEY, '{']]))
     const post = {
       requestId: 'staged-mail',
-      phraseId: DECK[0].id,
-      emotes: [...DECK[0].suggested],
+      phraseId: TEST_PHRASE.id,
+      emotes: TEST_PERFORMANCE,
       recipient: recipientAddress
     }
 
@@ -3031,8 +4176,8 @@ describe('Ghost Mail protocol', () => {
 
     await first.protocol.handlePost(
       {
-        phraseId: DECK[1].id,
-        emotes: [...DECK[1].suggested],
+        phraseId: TEST_PHRASE.id,
+        emotes: TEST_PERFORMANCE,
         requestId: 'mail-send',
         recipient: recipientAddress
       },
@@ -3106,7 +4251,7 @@ describe('Ghost Mail protocol', () => {
     await recipientVisit.protocol.handlePost(
       {
         phraseId: mailedPhrase.id,
-        emotes: [...mailedPhrase.suggested],
+        emotes: canonicalPerformance(mailedPhrase)!,
         requestId: 'mail-answer-back',
         replyTo: mailId
       },
@@ -3140,8 +4285,8 @@ describe('Ghost Mail protocol', () => {
     guest.sent.length = 0
     await guest.protocol.handlePost(
       {
-        phraseId: DECK[0].id,
-        emotes: [...DECK[0].suggested],
+        phraseId: TEST_PHRASE.id,
+        emotes: TEST_PERFORMANCE,
         requestId: 'guest-mail',
         recipient: recipientAddress
       },
@@ -3157,8 +4302,8 @@ describe('Ghost Mail protocol', () => {
     real.sent.length = 0
     await real.protocol.handlePost(
       {
-        phraseId: DECK[0].id,
-        emotes: [...DECK[0].suggested],
+        phraseId: TEST_PHRASE.id,
+        emotes: TEST_PERFORMANCE,
         requestId: 'unknown-recipient',
         recipient: recipientAddress
       },
@@ -3182,7 +4327,7 @@ describe('answer-back protocol', () => {
     snapshotLook.mockClear()
     checkpoint.mockClear()
     sent.length = 0
-    const base = { phraseId: target.phraseId, emotes: [...DECK[0].suggested], replyTo: target.id }
+    const base = { phraseId: target.phraseId, emotes: TEST_PERFORMANCE, replyTo: target.id }
 
     await protocol.handlePost({ ...base, requestId: '' }, 'player')
     await protocol.handlePost({ ...base, phraseId: '', requestId: 'empty-phrase' }, 'player')
@@ -3226,7 +4371,7 @@ describe('answer-back protocol', () => {
     state.playerStats.get(replier)!.seen.push(target.id)
     const reply = {
       phraseId: target.phraseId,
-      emotes: [...DECK[0].suggested],
+      emotes: TEST_PERFORMANCE,
       requestId: 'corrupt-author-reply',
       replyTo: target.id
     }
@@ -3267,7 +4412,7 @@ describe('answer-back protocol', () => {
     sent.length = 0
     checkpoint.mockClear()
     holdReplyLooks = true
-    const payload = { phraseId: target.phraseId, emotes: [...DECK[0].suggested], replyTo: target.id }
+    const payload = { phraseId: target.phraseId, emotes: TEST_PERFORMANCE, replyTo: target.id }
 
     const aliceReply = protocol.handlePost({ ...payload, requestId: 'alice-reply' }, 'alice')
     const bobReply = protocol.handlePost({ ...payload, requestId: 'bob-reply' }, 'bob')
@@ -3294,7 +4439,7 @@ describe('answer-back protocol', () => {
     snapshotLook.mockClear()
     checkpoint.mockClear()
     sent.length = 0
-    const firstEmotes = ['wave', 'wave', 'clap']
+    const firstEmotes = TEST_PERFORMANCE
 
     await protocol.handlePost(
       { phraseId: target.phraseId, emotes: firstEmotes, requestId: 'first-reply', replyTo: target.id },
@@ -3331,7 +4476,7 @@ describe('answer-back protocol', () => {
     state.playerStats.get('alice')!.seen.push(target.id)
     const reply = {
       phraseId: target.phraseId,
-      emotes: [...DECK[0].suggested],
+      emotes: TEST_PERFORMANCE,
       requestId: 'expired-reply-id',
       replyTo: target.id
     }
@@ -3360,7 +4505,7 @@ describe('answer-back protocol', () => {
     expect(state.getCharade(target.id)?.touringConsent).toBe(true)
   })
 
-  it('binds an attached reply to its exact request across server restart', async () => {
+  it('binds an attached reply to its original durable request across restart', async () => {
     const storage = new FakeStorage()
     const first = await createHarness({}, storage)
     const target = makeCharade('durable-reply-request', {
@@ -3371,20 +4516,39 @@ describe('answer-back protocol', () => {
     await negotiate(first.protocol, 'alice')
     first.state.playerStats.get('alice')!.seen.push(target.id)
     first.state.saveStats('alice')
+    const canonical = canonicalPerformance(target.phraseId)!
     const reply = {
       phraseId: target.phraseId,
-      emotes: [...DECK[0].suggested],
+      emotes: canonical,
       requestId: 'durable-reply-id',
       replyTo: target.id
     }
     await first.protocol.handlePost(reply, 'alice')
+    const attached = first.state.getCharade(target.id)!
+    const retiredEmotes: [string, string, string] = [canonical[0], canonical[0], canonical[2]]
+    const retiredReply = {
+      ...reply,
+      emotes: retiredEmotes
+    }
+    first.state.upsertCharade({
+      ...attached,
+      reply: { ...attached.reply!, emotes: retiredReply.emotes }
+    })
     await first.repository.flushNow()
 
     const second = await createHarness({}, storage)
     await negotiate(second.protocol, 'alice')
     second.sent.length = 0
 
-    await second.protocol.handlePost({ ...reply, emotes: [...DECK[1].suggested] }, 'alice')
+    await second.protocol.handlePost(reply, 'alice')
+
+    expect(messagesOfType(second.sent, 'posted')).toHaveLength(1)
+    expect(messagesOfType(second.sent, 'error')).toEqual([])
+    expect(second.state.getCharade(target.id)?.reply?.emotes).toEqual(retiredReply.emotes)
+    expect(second.state.getCharade(target.id)?.touringConsent).toBe(true)
+    second.sent.length = 0
+
+    await second.protocol.handlePost(retiredReply, 'alice')
 
     expect(messagesOfType(second.sent, 'posted')).toEqual([])
     expect(messagesOfType(second.sent, 'error')).toEqual([
@@ -3394,14 +4558,6 @@ describe('answer-back protocol', () => {
         to: ['alice']
       }
     ])
-    expect(second.state.getCharade(target.id)?.reply?.emotes).toEqual(reply.emotes)
-    expect(second.state.getCharade(target.id)?.touringConsent).toBe(true)
-    second.sent.length = 0
-
-    await second.protocol.handlePost(reply, 'alice')
-
-    expect(messagesOfType(second.sent, 'posted')).toHaveLength(1)
-    expect(messagesOfType(second.sent, 'error')).toEqual([])
     expect(second.state.getCharade(target.id)?.touringConsent).toBe(true)
   })
 
@@ -3434,8 +4590,8 @@ describe('answer-back protocol', () => {
     first.state.playerStats.get(sender)!.seen.push(repliedTarget.id, emptyTarget.id)
     first.state.saveStats(sender)
     const shapedRequest = {
-      phraseId: DECK[0].id,
-      emotes: [...DECK[0].suggested],
+      phraseId: TEST_PHRASE.id,
+      emotes: TEST_PERFORMANCE,
       requestId: 'cross-shaped-post',
       ...(mailed ? { recipient } : {})
     }
@@ -3443,7 +4599,7 @@ describe('answer-back protocol', () => {
     await first.protocol.handlePost(
       {
         phraseId: repliedTarget.phraseId,
-        emotes: [...DECK[1].suggested],
+        emotes: [authorBeatChoices(TEST_PHRASE, 0)[1], TEST_PERFORMANCE[1], TEST_PERFORMANCE[2]],
         requestId: 'cross-shaped-reply',
         replyTo: repliedTarget.id
       },
@@ -3461,7 +4617,7 @@ describe('answer-back protocol', () => {
     await second.protocol.handlePost(
       {
         phraseId: emptyTarget.phraseId,
-        emotes: [...DECK[0].suggested],
+        emotes: TEST_PERFORMANCE,
         requestId: shapedRequest.requestId,
         replyTo: emptyTarget.id
       },
@@ -3469,8 +4625,8 @@ describe('answer-back protocol', () => {
     )
     await second.protocol.handlePost(
       {
-        phraseId: DECK[0].id,
-        emotes: [...DECK[0].suggested],
+        phraseId: TEST_PHRASE.id,
+        emotes: TEST_PERFORMANCE,
         requestId: 'cross-shaped-reply',
         ...(mailed ? { recipient } : {})
       },
@@ -3500,7 +4656,7 @@ describe('answer-back protocol', () => {
     await first.protocol.handlePost(
       {
         phraseId: target.phraseId,
-        emotes: [...DECK[0].suggested],
+        emotes: TEST_PERFORMANCE,
         requestId: 'persistent-answer-back',
         replyTo: target.id
       },
@@ -3521,6 +4677,161 @@ describe('answer-back protocol', () => {
     await negotiate(third.protocol, 'author')
     expect(messagesOfType(third.sent, 'since')).toEqual([])
     expect(third.state.getCharade(target.id)?.reply).toMatchObject({ address: 'decoder', name: 'Decoder' })
+  })
+})
+
+describe('durable mutation journal capacity', () => {
+  it('fits every real mutation shape with a max-count look and 64 worst-case replays', async () => {
+    const sender = `0x${'1'.repeat(40)}`
+    const recipient = `0x${'A'.repeat(40)}`
+    const replier = `0x${'3'.repeat(40)}`
+    const decoder = `0x${'4'.repeat(40)}`
+    const policy = showPolicyForTimestamp(FIXED_NOW)!
+    const phrase = PLAYABLE_DECK.filter((candidate) => policy.primaryPhraseIds.includes(candidate.id)).sort(
+      (left, right) => JSON.stringify(right).length - JSON.stringify(left).length
+    )[0]
+    const performance = canonicalPerformance(phrase)!
+    const maximalLook = (address: string) => ({
+      ...makeLook(address, 'N'.repeat(128)),
+      bodyShape: 'urn:'.padEnd(512, 'b'),
+      wearables: Array.from({ length: 20 }, (_, index) =>
+        `urn:decentraland:matic:collections-v2:max-${index}`.padEnd(80, String(index % 10))
+      )
+    })
+    const captured: Array<{ label: string; mutation: DurableMutation; bytes: number }> = []
+
+    async function capture(
+      label: string,
+      run: (harness: ProtocolHarness, failCheckpoint: () => void) => Promise<void>
+    ) {
+      let checkpointMustFail = false
+      const harness = await createHarness({
+        snapshotLook: async (address) => maximalLook(address),
+        flush: async () => {
+          if (checkpointMustFail) throw new StorageUnavailableError(['intentional-journal-cut'])
+        }
+      })
+      await run(harness, () => {
+        checkpointMustFail = true
+      })
+      const raw = harness.storage.readJSON<{ v: 1; active: DurableMutation | null; completed: unknown[] }>(
+        DURABLE_MUTATION_JOURNAL_KEY
+      )
+      expect(raw?.active, label).not.toBeNull()
+      const bytes = new TextEncoder().encode(JSON.stringify(raw)).byteLength
+      expect(bytes, label).toBeLessThanOrEqual(MAX_DURABLE_JOURNAL_BYTES)
+      expect(bytes, label).toBeLessThanOrEqual(MAX_STORAGE_VALUE_BYTES)
+      captured.push({ label, mutation: raw!.active!, bytes })
+      return raw!.active!
+    }
+
+    const ordinary = await capture('ordinary post', async ({ protocol }, failCheckpoint) => {
+      await negotiate(protocol, sender)
+      failCheckpoint()
+      await protocol.handlePost(
+        {
+          requestId: 'p'.repeat(64),
+          phraseId: phrase.id,
+          emotes: performance,
+          touringConsent: true
+        },
+        sender
+      )
+    })
+    expect(ordinary.charade?.author.bodyShape).toHaveLength(512)
+    expect(ordinary.charade?.author.wearables).toHaveLength(20)
+    expect(new TextEncoder().encode(JSON.stringify(ordinary.charade?.author)).byteLength).toBeLessThanOrEqual(2_800)
+
+    await capture('mail post', async ({ state, protocol }, failCheckpoint) => {
+      state.recentVisitors = [{ ...maximalLook(recipient), lastSeenAt: FIXED_NOW }]
+      await negotiate(protocol, sender)
+      failCheckpoint()
+      await protocol.handlePost(
+        {
+          requestId: 'm'.repeat(64),
+          phraseId: phrase.id,
+          emotes: performance,
+          recipient
+        },
+        sender
+      )
+    })
+
+    await capture('reply post', async ({ state, protocol }, failCheckpoint) => {
+      const target = structuredClone(ordinary.charade!)
+      state.upsertCharade(target)
+      await negotiate(protocol, replier)
+      state.playerStats.get(replier)!.seen.push(target.id)
+      failCheckpoint()
+      await protocol.handlePost(
+        {
+          requestId: 'r'.repeat(64),
+          phraseId: target.phraseId,
+          emotes: performance,
+          replyTo: target.id
+        },
+        replier
+      )
+    })
+
+    await capture('final guess', async ({ state, sent, protocol }, failCheckpoint) => {
+      const target = structuredClone(ordinary.charade!)
+      state.upsertCharade(target)
+      await negotiate(protocol, decoder)
+      await protocol.handleNextCharade(nextCharadeRequest(), decoder)
+      const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+      failCheckpoint()
+      await protocol.handleGuess(
+        {
+          requestId: 'g'.repeat(64),
+          charadeId: served.id,
+          answerIndex: correctAnswerIndex(state, served),
+          spotlight: true
+        },
+        decoder
+      )
+    })
+
+    expect(captured.map(({ label }) => label)).toEqual(['ordinary post', 'mail post', 'reply post', 'final guess'])
+    const completionSource = captured
+      .map(({ mutation }) => ({
+        mutation,
+        bytes: new TextEncoder().encode(
+          JSON.stringify({
+            v: mutation.v,
+            id: mutation.id,
+            owner: mutation.owner,
+            requestId: mutation.requestId,
+            createdAt: mutation.createdAt,
+            fingerprint: mutation.fingerprint,
+            response: mutation.response,
+            completedAt: FIXED_NOW
+          })
+        ).byteLength
+      }))
+      .sort((left, right) => right.bytes - left.bytes)[0].mutation
+    const largestActive = captured.slice().sort((left, right) => right.bytes - left.bytes)[0].mutation
+    const completed = Array.from({ length: MAX_DURABLE_COMPLETIONS }, (_, index) => {
+      const requestId = `retained-${index}`.padEnd(64, String(index % 10))
+      const response = structuredClone(completionSource.response)
+      response.data.requestId = requestId
+      return {
+        v: 1 as const,
+        id: `${completionSource.owner}:${completionSource.fingerprint.kind}:${requestId}`,
+        owner: completionSource.owner,
+        requestId,
+        createdAt: completionSource.createdAt,
+        fingerprint: completionSource.fingerprint,
+        response,
+        completedAt: FIXED_NOW + index
+      }
+    })
+    const worstCaseJournal = { v: 1 as const, active: largestActive, completed }
+    const worstCaseBytes = new TextEncoder().encode(JSON.stringify(worstCaseJournal)).byteLength
+
+    expect(completed).toHaveLength(64)
+    expect(worstCaseBytes).toBeLessThanOrEqual(MAX_DURABLE_JOURNAL_BYTES)
+    expect(worstCaseBytes).toBeLessThanOrEqual(MAX_STORAGE_VALUE_BYTES)
   })
 })
 
@@ -3732,22 +5043,6 @@ describe('live protocol', () => {
       protocol,
       {
         charadeId: charade.id,
-        answerIndex: correctAnswerIndex(state, bobServed),
-        requestId: 'bob-shared-first'
-      },
-      'bob'
-    )
-    const bobReveal = dataOf<Record<string, unknown>>(
-      messagesOfType(sent, 'reveal').find((message) => message.to?.[0] === 'bob')!
-    )
-    expect(bobReveal).toMatchObject({ correct: true, attempt: 1, scoreDelta: 100 })
-    expect(protocol.rounds.current?.winner).toEqual({ address: 'bob', name: 'Bob' })
-    expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 1, retryStates: 1, activeDecoders: 1 })
-
-    await handleCurrentRoundGuess(
-      protocol,
-      {
-        charadeId: charade.id,
         answerIndex: correctAnswerIndex(state, aliceServed),
         requestId: 'alice-shared-final',
         spotlight: false
@@ -3758,6 +5053,24 @@ describe('live protocol', () => {
       messagesOfType(sent, 'reveal').find((message) => message.to?.[0] === 'alice')!
     )
     expect(aliceReveal).toMatchObject({ correct: true, attempt: 2, spotlight: true, scoreDelta: 50 })
+    expect(messagesOfType(sent, 'roundWinner')).toEqual([])
+    expect(protocol.rounds.current).toMatchObject({ guessed: ['alice'], winner: null })
+    expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 1, retryStates: 0, activeDecoders: 1 })
+
+    await handleCurrentRoundGuess(
+      protocol,
+      {
+        charadeId: charade.id,
+        answerIndex: correctAnswerIndex(state, bobServed),
+        requestId: 'bob-shared-first'
+      },
+      'bob'
+    )
+    const bobReveal = dataOf<Record<string, unknown>>(
+      messagesOfType(sent, 'reveal').find((message) => message.to?.[0] === 'bob')!
+    )
+    expect(bobReveal).toMatchObject({ correct: true, attempt: 1, scoreDelta: 100 })
+    expect(protocol.rounds.current?.winner).toEqual({ address: 'bob', name: 'Bob' })
     expect(messagesOfType(sent, 'roundWinner')).toEqual([
       {
         type: 'roundWinner',
@@ -3772,7 +5085,9 @@ describe('live protocol', () => {
         to: undefined
       }
     ])
-    expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 2, correct: 2 })
+    expect(state.playerStats.get('alice')).toMatchObject({ decoded: 1, correct: 0 })
+    expect(state.playerStats.get('bob')).toMatchObject({ decoded: 1, correct: 1 })
+    expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 2, correct: 1 })
     expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 0, retryStates: 0, activeDecoders: 0 })
   })
 
@@ -3834,6 +5149,107 @@ describe('live protocol', () => {
     ])
     expect(messagesOfType(sent, 'reveal')).toHaveLength(2)
     expect(protocol.rounds.current?.winner).toEqual({ address: 'alice', name: 'Alice' })
+  })
+
+  it('serializes concurrent decoder commits without losing shared charade totals', async () => {
+    const checkpointStarted = deferred<void>()
+    const checkpointGate = deferred<void>()
+    let holdCheckpoint = false
+    const snapshotLook = async (address: string) => makeLook(address, address === 'alice' ? 'Alice' : 'Bob')
+    const { state, sent, protocol } = await createHarness({
+      snapshotLook,
+      flush: async () => {
+        if (!holdCheckpoint) return
+        checkpointStarted.resolve()
+        await checkpointGate.promise
+      }
+    })
+    const charade = makeCharade('concurrent-live-total', {
+      author: { ...makeLook('outside', 'Outside'), isGuest: false }
+    })
+    state.upsertCharade(charade)
+    await negotiate(protocol, 'alice')
+    await negotiate(protocol, 'bob')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'alice')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'bob')
+    const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade')[0])
+    const answerIndex = correctAnswerIndex(state, served)
+    const roundId = protocol.rounds.current!.roundId
+    holdCheckpoint = true
+
+    const aliceGuess = protocol.handleRoundGuess(
+      { roundId, charadeId: served.id, answerIndex, requestId: 'concurrent-alice' },
+      'alice'
+    )
+    await checkpointStarted.promise
+    const bobGuess = protocol.handleRoundGuess(
+      { roundId, charadeId: served.id, answerIndex, requestId: 'concurrent-bob' },
+      'bob'
+    )
+    await vi.waitFor(() => expect(protocol.resourceCounts().outstandingRequests).toBeGreaterThanOrEqual(2))
+    expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 1, correct: 1 })
+    checkpointGate.resolve()
+    await Promise.all([aliceGuess, bobGuess])
+
+    expect(state.getCharade(charade.id)?.guesses).toEqual({ total: 2, correct: 2 })
+    expect(messagesOfType(sent, 'roundWinner')).toHaveLength(1)
+    expect(
+      messagesOfType(sent, 'reveal').filter((message) => ['alice', 'bob'].includes(message.to?.[0] ?? ''))
+    ).toHaveLength(2)
+  })
+
+  it('queues a completed Show Set reset behind a healthy durable commit instead of skipping it', async () => {
+    const checkpointStarted = deferred<void>()
+    const checkpointGate = deferred<void>()
+    let holdCheckpoint = false
+    const { state, sent, protocol } = await createHarness({
+      snapshotLook: async (address) => makeLook(address, address === 'alice' ? 'Alice' : 'Bob'),
+      flush: async () => {
+        if (!holdCheckpoint) return
+        checkpointStarted.resolve()
+        await checkpointGate.promise
+      }
+    })
+    const charade = makeCharade('queued-show-set-reset', { author: { address: 'outside', name: 'Outside' } })
+    state.upsertCharade(charade)
+    await negotiate(protocol, 'alice')
+    await negotiate(protocol, 'bob')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'alice')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'bob')
+    const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade')[0])
+    const roundId = protocol.rounds.current!.roundId
+    const bobStats = state.playerStats.get('bob')!
+    bobStats.showSet = {
+      showKey: 'daily:2026-08-23',
+      round: 5,
+      score: 500,
+      streak: 2,
+      bestStreak: 3,
+      understood: 3
+    }
+    state.saveStats('bob')
+    holdCheckpoint = true
+
+    const guessing = protocol.handleRoundGuess(
+      {
+        roundId,
+        charadeId: served.id,
+        answerIndex: correctAnswerIndex(state, served),
+        requestId: 'queued-show-set-guess'
+      },
+      'alice'
+    )
+    await checkpointStarted.promise
+    const serving = protocol.handleNextCharade(nextCharadeRequest([served.id]), 'bob')
+    await Promise.resolve()
+
+    expect(bobStats.showSet.round).toBe(5)
+    checkpointGate.resolve()
+    await Promise.all([guessing, serving])
+
+    expect(bobStats.showSet).toMatchObject({ showKey: 'daily:2026-08-23', round: 0, score: 0 })
+    expect(messagesOfType(sent, 'error')).toEqual([])
+    expect(messagesOfType(sent, 'charade').filter((message) => message.to?.[0] === 'bob')).toHaveLength(2)
   })
 
   it('does not award a restarted same-charade round to a stale round guess', async () => {
@@ -4269,7 +5685,7 @@ describe('live protocol', () => {
       makeStats({ pending: { triedYou: 99, gotYou: 50, replies: 9, mail: 4 } })
     )
     const { state, sent, protocol } = await createHarness({}, storage)
-    const phrase = DECK.find((candidate) => candidate.theme === themeForTimestamp(FIXED_NOW).id)!
+    const phrase = PLAYABLE_DECK.find((candidate) => candidate.theme === themeForTimestamp(FIXED_NOW).id)!
     const target = makeCharade('ghost-0000000000000000', {
       phraseId: phrase.id,
       author: {
@@ -4280,7 +5696,8 @@ describe('live protocol', () => {
       guesses: { total: 1, correct: 0 },
       createdAt: FIXED_NOW - 10_000,
       reply: makeReply(`0x${'b'.repeat(40)}`, 'B'.repeat(30), {
-        look: { ...makeLook(`0x${'b'.repeat(40)}`, 'B'.repeat(30)), wearables }
+        look: { ...makeLook(`0x${'b'.repeat(40)}`, 'B'.repeat(30)), wearables },
+        emotes: canonicalPerformance(phrase)!
       })
     })
     state.upsertCharade(target)
@@ -4305,7 +5722,7 @@ describe('live protocol', () => {
       )
     }
     await negotiate(protocol, 'player')
-    await protocol.handleNextCharade(nextCharadeRequest(), 'player')
+    await protocol.handleNextCharade({ requestId: 'maximal-wire-next', exclude: [] }, 'player')
 
     const charade = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
     const reply = dataOf<CharadeReplyMessage>(messagesOfType(sent, 'charadeReply').at(-1)!)
@@ -4345,14 +5762,14 @@ describe('live protocol', () => {
     expect(Object.values(wireMeasurements).every((size) => size < 4_000)).toBe(true)
     expect(inlineCharade).toBeGreaterThan(4_000)
     expect({ ...wireMeasurements, inlineCharade }).toEqual({
-      charade: 2_569,
-      mailCharade: 2_626,
-      charadeReply: 2_278,
+      charade: 2_566,
+      mailCharade: 2_623,
+      charadeReply: 2_269,
       since: 244,
       boards: 3_049,
       ready: 110,
       retry: 109,
-      inlineCharade: 4_819
+      inlineCharade: 4_807
     })
   })
 
@@ -4361,7 +5778,7 @@ describe('live protocol', () => {
       `urn:decentraland:matic:collections-v2:oversized-${index.toString().padStart(2, '0')}`.padEnd(200, 'x')
     )
     const { state, sent, protocol } = await createHarness()
-    const phrase = DECK.find((candidate) => candidate.theme === themeForTimestamp(FIXED_NOW).id)!
+    const phrase = PLAYABLE_DECK.find((candidate) => candidate.theme === themeForTimestamp(FIXED_NOW).id)!
     const longAddress = `0x${'a'.repeat(198)}`
     const longName = 'Performer'.repeat(25)
     const target = makeCharade('oversized-wire-look', {
@@ -4369,7 +5786,8 @@ describe('live protocol', () => {
       author: { address: longAddress, name: longName, wearables },
       guesses: { total: 1, correct: 0 },
       reply: makeReply(`0x${'b'.repeat(198)}`, longName, {
-        look: { ...makeLook(`0x${'b'.repeat(198)}`, longName), wearables }
+        look: { ...makeLook(`0x${'b'.repeat(198)}`, longName), wearables },
+        emotes: canonicalPerformance(phrase)!
       })
     })
     state.upsertCharade(target)

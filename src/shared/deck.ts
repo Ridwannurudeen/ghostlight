@@ -34,6 +34,12 @@ export type Phrase = {
   suggested: readonly [Emote, Emote, Emote]
 }
 
+export type BeatIndex = 0 | 1 | 2
+export type BeatChoices = readonly [Emote, ...Emote[]]
+export type PlayablePhrase = Phrase & {
+  beats: readonly [BeatChoices, BeatChoices, BeatChoices]
+}
+
 type PhraseSource = Omit<Phrase, 'theme'>
 
 const PHRASE_SOURCES = [
@@ -708,76 +714,375 @@ export type PhraseId = (typeof PHRASE_SOURCES)[number]['id']
 
 export const DECK: readonly Phrase[] = PHRASE_SOURCES.map((phrase) => ({ ...phrase, theme: phrase.category }))
 
-const HOUSE_CHARADE_SOURCES = [
-  { id: 'house-charade', phraseId: 'pop-ghost-party', emotes: ['handsair', 'disco', 'clap'] },
+const PLAYABLE_RULES = [
   {
-    id: 'house-everyday-lost-keys',
-    phraseId: 'everyday-find-lost-keys',
-    emotes: ['dontsee', 'raiseHand', 'fistpump']
+    id: 'everyday-miss-the-bus',
+    beats: [
+      ['wave', 'raiseHand'],
+      ['tektonik', 'handsair'],
+      ['shrug', 'dontsee']
+    ]
   },
   {
+    id: 'everyday-take-a-selfie',
+    beats: [
+      ['raiseHand', 'tik'],
+      ['kiss', 'dab'],
+      ['clap', 'fistpump']
+    ]
+  },
+  {
+    id: 'everyday-dance-in-elevator',
+    beats: [
+      ['dontsee', 'shrug'],
+      ['disco', 'tektonik'],
+      ['wave', 'clap']
+    ]
+  },
+  {
+    id: 'everyday-chase-a-mosquito',
+    beats: [
+      ['dontsee', 'raiseHand'],
+      ['clap', 'hammer'],
+      ['headexplode', 'shrug']
+    ]
+  },
+  {
+    id: 'everyday-dodge-the-rain',
+    beats: [
+      ['raiseHand', 'dontsee'],
+      ['tektonik', 'robot'],
+      ['handsair', 'headexplode']
+    ]
+  },
+  {
+    id: 'feelings-celebrate-a-win',
+    beats: [
+      ['raiseHand', 'money'],
+      ['fistpump', 'handsair'],
+      ['clap', 'dab']
+    ]
+  },
+  {
+    id: 'feelings-fight-boredom',
+    beats: [
+      ['shrug', 'dontsee'],
+      ['robot', 'tektonik'],
+      ['disco', 'clap']
+    ]
+  },
+  {
+    id: 'feelings-fake-confidence',
+    beats: [
+      ['shrug', 'dontsee'],
+      ['fistpump', 'raiseHand'],
+      ['dab', 'handsair']
+    ]
+  },
+  {
+    id: 'feelings-lose-your-patience',
+    beats: [
+      ['shrug', 'robot'],
+      ['hammer', 'headexplode'],
+      ['handsair', 'dontsee']
+    ]
+  },
+  {
+    id: 'feelings-act-confused',
+    beats: [
+      ['headexplode', 'dontsee'],
+      ['shrug', 'robot'],
+      ['raiseHand', 'wave']
+    ]
+  },
+  {
+    id: 'food-taste-a-lemon',
+    beats: [
+      ['kiss', 'raiseHand'],
+      ['headexplode', 'dontsee'],
+      ['shrug', 'wave']
+    ]
+  },
+  {
+    id: 'food-eat-spicy-noodles',
+    beats: [
+      ['hammer', 'kiss'],
+      ['headexplode', 'handsair'],
+      ['wave', 'dontsee']
+    ]
+  },
+  {
+    id: 'food-drop-the-ice-cream',
+    beats: [
+      ['kiss', 'money'],
+      ['handsair', 'hammer'],
+      ['dontsee', 'shrug']
+    ]
+  },
+  {
+    id: 'food-juggle-three-oranges',
+    beats: [
+      ['raiseHand', 'handsair'],
+      ['tektonik', 'robot'],
+      ['clap', 'fistpump']
+    ]
+  },
+  {
+    id: 'food-crack-a-coconut',
+    beats: [
+      ['raiseHand', 'money'],
+      ['hammer', 'fistpump'],
+      ['handsair', 'clap']
+    ]
+  },
+  {
+    id: 'dcl-life-enter-a-portal',
+    beats: [
+      ['wave', 'raiseHand'],
+      ['handsair', 'headexplode'],
+      ['robot', 'tektonik']
+    ]
+  },
+  {
+    id: 'dcl-life-mint-a-wearable',
+    beats: [
+      ['money', 'raiseHand'],
+      ['robot', 'hammer'],
+      ['fistpump', 'clap']
+    ]
+  },
+  {
+    id: 'dcl-life-dance-at-the-plaza',
+    beats: [
+      ['wave', 'raiseHand'],
+      ['disco', 'tektonik'],
+      ['clap', 'dab']
+    ]
+  },
+  {
+    id: 'dcl-life-flex-a-rare-wearable',
+    beats: [
+      ['money', 'kiss'],
+      ['dab', 'disco'],
+      ['fistpump', 'clap']
+    ]
+  },
+  {
+    id: 'dcl-life-vote-in-the-dao',
+    beats: [
+      ['dontsee', 'shrug'],
+      ['raiseHand', 'wave'],
+      ['clap', 'fistpump']
+    ]
+  },
+  {
+    id: 'pop-become-a-superhero',
+    beats: [
+      ['raiseHand', 'handsair'],
+      ['fistpump', 'hammer'],
+      ['dab', 'clap']
+    ]
+  },
+  {
+    id: 'pop-fight-an-invisible-villain',
+    beats: [
+      ['dontsee', 'shrug'],
+      ['hammer', 'tektonik'],
+      ['fistpump', 'handsair']
+    ]
+  },
+  {
+    id: 'pop-meet-an-alien',
+    beats: [
+      ['dontsee', 'wave'],
+      ['robot', 'raiseHand'],
+      ['headexplode', 'clap']
+    ]
+  },
+  {
+    id: 'pop-cast-a-magic-spell',
+    beats: [
+      ['raiseHand', 'hammer'],
+      ['handsair', 'robot'],
+      ['headexplode', 'clap']
+    ]
+  },
+  {
+    id: 'pop-train-like-a-ninja',
+    beats: [
+      ['dontsee', 'shrug'],
+      ['tektonik', 'hammer'],
+      ['dab', 'fistpump']
+    ]
+  },
+  {
+    id: 'awkward-wave-at-wrong-person',
+    beats: [
+      ['wave', 'raiseHand'],
+      ['dontsee', 'headexplode'],
+      ['shrug', 'robot']
+    ]
+  },
+  {
+    id: 'awkward-trip-on-stage',
+    beats: [
+      ['tektonik', 'handsair'],
+      ['hammer', 'dontsee'],
+      ['clap', 'fistpump']
+    ]
+  },
+  {
+    id: 'awkward-miss-a-high-five',
+    beats: [
+      ['raiseHand', 'wave'],
+      ['robot', 'tektonik'],
+      ['headexplode', 'dab']
+    ]
+  },
+  {
+    id: 'awkward-dance-after-music-stops',
+    beats: [
+      ['disco', 'tektonik'],
+      ['shrug', 'robot'],
+      ['wave', 'dontsee']
+    ]
+  },
+  {
+    id: 'awkward-drop-phone-on-face',
+    beats: [
+      ['tik', 'kiss'],
+      ['handsair', 'hammer'],
+      ['dontsee', 'headexplode']
+    ]
+  }
+] as const satisfies readonly { id: PhraseId; beats: readonly [BeatChoices, BeatChoices, BeatChoices] }[]
+
+export const PLAYABLE_DECK: readonly PlayablePhrase[] = Object.freeze(
+  PLAYABLE_RULES.map((rule) => {
+    const phrase = DECK.find((candidate) => candidate.id === rule.id)
+    if (!phrase) throw new Error(`Unknown playable phrase: ${rule.id}`)
+    const beats = Object.freeze(rule.beats.map((choices) => Object.freeze([...choices]))) as PlayablePhrase['beats']
+    return Object.freeze({
+      ...phrase,
+      suggested: Object.freeze([beats[0][0], beats[1][0], beats[2][0]]) as Phrase['suggested'],
+      beats
+    })
+  })
+)
+
+const PLAYABLE_BY_ID = new Map(PLAYABLE_DECK.map((phrase) => [phrase.id, phrase]))
+
+export function playablePhrase(phraseOrId: Phrase | string): PlayablePhrase | null {
+  const phraseId = typeof phraseOrId === 'string' ? phraseOrId : phraseOrId.id
+  return PLAYABLE_BY_ID.get(phraseId) ?? null
+}
+
+export function canonicalPerformance(phraseOrId: Phrase | string): [Emote, Emote, Emote] | null {
+  const phrase = playablePhrase(phraseOrId)
+  return phrase ? [phrase.beats[0][0], phrase.beats[1][0], phrase.beats[2][0]] : null
+}
+
+export function authorBeatChoices(phraseOrId: Phrase | string, beatIndex: number): readonly Emote[] {
+  const phrase = playablePhrase(phraseOrId)
+  return phrase && Number.isInteger(beatIndex) && beatIndex >= 0 && beatIndex < 3 ? phrase.beats[beatIndex] : []
+}
+
+export function isAllowedPerformance(phraseOrId: Phrase | string, emotes: readonly string[]): boolean {
+  const phrase = playablePhrase(phraseOrId)
+  return (
+    phrase !== null &&
+    emotes.length === 3 &&
+    new Set(emotes).size === 3 &&
+    emotes.every((emote, index) => phrase.beats[index].includes(emote as Emote))
+  )
+}
+
+export function performanceMatchCount(phraseOrId: Phrase | string, emotes: readonly string[]): number {
+  const phrase = playablePhrase(phraseOrId)
+  if (!phrase || emotes.length !== 3) return 0
+  return emotes.reduce((matches, emote, index) => matches + (phrase.beats[index].includes(emote as Emote) ? 1 : 0), 0)
+}
+
+export function isDecodablePerformance(
+  phraseOrId: Phrase | string,
+  emotes: readonly string[],
+  decoyDeck: readonly Phrase[] = PLAYABLE_DECK
+): boolean {
+  const phrase = playablePhrase(phraseOrId)
+  if (!phrase || !isAllowedPerformance(phrase, emotes)) return false
+  const sourceFirstWord = phrase.text.trim().split(/\s+/u)[0].toLocaleLowerCase()
+  const candidates = decoyDeck.filter(
+    (candidate) =>
+      candidate.id !== phrase.id &&
+      candidate.category === phrase.category &&
+      candidate.text.trim().split(/\s+/u)[0].toLocaleLowerCase() !== sourceFirstWord &&
+      playablePhrase(candidate) !== null &&
+      performanceMatchCount(candidate, emotes) <= 1
+  )
+  for (let left = 0; left < candidates.length; left += 1) {
+    const leftFirstWord = candidates[left].text.trim().split(/\s+/u)[0].toLocaleLowerCase()
+    if (
+      candidates
+        .slice(left + 1)
+        .some((candidate) => candidate.text.trim().split(/\s+/u)[0].toLocaleLowerCase() !== leftFirstWord)
+    ) {
+      return true
+    }
+  }
+  return false
+}
+
+const HOUSE_CHARADE_SOURCES = [
+  {
     id: 'house-everyday-dodge-rain',
-    phraseId: 'everyday-dodge-the-rain',
-    emotes: ['dontsee', 'tektonik', 'handsair']
+    phraseId: 'everyday-dodge-the-rain'
   },
   {
     id: 'house-feelings-big-win',
-    phraseId: 'feelings-celebrate-a-win',
-    emotes: ['fistpump', 'handsair', 'clap']
+    phraseId: 'feelings-celebrate-a-win'
   },
-  {
-    id: 'house-feelings-monday-morning',
-    phraseId: 'feelings-face-monday-morning',
-    emotes: ['dontsee', 'headexplode', 'robot']
-  },
-  { id: 'house-food-flip-pancake', phraseId: 'food-flip-a-pancake', emotes: ['hammer', 'handsair', 'clap'] },
   {
     id: 'house-food-spicy-noodles',
-    phraseId: 'food-eat-spicy-noodles',
-    emotes: ['hammer', 'headexplode', 'handsair']
+    phraseId: 'food-eat-spicy-noodles'
   },
   {
-    id: 'house-dcl-enter-portal',
-    phraseId: 'dcl-life-enter-a-portal',
-    emotes: ['wave', 'handsair', 'robot']
+    id: 'house-dcl-dance-at-plaza',
+    phraseId: 'dcl-life-dance-at-the-plaza'
   },
   {
-    id: 'house-dcl-wave-at-npc',
-    phraseId: 'dcl-life-wave-at-an-npc',
-    emotes: ['wave', 'robot', 'shrug']
-  },
-  {
-    id: 'house-pop-secret-identity',
-    phraseId: 'pop-reveal-secret-identity',
-    emotes: ['dontsee', 'handsair', 'fistpump']
+    id: 'house-pop-superhero',
+    phraseId: 'pop-become-a-superhero'
   },
   {
     id: 'house-awkward-wrong-person',
-    phraseId: 'awkward-wave-at-wrong-person',
-    emotes: ['wave', 'dontsee', 'shrug']
+    phraseId: 'awkward-wave-at-wrong-person'
   }
-] as const satisfies ReadonlyArray<Pick<Charade, 'id' | 'phraseId' | 'emotes'>>
+] as const satisfies ReadonlyArray<Pick<Charade, 'id' | 'phraseId'>>
 
-export const HOUSE_CHARADES: readonly Charade[] = HOUSE_CHARADE_SOURCES.map((source) => ({
-  v: STORAGE_SCHEMA_VERSION,
-  id: source.id,
-  author: {
-    address: '0x0000000000000000000000000000000000000000',
-    name: 'House',
-    isGuest: true,
-    bodyShape: 'urn:decentraland:off-chain:base-avatars:BaseFemale',
-    skinColor: { r: 0.72, g: 0.55, b: 0.46 },
-    hairColor: { r: 0.22, g: 0.12, b: 0.08 },
-    eyeColor: { r: 0.3, g: 0.48, b: 0.62 },
-    wearables: []
-  },
-  phraseId: source.phraseId,
-  emotes: [...source.emotes],
-  createdAt: 0,
-  guesses: { total: 0, correct: 0 },
-  lastGuessAt: 0,
-  isHouse: true,
-  touringConsent: false
-}))
+export const HOUSE_CHARADES: readonly Charade[] = HOUSE_CHARADE_SOURCES.map((source) => {
+  const emotes = canonicalPerformance(source.phraseId)
+  if (!emotes) throw new Error(`House phrase is not playable: ${source.phraseId}`)
+  return {
+    v: STORAGE_SCHEMA_VERSION,
+    id: source.id,
+    author: {
+      address: '0x0000000000000000000000000000000000000000',
+      name: 'House',
+      isGuest: true,
+      bodyShape: 'urn:decentraland:off-chain:base-avatars:BaseFemale',
+      skinColor: { r: 0.72, g: 0.55, b: 0.46 },
+      hairColor: { r: 0.22, g: 0.12, b: 0.08 },
+      eyeColor: { r: 0.3, g: 0.48, b: 0.62 },
+      wearables: []
+    },
+    phraseId: source.phraseId,
+    emotes,
+    createdAt: 0,
+    guesses: { total: 0, correct: 0 },
+    lastGuessAt: 0,
+    isHouse: true,
+    touringConsent: false
+  }
+})
 
 export const HOUSE_CHARADE: Charade = HOUSE_CHARADES[0]
