@@ -1,4 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import {
+  SEASON_ZERO_END_AT as API_SEASON_ZERO_END_AT,
+  SEASON_ZERO_START_AT as API_SEASON_ZERO_START_AT,
+  SEASON_ZERO_WEEKS as API_SEASON_ZERO_WEEKS
+} from '../api/src/season-calendar'
 import { THEMES, themeForTimestamp } from '../src/shared/config'
 import { HOUSE_CHARADES, PLAYABLE_DECK } from '../src/shared/deck'
 import {
@@ -54,6 +59,19 @@ describe('Season Zero schedule', () => {
       expect(week.eligibility.startsAt).toBe(SEASON_ZERO_START_AT + index * WEEK_MILLISECONDS)
       expect(week.eligibility.endsAt).toBe(week.eligibility.startsAt + WEEK_MILLISECONDS)
     }
+  })
+
+  it('keeps the API scheduled calendar in exact parity with the World schedule', () => {
+    expect(API_SEASON_ZERO_START_AT).toBe(SEASON_ZERO_START_AT)
+    expect(API_SEASON_ZERO_END_AT).toBe(SEASON_ZERO_END_AT)
+    expect(API_SEASON_ZERO_WEEKS).toEqual(
+      SEASON_ZERO_WEEKS.map((week) => ({
+        id: week.id,
+        labels: week.name,
+        startsAt: week.eligibility.startsAt,
+        endsAt: week.eligibility.endsAt
+      }))
+    )
   })
 
   it('uses 28 unique reviewed playable candidates per week', () => {

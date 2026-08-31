@@ -3,16 +3,8 @@ import {
   SEASON_ZERO_END_AT,
   SEASON_ZERO_START_AT,
   SEASON_ZERO_WEEKS,
-  type SeasonCalendarLabels,
-  type SeasonZeroWeekId,
   seasonZeroCalendarSnapshot
 } from '../src/season-calendar.js'
-
-type SharedSeasonWeek = Readonly<{
-  id: SeasonZeroWeekId
-  name: SeasonCalendarLabels
-  eligibility: Readonly<{ startsAt: number; endsAt: number }>
-}>
 
 describe('Season Zero scheduled calendar', () => {
   it('returns the exact deeply frozen v1 scheduled-calendar contract', () => {
@@ -120,26 +112,6 @@ describe('Season Zero scheduled calendar', () => {
     expect(() => seasonZeroCalendarSnapshot(0)).not.toThrow()
     expect(() => seasonZeroCalendarSnapshot(8_640_000_000_000_000)).not.toThrow()
     expect(() => seasonZeroCalendarSnapshot(8_640_000_000_000_001)).toThrow('Invalid current timestamp')
-  })
-
-  it('stays in exact parity with the canonical shared calendar', async () => {
-    const sharedSeasonsPath = new URL('../../src/shared/seasons.ts', import.meta.url).href
-    const shared = (await import(sharedSeasonsPath)) as {
-      SEASON_ZERO_START_AT: number
-      SEASON_ZERO_END_AT: number
-      SEASON_ZERO_WEEKS: readonly SharedSeasonWeek[]
-    }
-
-    expect(SEASON_ZERO_START_AT).toBe(shared.SEASON_ZERO_START_AT)
-    expect(SEASON_ZERO_END_AT).toBe(shared.SEASON_ZERO_END_AT)
-    expect(SEASON_ZERO_WEEKS).toEqual(
-      shared.SEASON_ZERO_WEEKS.map((week) => ({
-        id: week.id,
-        labels: week.name,
-        startsAt: week.eligibility.startsAt,
-        endsAt: week.eligibility.endsAt
-      }))
-    )
   })
 
   it('exposes schedule facts without claiming live or active operational state', () => {
