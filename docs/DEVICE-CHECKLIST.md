@@ -13,13 +13,16 @@ run note names the failure and the owner explicitly accepts it.
       tested platform, language, inset, frame-time proxy, Transform-entity proxy, avatar count, asset totals, server
       timings, and session loop counts remain one attributable evidence record.
 
-## SDK 7.27 compatibility-candidate merge gate
+## SDK 7.27 same-commit device acceptance gate
 
-The `7.27.1-33086747846.commit-824d240` SDK/runtime pin is a candidate only. Do not merge it into the release branch
-until every item below is checked on the same commit.
+Baseline commit `95d4f7e` and live World entity
+`bafkreihblrzvm6t3flfwgjbmyybi5gs3dyyhw345iix3qc4nkc3ohlmiyu` already use the exact
+`7.27.1-33086747846.commit-824d240` SDK/runtime pin. The current committed wake, House Practice, opening,
+adaptive-reveal, and House-progression continuation is a new release candidate. Do not release or deploy it until
+every item below is checked on the same commit.
 
 - [ ] From a clean checkout, run `npm ci`, `npm ls @dcl/sdk @dcl/js-runtime --depth=0`, `npm run build`, and
-      `npm test`. Both Decentraland packages must resolve to the exact candidate version.
+      `npm test`. Both Decentraland packages must resolve to the exact pinned version.
 - [ ] Record the commit, resolved package versions, and released Decentraland app versions used on Galaxy A54 High
       and a currently supported iPhone.
 - [ ] SDK Commands 7.27 defaults local previews to `@dcl-regenesislabs/bevy-headless-server@latest`, replacing the
@@ -33,11 +36,11 @@ until every item below is checked on the same commit.
 - [ ] Record a two-phone shared round, Answer-Back duet, recipient-only Ghost Mail, remote avatar/reward rendering,
       touch-safe controls, camera and audio behavior, and the documented performance pass without an SDK-linked
       regression.
-- [ ] The owner reviews the complete evidence and explicitly approves the merge. Desktop preview, automation, or one
-      mobile OS cannot substitute for this evidence.
+- [ ] The owner reviews the complete evidence and explicitly accepts the candidate for release. Desktop preview,
+      automation, or one mobile OS cannot substitute for this evidence.
 
-Any failure blocks the merge and retains the prior release pin. Any later pin change restarts this gate. Merge
-approval does not authorize deployment.
+Any failure blocks release and deployment of the current continuation. Any later SDK pin change restarts the
+SDK-compatibility portion of this gate. Device acceptance does not authorize deployment.
 
 ## Verified local phone-preview QR gate
 
@@ -104,8 +107,9 @@ fabricated to satisfy these gates.
 - [ ] Run the control-safe pass on a currently supported iPhone with the current Decentraland iOS client.
 - [ ] Prepare two distinct named accounts, one fresh named account, and one guest. Put both phones in the same
       realm before testing shared rounds or remote props.
-- [ ] Use the verified production content from the hard pre-deploy gate. House content cannot satisfy progression
-      or release-readiness checks.
+- [ ] Use the verified production content from the hard pre-deploy gate. House content can satisfy signed-in public
+      guess-progression checks—decoded, first-try correct, daily, and revision—but cannot satisfy
+      release-readiness checks. Guest and Ghost Mail guesses remain excluded from progression.
 - [ ] For Scene Stealer and Ghostlight Legend prop checks, use persisted test accounts one qualifying action below
       the documented threshold; do not alter production state during the run.
 
@@ -114,8 +118,14 @@ fabricated to satisfy these gates.
 - [ ] Fully leave the World on both phones, let the multiplayer instance become cold, then launch the World on one
       phone while recording from before scene entry.
 - [ ] The foyer and “The theater is waking up…” appear without an empty primary view, stuck camera, or audio pop.
-- [ ] Before “Tonight's ghosts are ready.”, no charade, performer, author screen, reveal beat, request-timeout status,
-      or post confirmation appears. Repeated taps cannot advance the flow.
+- [ ] During the first 12 seconds and before “Tonight's ghosts are ready.”, no charade, performer, author screen,
+      reveal beat, request-timeout status, or post confirmation appears. Repeated taps cannot advance the flow.
+- [ ] If the first authoritative ready state has still not arrived at 12 seconds, the waking screen exposes Retry and
+      HOUSE PRACTICE. Open practice: it labels itself PRACTICE / NON-SCORING, shows the assigned House phrase before
+      playback, switches to a clear stage-camera view before the fixed START / ACTION / REACTION sequence, and keeps
+      Retry and Back available. Replay it, then use Back and verify the performer clears and the player camera returns.
+      Repeat with Retry followed by authoritative ready. Neither path may send a gameplay request or change score,
+      progress, notices, boards, saved state, or server content.
 - [ ] The first opening/decode transition occurs only after the ready state, and reconnecting from a dropped
       connection returns to the prior safe screen without duplicating a post or guess.
 - [ ] Re-enter with a named account that has pending genuine tries, solves, or replies. The Since You Left report
@@ -126,18 +136,20 @@ fabricated to satisfy these gates.
 Evidence: cold-start recording from app launch through the first answer card, plus the automated test result from
 the same commit.
 
-## Ten-second opening and theater shell
+## Four-second opening and theater shell
 
 - [ ] On a fresh session, remain in the foyer without entering the house or stage. Once the ready state arrives,
       the opening begins on its own; it neither starts during the waking state nor waits for stage entry.
-- [ ] On the first entry of the app session, the opening follows this order: foyer camera at 0.0 s, daily marquee
-      by 1.0 s, foyer doors and curtain sound at about 2.5 s, stage camera at about 4.5 s, performer entrance at
-      about 6.0 s, the prior-player / one-secret-phrase / three-ordered-clues / exactly-one-answer instruction at
-      about 8.0 s, and decode at about 10.0 s.
+- [ ] On the first entry of the app session, the opening follows this order: foyer camera and assigned-phrase /
+      three-beat instruction at 0.0 s, daily marquee by 0.5 s, foyer doors and curtain sound at about 1.0 s,
+      stage camera at about 1.75 s, then the opening overlay closes before performer entrance and decode at about
+      4.0 s. No part of the first START clue is hidden by the overlay. The stage camera remains through the complete
+      first 7.5-second START / ACTION / REACTION sequence, then releases automatically.
 - [ ] Record each observed beat time. Pass when the order is exact, no beat is skipped or duplicated, and every beat
       lands within 0.35 s of its target after the scene has loaded.
-- [ ] Tap SKIP INTRO once before 10 s. It lands cleanly on decode, does not leave the foyer camera or closed doors,
-      and the opening does not replay when returning to the foyer in the same session.
+- [ ] Tap START NOW once before 4 s. It lands cleanly on decode, switches to the stage camera without opening a hidden
+      second overlay, holds that camera through the first complete sequence, releases it afterward, and does not
+      replay the opening when returning to the foyer in the same session.
 - [ ] The foyer doors open smoothly without clipping or a one-frame scale jump. During a reveal, both stage-curtain
       halves twitch together and settle to their prior open position.
 - [ ] The primary route shows the generated foyer, doors, marquee, poster frames, seats, proscenium, curtains,
@@ -172,8 +184,12 @@ clock, unchanged commit, and both theme labels.
 
 ## Reveal choreography and audio latency
 
-- [ ] Run ten consecutive reveals, including at least three correct, three incorrect, and one NEXT GHOST tap before
-      the timeline ends. No run desynchronizes the UI, performer, camera, lights, curtains, or audio.
+- [ ] Run ten consecutive reveals, including the first reveal of the visit, one set-opening/finale/milestone reveal,
+      at least three routine correct, three routine incorrect, and one NEXT GHOST tap before a timeline ends. No run
+      desynchronizes the UI, performer, camera, lights, curtains, or audio.
+- [ ] The first reveal of a visit or set, a finale, and a title/stamp milestone use the full eight-second sequence
+      below. A routine reveal uses the compact sequence: lock at 0.0 s, sting at about 0.6 s, verdict at about 1.0 s,
+      audience/performer reaction at about 1.7 s, stats at about 2.3 s, and a clean completion at about 3.0 s.
 - [ ] At the guess tap (0.0 s), answers lock, tick and drumroll start, room tone ducks, lights enter tension, and the
       curtain edges twitch.
 - [ ] At about 1.2 s, the current performer pose freezes and the camera pushes in.
@@ -221,8 +237,9 @@ one interrupted clip, and the covered-screen result.
       observer changes camera.
 - [ ] Fully leave and re-enter after each unlock. The same title and reward prop restore without another qualifying
       action or duplicate unlock card.
-- [ ] On one named account in one UTC day, complete three real-player decodes and one post. The action crossing the
-      threshold shows “DAILY SHOW COMPLETE,” plays the stamp sound once, and adds the stamp in the foyer.
+- [ ] On one named account in one UTC day, complete three public decodes—player-authored or House—and one post.
+      The action crossing the threshold shows “DAILY SHOW COMPLETE,” plays the stamp sound once, and adds the stamp
+      in the foyer.
 - [ ] Decode or post once more, then reconnect. The stamp remains saved and neither the card nor sound repeats.
 
 Evidence: unlock and stamp recordings, a second-phone prop recording for all three titles, and reconnect clips.
@@ -258,7 +275,8 @@ Evidence: one continuous A-post → B-decode → B-answer-back recording, A's re
 
 ## Two-phone first-answer race and reactions
 
-- [ ] With two named accounts present, both phones receive the same round charade and show the same answer set.
+- [ ] With two named accounts present and a player-authored charade served, both phones receive the same round
+      charade and show the same answer set.
 - [ ] Count down off camera and tap the correct answer on both phones as closely together as possible. Exactly one
       account is announced as winner and enters authoring; the other remains responsive on the resolved reveal.
 - [ ] Repeat with the opposite phone deliberately tapping first. The winning account changes accordingly; no client

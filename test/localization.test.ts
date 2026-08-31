@@ -109,13 +109,14 @@ const ERROR_CODES = [
   'player_look_unavailable',
   'reaction_failed',
   'copy_failed',
+  'connection_timeout',
   'request_timeout'
 ] as const
 
 describe('localization copy', () => {
   it('has the same complete, non-empty player-copy key set in every language', () => {
     const expectedKeys = Object.keys(COPY.en).sort()
-    expect(expectedKeys).toHaveLength(213)
+    expect(expectedKeys).toHaveLength(220)
 
     for (const language of LANGUAGES) {
       expect(Object.keys(COPY[language]).sort(), language).toEqual(expectedKeys)
@@ -176,6 +177,106 @@ describe('localization copy', () => {
         guidance: 'Monte a apresentação, um passo de cada vez.'
       }
     })
+  })
+
+  it('explains the assigned phrase, all three beat roles, two server decoys, and truthful ghost sources', () => {
+    expect({
+      assigned: COPY.en['howToPlay.walk'],
+      startAndAction: COPY.en['howToPlay.watch'],
+      reaction: COPY.en['howToPlay.guess'],
+      answers: COPY.en['howToPlay.leave'],
+      sources: COPY.en['howToPlay.realPlayers']
+    }).toEqual({
+      assigned: 'Walk to the stage. One assigned phrase is shown before recording.',
+      startAndAction: 'START = who or where. ACTION = what happens.',
+      reaction: 'REACTION = the result or feeling.',
+      answers: 'Pick the assigned phrase: 1 original + 2 server decoys.',
+      sources: 'House Ghosts help you practice; players leave other ghosts.'
+    })
+
+    for (const language of LANGUAGES) {
+      expect(COPY[language]['howToPlay.walk'], `${language}:walk-and-assigned`).toMatch(
+        language === 'en'
+          ? /walk to the stage.*assigned phrase.*before recording/iu
+          : language === 'es'
+            ? /ve al escenario.*frase asignada.*antes de grabar/iu
+            : /vá ao palco.*frase recebida.*antes de gravar/iu
+      )
+      expect(COPY[language]['opening.instruction'], `${language}:assigned-before-recording`).toMatch(
+        language === 'en'
+          ? /assigned before recording/iu
+          : language === 'es'
+            ? /asignada antes de grabar/iu
+            : /recebida antes de gravar/iu
+      )
+      expect(COPY[language]['howToPlay.leave'], `${language}:server-decoys`).toMatch(
+        language === 'en'
+          ? /1 original \+ 2 server decoys/iu
+          : language === 'es'
+            ? /1 original \+ 2 señuelos del servidor/iu
+            : /1 original \+ 2 alternativas do servidor/iu
+      )
+      expect(COPY[language]['howToPlay.realPlayers'], `${language}:house-ghosts`).not.toMatch(
+        language === 'en'
+          ? /every ghost.*real player/iu
+          : language === 'es'
+            ? /cada fantasma.*persona real/iu
+            : /cada fantasma.*alguém real/iu
+      )
+    }
+  })
+
+  it('localizes the connection-timeout error and Retry action', () => {
+    expect(
+      Object.fromEntries(
+        LANGUAGES.map((language) => [
+          language,
+          {
+            retry: COPY[language]['waking.retry'],
+            error: COPY[language]['error.connection_timeout']
+          }
+        ])
+      )
+    ).toEqual({
+      en: { retry: 'RETRY CONNECTION', error: 'The stage did not answer. Retry the connection.' },
+      es: { retry: 'REINTENTAR CONEXIÓN', error: 'El escenario no respondió. Reintenta la conexión.' },
+      pt: { retry: 'TENTAR CONEXÃO DE NOVO', error: 'O palco não respondeu. Tente a conexão novamente.' }
+    })
+  })
+
+  it('localizes honest non-scoring House practice and its assigned phrase in every language', () => {
+    const expected = {
+      en: {
+        open: 'HOUSE PRACTICE',
+        title: 'HOUSE PRACTICE · NON-SCORING',
+        phrase: 'Dodge the rain',
+        assigned: 'Assigned phrase: “Dodge the rain”. Watch how the three beats perform it.'
+      },
+      es: {
+        open: 'PRÁCTICA DE LA CASA',
+        title: 'PRÁCTICA DE LA CASA · SIN PUNTOS',
+        phrase: 'Esquivar la lluvia',
+        assigned: 'Frase asignada: “Esquivar la lluvia”. Mira cómo la representan los tres pasos.'
+      },
+      pt: {
+        open: 'PRÁTICA DA CASA',
+        title: 'PRÁTICA DA CASA · SEM PONTOS',
+        phrase: 'Escapar da chuva',
+        assigned: 'Frase recebida: “Escapar da chuva”. Veja como os três passos a representam.'
+      }
+    } as const
+
+    for (const language of LANGUAGES) {
+      expect(COPY[language]['practice.open'], language).toBe(expected[language].open)
+      expect(COPY[language]['practice.title'], language).toBe(expected[language].title)
+      expect(phraseText('everyday-dodge-the-rain', language), language).toBe(expected[language].phrase)
+      expect(
+        translate('practice.assigned', language, { phrase: phraseText('everyday-dodge-the-rain', language)! }),
+        language
+      ).toBe(expected[language].assigned)
+      expect(COPY[language]['practice.start'].length, `${language}:start`).toBeLessThanOrEqual(18)
+      expect(COPY[language]['practice.replay'].length, `${language}:replay`).toBeLessThanOrEqual(20)
+    }
   })
 
   it('localizes every how-to-play and contextual guidance line outside English', () => {

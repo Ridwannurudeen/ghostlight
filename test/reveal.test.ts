@@ -262,6 +262,21 @@ describe('reveal timeline', () => {
     expect(events).toContain('10600:floating:YOU GOT IT')
     expect(events.at(-1)).toBe('16000:complete')
   })
+
+  it('keeps the full eight-second sequence for the first reveal of a proven new set', () => {
+    const { clock, events, controller } = createHarness()
+    controller.start(CORRECT_OUTCOME)
+    clock.advanceTo(8_000)
+    events.length = 0
+
+    controller.start(CORRECT_OUTCOME, { isSetStart: true })
+    clock.advanceTo(11_000)
+
+    expect(controller.getStatus()).toBe('running')
+    expect(events.some((event) => event.endsWith('complete'))).toBe(false)
+    clock.advanceTo(16_000)
+    expect(events.at(-1)).toBe('16000:complete')
+  })
 })
 
 describe('second-miss reveal choreography', () => {

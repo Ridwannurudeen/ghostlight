@@ -36,7 +36,7 @@ wearables, emotes), and its touring runtime is open-source infrastructure other 
 | Emote/wearable publishing: **$100/item today**; DAO-passed reform to $25 (effectively $5 for 6 months) is **not yet enacted** | Phase 3 drops wait for enactment. |
 | Platform scale: 33 concurrent users across the top 100 places (sample 2026-08-23); Regenesis's featured Cozy Farm ≈ 500 registered players; DCL Kickoff ≈ 250 | Targets below are calibrated to this, not to app-store fantasies. |
 | Regenesis builds the mobile client (June: 65 PRs); paid acquisition paused "until there is content worth arriving to"; guest flow shipped July; iOS IAP built | Our pitch to them is literally "we are the content worth arriving to." |
-| Mobile has no gestures, no particles, no dynamic lights, no scene chat; SDK 7.27+ is recommended for UI scaling parity | The compatibility candidate pins `7.27.1-33086747846.commit-824d240`; same-commit device acceptance remains open before merge or release. |
+| Mobile has no gestures, no particles, no dynamic lights, no scene chat; SDK 7.27+ is recommended for UI scaling parity | Baseline commit `95d4f7e` and the live World already use exact `7.27.1-33086747846.commit-824d240`; the current continuation still needs same-commit device acceptance before release. |
 
 ## 2. Phase 0 — Opening Night (Aug 24 → Sep 2 lock)
 
@@ -50,7 +50,7 @@ The reviewed functional core (`d157934`, 113 tests) is frozen. Every hour goes t
 | Sun 24 | **Reveal choreography** (the one thing): stage freeze, emissive shift, answers vanish, camera push, ghost bow, audience react, reset — ten consecutive runs without desync | Phone test #1 of the current build (baseline) |
 | Mon 25 | **Sound**: curtain, tick, tension sting, hit/miss, applause/gasp, unlock flourish, room tone — outcome readable with the screen covered | BNB deploy a.m.; **buy the NAME** |
 | Tue 26 | **Theater shell**: Blender-scripted proscenium, curtain, seat rows, footlights + catalog props, one coherent haunted-vaudeville identity — no primitive in the primary view | — |
-| Wed 27 | **Custom UI + cold open**: playbill-style answer cards, one dominant action, control-safe placement; 10-second playable intro; first deploy to the World; `#rl-mobile-curation` request | Phone test #2 |
+| Wed 27 | **Custom UI + cold open**: playbill-style answer cards, one dominant action, control-safe placement; four-second guided intro; first deploy to the World; `#rl-mobile-curation` request | Phone test #2 |
 | Thu 28 | **Tonight's Show**: daily theme, marquee palette, poster, curated pool, completion stamp; portrait playbill of recent real performers (`AvatarTexture`) | — |
 | Fri 29 | **Progression**: applause meter, titles (Understudy → Scene Stealer → Ghostlight Legend), three `AvatarAttach` reward props; **performance pass** on the weakest phone | Playtest #1 (friends + Friendzone Discord); weekly Event posted |
 | Sat 30 | **Answer-Back Duets** (asynchronous): decode, then record your own three-emote reply; the next visitor watches both | — |
@@ -81,8 +81,8 @@ performances, seven consecutive days without a progression-loss or session-block
 - **Ghost Mail v1 (Sep 20):** send a charade to a specific person; they decode it on their next visit and
   answer back in emotes. The mobile client has no DMs — this is the feature that makes the product a
   conversation layer, and it is the headline of every application that follows.
-- **SDK re-pin candidate:** `7.27.1-33086747846.commit-824d240` is pinned for compatibility testing. Automated
-  checks do not complete its device merge gate or approve a release.
+- **SDK 7.27 release baseline:** `7.27.1-33086747846.commit-824d240` is already pinned on `main` and the live World.
+  Automated checks do not device-accept the current continuation or approve a release.
 - **Grant readiness (by Sep 25):** a public-proposal-quality packet — playable World, trailer, clean repo and
   tests, architecture diagram, Creator Hub funnel and D7 data, creator testimonials, moderation design,
   90-day milestones, itemised USD budget ($4–6K), and one proposed open-source contribution (the touring
@@ -140,8 +140,9 @@ months of runway, and the core loop still free.
 - **Phase 0:** reviewed core frozen; presentation layer (choreography, sound, assets, UI) added beside it;
   real-device smoke tests added to the 113 unit tests; asset budget per GLB; CI blocks on build, tests,
   asset budget.
-- **Phase 1:** funnel, persistence, reconnect, and server-sleep tests; SDK 7.27 compatibility candidate and
-  same-commit device merge gate; Ghost Mail data model (`v2` records with recipient, lineage, consent).
+- **Phase 1:** funnel, persistence, reconnect, and server-sleep tests; SDK 7.27 release baseline and same-commit
+  device acceptance for each release candidate; Ghost Mail data model (`v2` records with recipient, lineage,
+  consent).
 - **Phase 2:** the VPS API (Node + Postgres; p95 < 250 ms; error rate < 1 %); versioned records for
   performance, author, venue, pack, sequence, eligibility window, moderation state, touring consent, duet
   lineage, season, outcomes; contract tests across every World and API version; load tests; moderation

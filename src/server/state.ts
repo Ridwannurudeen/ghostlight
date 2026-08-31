@@ -135,6 +135,7 @@ const MAX_STORED_URN_BYTES = 512
 const MAX_REPLY_REQUEST_ID_BYTES = 64
 const MAX_STORED_WEARABLES = 20
 const MAX_RECENT_VISITOR_INPUTS = AUDIENCE_SEATS * 4
+const STORAGE_RECOVERY_BACKOFF_MILLISECONDS = [2_000, 4_000, 8_000, 16_000, 30_000] as const
 export const MAX_PLAYER_SEEN_IDS = 512
 export const MAX_INDEX_IDS_PER_DAY = 128
 export const MAX_LIVE_CHARADES = 512
@@ -1377,6 +1378,10 @@ export class GhostlightState {
   private acceptedDay: string | null = null
   private storageReadOnly = false
   private durableJournal: DurableMutationJournal = { v: 1, active: null, completed: [] }
+  private storageRecovery: Promise<boolean> | null = null
+  private storageRecoveryFailures = 0
+  private storageRecoveryNextAt = 0
+  private statsGeneration = 0
 
   constructor(
     private readonly storage: StateStorage = defaultStorage,
@@ -1401,7 +1406,7 @@ export class GhostlightState {
       try {
         return await this.storage.loadJSON<T>(key, fallback)
       } catch (error) {
-        if (!(error instanceof StorageCorruptError)) throw error
+        if (!(error instanceof StorageCorruptError || error instanceof StorageUnavailableError)) throw error
         this.storageReadOnly = true
         return fallback
       }
@@ -1414,7 +1419,7 @@ export class GhostlightState {
         completed: []
       })
     } catch (error) {
-      if (!(error instanceof StorageCorruptError)) throw error
+      if (!(error instanceof StorageCorruptError || error instanceof StorageUnavailableError)) throw error
       this.storageReadOnly = true
       return
     }
@@ -1464,10 +1469,6 @@ export class GhostlightState {
       this.decoderDay = today
       return
     }
-    for (const repairedTargetIndex of repairedTargetIndexes) {
-      this.storage.markDirty(indexKey(repairedTargetIndex.day), repairedTargetIndex.ids)
-    }
-
     const visitorAddresses = new Set<string>()
     this.recentVisitors = migrateRecentVisitors(visitorsValue)
       .sort((a, b) => b.lastSeenAt - a.lastSeenAt)
@@ -1493,6 +1494,10 @@ export class GhostlightState {
             return { id, expectedDay, value: await this.storage.loadJSON<unknown>(charadeKey(id), null) }
           } catch (error) {
             if (error instanceof StorageCorruptError) return { id, expectedDay, value: null }
+            if (error instanceof StorageUnavailableError) {
+              this.storageReadOnly = true
+              return { id, expectedDay, value: null }
+            }
             throw error
           }
         })
@@ -1501,6 +1506,19 @@ export class GhostlightState {
         const charade = migrateCharade(value, { expectedDay, now })
         if (charade && !charade.isHouse) this.charades.set(charade.id, charade)
       })
+      if (this.storageReadOnly) break
+    }
+    if (this.storageReadOnly) {
+      this.charades.clear()
+      HOUSE_CHARADES.forEach((charade) => this.charades.set(charade.id, charade))
+      this.recentVisitors = []
+      this.boards = { ...EMPTY_BOARDS }
+      this.dailyDecoders.clear()
+      this.decoderDay = today
+      return
+    }
+    for (const repairedTargetIndex of repairedTargetIndexes) {
+      this.storage.markDirty(indexKey(repairedTargetIndex.day), repairedTargetIndex.ids)
     }
     if (
       activeTarget &&
@@ -1519,6 +1537,60 @@ export class GhostlightState {
         this.recomputeBoards(false)
       }
     }
+  }
+
+  recoverStorage() {
+    if (!this.storageReadOnly) return Promise.resolve(false)
+    if (this.storageRecovery) return this.storageRecovery
+    if (this.now() < this.storageRecoveryNextAt) return Promise.resolve(false)
+    let recovered = false
+    const recovery = (async () => {
+      try {
+        const restored = new GhostlightState(this.storage, this.now)
+        await restored.hydrate()
+        if (restored.isReadOnly) return false
+
+        this.charades.clear()
+        restored.charades.forEach((charade, id) => this.charades.set(id, charade))
+        this.playerStats.clear()
+        restored.playerStats.forEach((stats, address) => this.playerStats.set(address, stats))
+        this.recentVisitors = restored.recentVisitors
+        this.boards = restored.boards
+        this.indexes.clear()
+        restored.indexes.forEach((ids, day) => this.indexes.set(day, ids))
+        this.dailyDecoders.clear()
+        restored.dailyDecoders.forEach((decoder, address) => this.dailyDecoders.set(address, decoder))
+        this.statsLoads.clear()
+        this.statsAccess.clear()
+        restored.statsAccess.forEach((access, address) => this.statsAccess.set(address, access))
+        this.accessSequence = restored.accessSequence
+        this.decoderDay = restored.decoderDay
+        this.acceptedDay = restored.acceptedDay
+        this.durableJournal = restored.durableJournal
+        this.statsGeneration += 1
+        this.storageReadOnly = false
+        this.storageRecoveryFailures = 0
+        this.storageRecoveryNextAt = 0
+        recovered = true
+        return true
+      } finally {
+        if (!recovered) {
+          const delay =
+            STORAGE_RECOVERY_BACKOFF_MILLISECONDS[
+              Math.min(this.storageRecoveryFailures, STORAGE_RECOVERY_BACKOFF_MILLISECONDS.length - 1)
+            ]
+          this.storageRecoveryFailures = Math.min(
+            this.storageRecoveryFailures + 1,
+            STORAGE_RECOVERY_BACKOFF_MILLISECONDS.length
+          )
+          this.storageRecoveryNextAt = this.now() + delay
+        }
+      }
+    })().finally(() => {
+      if (this.storageRecovery === recovery) this.storageRecovery = null
+    })
+    this.storageRecovery = recovery
+    return recovery
   }
 
   getActiveDurableMutation(id?: string) {
@@ -1951,12 +2023,18 @@ export class GhostlightState {
       return stats
     }
 
+    const generation = this.statsGeneration
     const load = (async () => {
-      const stored = persistent ? await this.storage.loadPlayerJSON<unknown>(key, PLAYER_STATS_KEY, null) : null
+      const stored =
+        persistent && !this.storageReadOnly
+          ? await this.storage.loadPlayerJSON<unknown>(key, PLAYER_STATS_KEY, null)
+          : null
       const stats = migratePlayerStats(stored, name, this.now())
       stats.name = name || stats.name
-      this.playerStats.set(key, stats)
-      this.statsAccess.set(key, ++this.accessSequence)
+      if (generation === this.statsGeneration) {
+        this.playerStats.set(key, stats)
+        this.statsAccess.set(key, ++this.accessSequence)
+      }
       return stats
     })()
     this.statsLoads.set(key, load)

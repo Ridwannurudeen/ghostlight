@@ -2,6 +2,7 @@ import { engine } from '@dcl/sdk/ecs'
 import { getPlayer } from '@dcl/sdk/src/players'
 import {
   EMOTE_VOCABULARY,
+  HOUSE_CHARADE,
   PLAYABLE_DECK,
   authorBeatChoices,
   isAllowedPerformance,
@@ -41,6 +42,7 @@ import { isInDecodeArea } from './theater'
 
 export type FlowScreen =
   | 'waking'
+  | 'practice'
   | 'foyer'
   | 'since'
   | 'decode'
@@ -121,6 +123,12 @@ export type RetryState = {
   removedAnswerIndex: 0 | 1 | 2
   replayBeatIndex: 0 | 1 | 2
   spotlight: boolean
+}
+
+export type PracticeView = {
+  phraseId: PhraseId
+  emotes: GhostEmotes
+  playing: boolean
 }
 
 export type SinceSummary = ProgressView & {
@@ -211,6 +219,7 @@ export type ClientFlowState = {
   progressRevision: number
   notices: ProgressNotice[]
   charade: DecodeCharade | null
+  practice: PracticeView | null
   retry: RetryState | null
   reveal: RevealResult | null
   author: AuthorDraft | null
@@ -280,6 +289,9 @@ export type FlowAction =
     }
   | { type: 'pong'; now: number }
   | { type: 'heartbeatTimeout' }
+  | { type: 'practiceOpen'; practice: PracticeView }
+  | { type: 'practiceStarted' }
+  | { type: 'practiceClose' }
   | { type: 'charade'; charade: DecodeCharade }
   | { type: 'retry'; retry: RetryState }
   | { type: 'abandonRetry' }
@@ -349,6 +361,7 @@ export function createInitialFlowState(): ClientFlowState {
     progressRevision: -1,
     notices: [],
     charade: null,
+    practice: null,
     retry: null,
     reveal: null,
     author: null,
@@ -429,7 +442,7 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
         ? preservePendingGuess
           ? 'decode'
           : 'foyer'
-        : state.screen !== 'waking'
+        : state.screen !== 'waking' && state.screen !== 'practice'
           ? state.screen
           : (state.resumeScreen ?? (state.since && !state.sinceShown ? 'since' : 'foyer'))
       return {
@@ -450,6 +463,7 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
         screen,
         resumeScreen: null,
         charade: newInstance && !preservePendingGuess ? null : state.charade,
+        practice: null,
         retry: newInstance && !preservePendingGuess ? null : state.retry,
         reveal: newInstance ? null : state.reveal,
         author: newInstance ? null : state.author,
@@ -520,15 +534,10 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
       }
     }
     case 'pong':
+      if (!state.ready || !state.transportReady) return state
       return {
         ...state,
-        ready: true,
         lastHeartbeatAt: action.now,
-        screen:
-          state.screen === 'waking'
-            ? (state.resumeScreen ?? (state.since && !state.sinceShown ? 'since' : 'foyer'))
-            : state.screen,
-        resumeScreen: null,
         errorCode: ''
       }
     case 'heartbeatTimeout':
@@ -538,6 +547,12 @@ export function flowReducer(state: ClientFlowState, action: FlowAction): ClientF
         resumeScreen: state.screen === 'waking' ? state.resumeScreen : state.screen,
         screen: 'waking'
       }
+    case 'practiceOpen':
+      return { ...state, screen: 'practice', practice: action.practice }
+    case 'practiceStarted':
+      return state.practice ? { ...state, practice: { ...state.practice, playing: true } } : state
+    case 'practiceClose':
+      return { ...state, screen: 'waking', resumeScreen: null, practice: null }
     case 'charade':
       return {
         ...state,
@@ -946,7 +961,9 @@ export type FlowEffects = {
   canAdvanceReveal?: () => boolean
   skipReveal?: () => boolean
   cancelReveal?: () => void
-  cancelOpening?: () => void
+  cancelOpening?: () => boolean | void
+  acquirePracticeCamera?: () => void
+  releasePracticeCamera?: () => void
 }
 
 export type FlowRuntimeOptions = {
@@ -969,6 +986,7 @@ type StoredRequest = {
 const REQUEST_RETRY_MILLISECONDS = 5_000
 const CONNECTED_HEARTBEAT_SECONDS = 10
 const HEARTBEAT_TIMEOUT_MILLISECONDS = 20_000
+const CONNECTION_TIMEOUT_MILLISECONDS = 12_000
 const TOAST_MILLISECONDS = 4_000
 
 function isPlayerTitle(value: string): value is PlayerTitle {
@@ -1105,7 +1123,13 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
   let retryTransportDropped = false
   let deferredAbandonedRetryCharadeId = ''
   let connectionInterrupted = false
+  let connectionAttemptStartedAt: number | null = null
+  let connectionTimedOut = false
   let authorPreviewRevision = 0
+  let awaitingOpeningCharade = true
+  let openingCharadeRequestId = ''
+  let interruptedGuessRequestId = ''
+  let interruptedPresentation = false
   const requests = new Map<string, StoredRequest>()
   const pendingReplies = new Map<string, DecodeReply>()
   const listeners = new Set<(nextState: ClientFlowState) => void>()
@@ -1123,16 +1147,37 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     ) {
       connectionInterrupted = true
       recordDiagnosticsDisconnect()
-    } else if (
-      !wasReady &&
-      state.ready &&
-      connectionInterrupted &&
-      (action.type === 'ready' || action.type === 'pong')
-    ) {
+    } else if (!wasReady && state.ready && connectionInterrupted && action.type === 'ready') {
       connectionInterrupted = false
       recordDiagnosticsRecovery()
     }
+    if (state.ready) {
+      connectionAttemptStartedAt = null
+      connectionTimedOut = false
+    }
     for (const listener of listeners) listener(state)
+  }
+
+  function beginConnectionAttempt(timestamp: number) {
+    connectionAttemptStartedAt = timestamp
+    connectionTimedOut = false
+    if (state.errorCode === 'connection_timeout') dispatch({ type: 'error', code: '' })
+  }
+
+  function setTransportReady(ready: boolean) {
+    if (ready === state.transportReady) return false
+    if (!ready) suspendPresentationForConnectionLoss()
+    dispatch({ type: 'transport', ready })
+    helloSent = false
+    lastHelloInstance = ''
+    heartbeatElapsed = 0
+    beginConnectionAttempt(now())
+    if (ready) {
+      sendHello(true)
+      pingSequence += 1
+      emit({ type: 'ping', data: { seq: pingSequence } })
+    }
+    return true
   }
 
   function emit(message: OutboundMessage) {
@@ -1170,6 +1215,9 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
 
   function sendRequest(kind: PendingRequestKind, message: OutboundMessage, requestId: string) {
     const request = { requestId, kind, sentAt: now(), retries: 0 }
+    if (kind === 'nextCharade' && awaitingOpeningCharade && !openingCharadeRequestId) {
+      openingCharadeRequestId = requestId
+    }
     requests.set(requestId, { request, message })
     dispatch({ type: 'requestSent', request })
     emit(message)
@@ -1188,6 +1236,13 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     requests.delete(requestId)
     dispatch({ type: 'requestResolved', kind: stored.request.kind })
     return true
+  }
+
+  function finishOpeningCharadeRequest(requestId: string, cancel: boolean) {
+    if (!awaitingOpeningCharade || openingCharadeRequestId !== requestId) return
+    awaitingOpeningCharade = false
+    openingCharadeRequestId = ''
+    if (cancel) effects.cancelOpening?.()
   }
 
   function activePrimaryDeck() {
@@ -1220,6 +1275,53 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     effects.cancelReveal?.()
   }
 
+  function restartPendingReveal(stored: StoredRequest) {
+    if (!state.charade || (stored.message.type !== 'guess' && stored.message.type !== 'roundGuess')) {
+      return false
+    }
+    restoreCharadePresentation()
+    if (state.retry) effects.showRetryBeat?.(state.retry.replayBeatIndex)
+    if (state.charade.isFinale) {
+      effects.beginReveal?.(state.charade, stored.message.data.answerIndex, { isFinale: true })
+    } else {
+      effects.beginReveal?.(state.charade, stored.message.data.answerIndex)
+    }
+    return true
+  }
+
+  function suspendPresentationForConnectionLoss() {
+    const pendingGuess = state.pending.find((request) => request.kind === 'guess' || request.kind === 'roundGuess')
+    const practiceActive = state.practice !== null
+    const revealActive = pendingGuess !== undefined || state.screen === 'reveal'
+    const openingCancelled = effects.cancelOpening?.() === true
+
+    if (revealActive) cancelReveal()
+    if (openingCancelled || revealActive || practiceActive) {
+      effects.clearPerformer?.()
+      effects.clearStageReward?.()
+      interruptedPresentation = true
+    }
+    if (pendingGuess) interruptedGuessRequestId = pendingGuess.requestId
+    if (practiceActive) {
+      effects.releasePracticeCamera?.()
+      dispatch({ type: 'practiceClose' })
+    }
+  }
+
+  function resumeInterruptedPresentation() {
+    const requestId = interruptedGuessRequestId
+    interruptedGuessRequestId = ''
+    interruptedPresentation = false
+    const stored = requestId ? requests.get(requestId) : undefined
+    if (stored && restartPendingReveal(stored)) return
+    if (state.screen === 'reveal' && state.reveal && state.charade) {
+      effects.restoreReveal?.(state.reveal, state.charade)
+    } else if (state.screen === 'decode' && state.charade) {
+      restoreCharadePresentation()
+      if (state.retry) effects.showRetryBeat?.(state.retry.replayBeatIndex)
+    }
+  }
+
   function invalidateAuthorPreview() {
     authorPreviewRevision += 1
     effects.clearPreview?.()
@@ -1248,14 +1350,21 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           (stored) => stored.message.type === 'guess' || stored.message.type === 'roundGuess'
         )
         const showChanged = !instanceChanged && state.showKey !== '' && state.showKey !== policy.showKey
+        const resumeSameInstancePresentation = interruptedPresentation && !instanceChanged && !showChanged
+        const practiceActive = state.practice !== null
         const abandonedRetryCharadeId =
           state.retry && !retainedGuess && !showChanged && (instanceChanged || retryTransportDropped)
             ? state.retry.charadeId
             : ''
         const candidateProfile = options.getProfile?.()
         const profile = isCompleteProfile(candidateProfile) ? candidateProfile : null
+        if (practiceActive) effects.releasePracticeCamera?.()
         if (instanceChanged || showChanged) {
           roundMismatchRefetchAttempted = false
+          if (openingCharadeRequestId) {
+            awaitingOpeningCharade = false
+            openingCharadeRequestId = ''
+          }
           requests.clear()
           pendingReplies.clear()
           effects.cancelOpening?.()
@@ -1263,6 +1372,8 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           invalidateAuthorPreview()
           effects.clearPerformer?.()
           effects.clearStageReward?.()
+        } else if (practiceActive) {
+          effects.clearPerformer?.()
         } else if (abandonedRetryCharadeId) {
           for (const [requestId, stored] of requests) {
             if (stored.request.kind === 'guess' || stored.request.kind === 'roundGuess') requests.delete(requestId)
@@ -1304,18 +1415,11 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           dispatch({ type: 'requestSent', request })
           restoredRequests.push(stored)
         }
-        if (
-          retainedGuess &&
-          state.charade &&
-          (retainedGuess.message.type === 'guess' || retainedGuess.message.type === 'roundGuess')
-        ) {
-          restoreCharadePresentation()
-          if (state.retry) effects.showRetryBeat?.(state.retry.replayBeatIndex)
-          if (state.charade.isFinale) {
-            effects.beginReveal?.(state.charade, retainedGuess.message.data.answerIndex, { isFinale: true })
-          } else {
-            effects.beginReveal?.(state.charade, retainedGuess.message.data.answerIndex)
-          }
+        if (retainedGuess) restartPendingReveal(retainedGuess)
+        else if (resumeSameInstancePresentation) resumeInterruptedPresentation()
+        if (instanceChanged || showChanged) {
+          interruptedGuessRequestId = ''
+          interruptedPresentation = false
         }
         for (const stored of restoredRequests) emit(stored.message)
         retryTransportDropped = false
@@ -1380,6 +1484,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         }
         break
       case 'pong': {
+        if (!state.ready || !state.transportReady) break
         const receivedAt = now()
         recordDiagnosticsPong(message.data.seq, receivedAt)
         dispatch({ type: 'pong', now: receivedAt })
@@ -1387,6 +1492,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         break
       }
       case 'charade': {
+        const openingResponse = awaitingOpeningCharade && openingCharadeRequestId === message.data.requestId
         if (!resolveRequest(message.data.requestId, 'nextCharade')) break
         if (
           message.data.emotes.length !== 3 ||
@@ -1394,6 +1500,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           (message.data.answerIds !== undefined &&
             (message.data.answerIds.length !== 3 || !message.data.answerIds.every(isPhraseId)))
         ) {
+          finishOpeningCharadeRequest(message.data.requestId, true)
           dispatch({ type: 'error', code: 'invalid_charade' })
           break
         }
@@ -1431,14 +1538,17 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
         }
         pendingReplies.delete(message.data.id)
         if (state.roundCharadeId && state.roundCharadeId !== charade.id && !roundMismatchRefetchAttempted) {
+          if (openingResponse) openingCharadeRequestId = ''
           if (requestNextCharade()) {
             roundMismatchRefetchAttempted = true
             break
           }
+          if (openingResponse) openingCharadeRequestId = message.data.requestId
         }
         recordDiagnosticsCharade(charade.recipient !== undefined)
         cancelReveal()
         dispatch({ type: 'charade', charade })
+        finishOpeningCharadeRequest(message.data.requestId, false)
         if (charade.reply) {
           effects.showDuet?.({ look: charade.look, emotes: charade.emotes }, charade.reply)
         } else {
@@ -1691,6 +1801,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           !!state.roundCharadeId &&
           state.charade?.id !== state.roundCharadeId &&
           erroredGuess
+        if (requestId) finishOpeningCharadeRequest(requestId, true)
         if (state.screen === 'decode') roundMismatchRefetchAttempted = false
         if (erroredGuess) cancelReveal()
         if (requestId) requests.delete(requestId)
@@ -1715,13 +1826,8 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
   function tick(deltaSeconds: number) {
     const currentTime = now()
     const transportReady = options.isTransportReady?.() ?? true
-    if (transportReady !== state.transportReady) {
-      dispatch({ type: 'transport', ready: transportReady })
-      if (!transportReady) {
-        helloSent = false
-        lastHelloInstance = ''
-      }
-    }
+    if (!state.ready && connectionAttemptStartedAt === null && !connectionTimedOut) beginConnectionAttempt(currentTime)
+    if (transportReady !== state.transportReady) setTransportReady(transportReady)
 
     if (transportReady && state.ready) sendHello()
 
@@ -1730,8 +1836,10 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
       state.lastHeartbeatAt > 0 &&
       currentTime - state.lastHeartbeatAt >= HEARTBEAT_TIMEOUT_MILLISECONDS
     ) {
+      suspendPresentationForConnectionLoss()
       dispatch({ type: 'heartbeatTimeout' })
       heartbeatElapsed = HEARTBEAT_SECONDS
+      beginConnectionAttempt(currentTime)
     }
 
     heartbeatElapsed += deltaSeconds
@@ -1741,6 +1849,16 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
       if (!state.ready) sendHello(true)
       pingSequence += 1
       emit({ type: 'ping', data: { seq: pingSequence } })
+    }
+
+    if (
+      !state.ready &&
+      connectionAttemptStartedAt !== null &&
+      !connectionTimedOut &&
+      currentTime - connectionAttemptStartedAt >= CONNECTION_TIMEOUT_MILLISECONDS
+    ) {
+      connectionTimedOut = true
+      dispatch({ type: 'error', code: 'connection_timeout' })
     }
 
     if (state.ready) {
@@ -1753,6 +1871,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
           dispatch({ type: 'requestRetried', requestId, now: currentTime })
         } else {
           if (stored.request.kind === 'guess' || stored.request.kind === 'roundGuess') cancelReveal()
+          finishOpeningCharadeRequest(requestId, true)
           requests.delete(requestId)
           dispatch({ type: 'requestTimedOut', requestId })
         }
@@ -1762,11 +1881,11 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     if (state.toast && currentTime - state.toast.shownAt >= TOAST_MILLISECONDS) dispatch({ type: 'clearToast' })
   }
 
-  function requestNextCharadeExcluding(excludedCharadeId = state.charade?.id ?? '') {
+  function requestNextCharadeExcluding(excludedCharadeId = state.charade?.id ?? '', requireDecodeArea = true) {
     if (
       !state.ready ||
       !activePrimaryDeck() ||
-      options.canDecode?.() === false ||
+      (requireDecodeArea && options.canDecode?.() === false) ||
       state.pending.some((request) => request.kind === 'nextCharade')
     ) {
       return false
@@ -1786,6 +1905,11 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
 
   function requestNextCharade() {
     return requestNextCharadeExcluding()
+  }
+
+  function requestOpeningCharade() {
+    if (!awaitingOpeningCharade || openingCharadeRequestId || state.screen !== 'foyer') return false
+    return requestNextCharadeExcluding('', false)
   }
 
   function requestRoundCharadeIfNeeded() {
@@ -2081,6 +2205,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     dispatch,
     receive,
     tick,
+    setTransportReady,
     subscribe(listener: (nextState: ClientFlowState) => void) {
       listeners.add(listener)
       return () => listeners.delete(listener)
@@ -2089,6 +2214,7 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
       effects = nextEffects
     },
     requestNextCharade,
+    requestOpeningCharade,
     guess,
     toggleSpotlight() {
       const previous = state.spotlightEnabled
@@ -2188,6 +2314,54 @@ export function createFlowRuntime(options: FlowRuntimeOptions) {
     dismissNotice(id: string) {
       dispatch({ type: 'dismissNotice', id })
     },
+    retryConnection() {
+      if (state.ready) return false
+      beginConnectionAttempt(now())
+      helloSent = false
+      heartbeatElapsed = 0
+      if (state.transportReady) {
+        sendHello(true)
+        pingSequence += 1
+        emit({ type: 'ping', data: { seq: pingSequence } })
+      }
+      return true
+    },
+    beginPractice() {
+      if (
+        state.ready ||
+        state.screen !== 'waking' ||
+        state.instanceId !== '' ||
+        state.errorCode !== 'connection_timeout' ||
+        !isPhraseId(HOUSE_CHARADE.phraseId)
+      ) {
+        return false
+      }
+      const [first, second, third] = HOUSE_CHARADE.emotes
+      dispatch({
+        type: 'practiceOpen',
+        practice: { phraseId: HOUSE_CHARADE.phraseId, emotes: [first, second, third], playing: false }
+      })
+      return true
+    },
+    startPractice() {
+      if (!state.practice || state.screen !== 'practice' || state.practice.playing) return false
+      effects.acquirePracticeCamera?.()
+      dispatch({ type: 'practiceStarted' })
+      effects.showPerformer?.(HOUSE_CHARADE.author, state.practice.emotes)
+      return true
+    },
+    replayPractice() {
+      if (!state.practice || state.screen !== 'practice' || !state.practice.playing) return false
+      effects.replayPerformer?.()
+      return true
+    },
+    backFromPractice() {
+      if (!state.practice || state.screen !== 'practice') return false
+      effects.clearPerformer?.()
+      effects.releasePracticeCamera?.()
+      dispatch({ type: 'practiceClose' })
+      return true
+    },
     reportError(code: string, error?: unknown) {
       if (error !== undefined) console.error(`Ghostlight ${code}`, error)
       requests.clear()
@@ -2252,7 +2426,7 @@ export function startClientFlow() {
   if (started) return
   started = true
 
-  room.onReady((ready) => clientFlow.dispatch({ type: 'transport', ready }))
+  room.onReady((ready) => clientFlow.setTransportReady(ready))
   room.onMessage('ready', (data) => clientFlow.receive({ type: 'ready', data }))
   room.onMessage('showSchedule', (data) => clientFlow.receive({ type: 'showSchedule', data }))
   room.onMessage('pong', (data) => clientFlow.receive({ type: 'pong', data }))

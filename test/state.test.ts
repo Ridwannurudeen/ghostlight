@@ -24,13 +24,23 @@ import {
   PLAYER_STATS_KEY,
   RECENT_VISITORS_KEY,
   StorageCapacityError,
+  StorageUnavailableError,
   boardsKey,
   charadeKey,
   createStorageRepository,
   decoderAggregateKey,
   indexKey
 } from '../src/server/storage'
-import { FIXED_NOW, FakeStorage, emptyBoards, makeCharade, makeLook, makeReply, makeStats } from './test-helpers'
+import {
+  FIXED_NOW,
+  FakeStorage,
+  deferred,
+  emptyBoards,
+  makeCharade,
+  makeLook,
+  makeReply,
+  makeStats
+} from './test-helpers'
 
 vi.mock('@dcl/sdk/server', () => ({
   Storage: {
@@ -48,6 +58,42 @@ function setup(now = FIXED_NOW) {
   const repository = createStorageRepository(storage)
   const state = new GhostlightState(repository, () => now)
   return { storage, repository, state }
+}
+
+function setupRecovery() {
+  let timestamp = FIXED_NOW
+  let mode: 'unavailable' | 'rejected' | 'pending' | 'available' = 'unavailable'
+  let pending: Promise<void> | null = null
+  const attemptTimes: number[] = []
+  const storage = {
+    loadJSON: async <T>(key: string, fallback: T) => {
+      if (key === DURABLE_MUTATION_JOURNAL_KEY) {
+        attemptTimes.push(timestamp)
+        if (mode === 'unavailable') throw new StorageUnavailableError([`scene:${key}`])
+        if (mode === 'rejected') throw new Error('hydrate rejected')
+        if (mode === 'pending') await pending
+      }
+      return fallback
+    },
+    loadPlayerJSON: async <T>(_address: string, _key: string, fallback: T) => fallback,
+    markDirty: vi.fn(),
+    markDirtyBatch: vi.fn(),
+    markPlayerDirty: vi.fn(),
+    saveJSONNow: vi.fn(async () => undefined),
+    flushNow: vi.fn(async () => undefined)
+  }
+  const state = new GhostlightState(storage, () => timestamp)
+  return {
+    state,
+    attemptTimes,
+    advance: (milliseconds: number) => {
+      timestamp += milliseconds
+    },
+    setMode: (next: typeof mode, wait: Promise<void> | null = null) => {
+      mode = next
+      pending = wait
+    }
+  }
 }
 
 function makeDurableMutation(overrides: Partial<DurableMutation> = {}): DurableMutation {
@@ -446,14 +492,139 @@ describe('state hydration', () => {
     expect(HOUSE_CHARADES.every((charade) => state.getCharade(charade.id) === charade)).toBe(true)
   })
 
-  it('still fails hydration closed when an indexed charade is unavailable rather than corrupt', async () => {
-    const { storage, state } = setup()
+  it('enters house-only read-only mode when an indexed charade is unavailable rather than hanging startup', async () => {
+    const { storage, repository, state } = setup()
     const today = dayKey(FIXED_NOW)
-    storage.putJSON(indexKey(today), ['unavailable'])
+    const available = makeCharade('available-before-outage')
+    storage.putJSON(indexKey(today), [available.id, 'unavailable'])
+    storage.putJSON(charadeKey(available.id), available)
     storage.getErrors.add(charadeKey('unavailable'))
     storage.getValuesErrors.add(charadeKey('unavailable'))
 
-    await expect(state.hydrate()).rejects.toMatchObject({ keys: [charadeKey('unavailable')] })
+    await expect(state.hydrate()).resolves.toBeUndefined()
+    expect(state.isReadOnly).toBe(true)
+    expect(state.getPool()).toEqual([])
+    expect(state.getCharade(available.id)).toBeNull()
+    expect(HOUSE_CHARADES.every((charade) => state.getCharade(charade.id) === charade)).toBe(true)
+    expect(repository.getDirtyKeys()).toEqual([])
+  })
+
+  it('recovers from transient read-only hydration and resumes durable writes without duplicating them', async () => {
+    const { storage, repository, state } = setup()
+    const today = dayKey(FIXED_NOW)
+    const restored = makeCharade('restored')
+    storage.putJSON(indexKey(today), [restored.id])
+    storage.putJSON(charadeKey(restored.id), restored)
+    storage.getErrors.add(charadeKey(restored.id))
+    storage.getValuesErrors.add(charadeKey(restored.id))
+
+    await state.hydrate()
+
+    expect(state.isReadOnly).toBe(true)
+    expect(state.upsertCharade(makeCharade('blocked-during-outage'))).toBe(false)
+    expect(repository.getDirtyKeys()).toEqual([])
+
+    storage.getErrors.clear()
+    storage.getValuesErrors.clear()
+    await expect(state.recoverStorage()).resolves.toBe(true)
+
+    expect(state.isReadOnly).toBe(false)
+    expect(state.getPool()).toEqual([restored])
+    const resumed = makeCharade('resumed')
+    expect(state.upsertCharade(resumed)).toBe(true)
+    await repository.flushNow()
+
+    expect(storage.readJSON(charadeKey(resumed.id))).toEqual(resumed)
+    expect(storage.writes.filter((write) => write.key === charadeKey(resumed.id))).toHaveLength(1)
+    await expect(state.recoverStorage()).resolves.toBe(false)
+    expect(storage.writes.filter((write) => write.key === charadeKey(resumed.id))).toHaveLength(1)
+  })
+
+  it('backs off global storage recovery by exactly 2s, 4s, 8s, 16s, then 30s capped', async () => {
+    const { state, attemptTimes, advance } = setupRecovery()
+    await state.hydrate()
+    attemptTimes.length = 0
+
+    await expect(state.recoverStorage()).resolves.toBe(false)
+    expect(attemptTimes).toEqual([FIXED_NOW])
+
+    let elapsed = 0
+    for (const delay of [2_000, 4_000, 8_000, 16_000, 30_000, 30_000]) {
+      const attemptsBeforeDeadline = attemptTimes.length
+      await expect(state.recoverStorage()).resolves.toBe(false)
+      expect(attemptTimes).toHaveLength(attemptsBeforeDeadline)
+      advance(delay - 1)
+      await expect(state.recoverStorage()).resolves.toBe(false)
+      expect(attemptTimes).toHaveLength(attemptsBeforeDeadline)
+      advance(1)
+      elapsed += delay
+      await expect(state.recoverStorage()).resolves.toBe(false)
+      expect(attemptTimes.at(-1)).toBe(FIXED_NOW + elapsed)
+    }
+
+    expect(attemptTimes).toEqual([
+      FIXED_NOW,
+      FIXED_NOW + 2_000,
+      FIXED_NOW + 6_000,
+      FIXED_NOW + 14_000,
+      FIXED_NOW + 30_000,
+      FIXED_NOW + 60_000,
+      FIXED_NOW + 90_000
+    ])
+  })
+
+  it('coalesces concurrent storage recovery into one hydration attempt', async () => {
+    const { state, attemptTimes, setMode } = setupRecovery()
+    await state.hydrate()
+    attemptTimes.length = 0
+    const gate = deferred<void>()
+    setMode('pending', gate.promise)
+
+    const first = state.recoverStorage()
+    const second = state.recoverStorage()
+
+    expect(second).toBe(first)
+    await vi.waitFor(() => expect(attemptTimes).toEqual([FIXED_NOW]))
+    gate.resolve()
+    await expect(Promise.all([first, second])).resolves.toEqual([true, true])
+    expect(attemptTimes).toEqual([FIXED_NOW])
+  })
+
+  it('advances recovery backoff when hydration rejects', async () => {
+    const { state, attemptTimes, advance, setMode } = setupRecovery()
+    await state.hydrate()
+    attemptTimes.length = 0
+    setMode('rejected')
+
+    await expect(state.recoverStorage()).rejects.toThrow('hydrate rejected')
+    await expect(state.recoverStorage()).resolves.toBe(false)
+    expect(attemptTimes).toEqual([FIXED_NOW])
+
+    advance(2_000)
+    await expect(state.recoverStorage()).rejects.toThrow('hydrate rejected')
+    expect(attemptTimes).toEqual([FIXED_NOW, FIXED_NOW + 2_000])
+  })
+
+  it('resets recovery backoff after a successful rehydrate', async () => {
+    const { state, attemptTimes, advance, setMode } = setupRecovery()
+    await state.hydrate()
+    attemptTimes.length = 0
+
+    await expect(state.recoverStorage()).resolves.toBe(false)
+    advance(2_000)
+    setMode('available')
+    await expect(state.recoverStorage()).resolves.toBe(true)
+
+    setMode('unavailable')
+    await state.hydrate()
+    attemptTimes.length = 0
+    await expect(state.recoverStorage()).resolves.toBe(false)
+    advance(1_999)
+    await expect(state.recoverStorage()).resolves.toBe(false)
+    expect(attemptTimes).toEqual([FIXED_NOW + 2_000])
+    advance(1)
+    await expect(state.recoverStorage()).resolves.toBe(false)
+    expect(attemptTimes).toEqual([FIXED_NOW + 2_000, FIXED_NOW + 4_000])
   })
 
   it('enters house-only read-only mode for a corrupt foundational index', async () => {

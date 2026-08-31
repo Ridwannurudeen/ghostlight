@@ -228,6 +228,13 @@ async function createHarness(
   return { storage, repository, state, sent, snapshotLook, checkpoint, protocol, rawProtocol }
 }
 
+function degradedStorage() {
+  const storage = new FakeStorage()
+  storage.getErrors.add(DURABLE_MUTATION_JOURNAL_KEY)
+  storage.getValuesErrors.add(DURABLE_MUTATION_JOURNAL_KEY)
+  return storage
+}
+
 type ProtocolHarness = Awaited<ReturnType<typeof createHarness>>
 
 async function serveAndGuess(harness: ProtocolHarness, address: string, charadeId: string) {
@@ -284,6 +291,138 @@ describe('server readiness and welcome', () => {
     expect(messagesOfType(sent, 'error')).toEqual([
       { type: 'error', data: { code: 'protocol-required' }, to: ['player'] }
     ])
+  })
+
+  it('never attempts storage recovery for traffic from a non-present address', async () => {
+    const storage = degradedStorage()
+    const { state, protocol } = await createHarness({}, storage)
+    const recoverStorage = vi.spyOn(state, 'recoverStorage').mockResolvedValue(false)
+
+    await protocol.handleHello({ displayName: 'Absent', isGuest: false, protocolVersion: PROTOCOL_VERSION }, 'absent')
+    await protocol.handlePing({ seq: 1 }, 'absent')
+    await protocol.handleNextCharade({ requestId: 'absent-next', exclude: [] }, 'absent')
+    await protocol.handleGuess({ requestId: 'absent-guess', charadeId: 'absent-charade', answerIndex: 0 }, 'absent')
+    await protocol.handlePost(
+      { requestId: 'absent-post', phraseId: TEST_PHRASE.id, emotes: TEST_PERFORMANCE },
+      'absent'
+    )
+    await protocol.handleReact({ kind: 'applause' }, 'absent')
+
+    expect(state.isReadOnly).toBe(true)
+    expect(recoverStorage).not.toHaveBeenCalled()
+  })
+
+  it('does not pong a present player before successful hello negotiation', async () => {
+    const { sent, protocol } = await createHarness()
+    await protocol.handleEnter('player')
+    sent.length = 0
+
+    await protocol.handlePing({ seq: 1 }, 'player')
+
+    expect(messagesOfType(sent, 'pong')).toEqual([])
+    await protocol.handleHello({ displayName: 'Player', isGuest: false, protocolVersion: PROTOCOL_VERSION }, 'player')
+    sent.length = 0
+    await protocol.handlePing({ seq: 2 }, 'player')
+    expect(messagesOfType(sent, 'pong')).toEqual([{ type: 'pong', data: { seq: 2 }, to: ['player'] }])
+  })
+
+  it('does not run an admitted request against a re-entered session after delayed recovery', async () => {
+    const storage = degradedStorage()
+    const { state, sent, protocol } = await createHarness({}, storage)
+    await negotiate(protocol, 'player')
+    const recovery = deferred<boolean>()
+    const recoverStorage = vi
+      .spyOn(state, 'recoverStorage')
+      .mockReturnValueOnce(recovery.promise)
+      .mockResolvedValue(false)
+    sent.length = 0
+
+    const stalePing = protocol.handlePing({ seq: 1 }, 'player')
+    await vi.waitFor(() => expect(recoverStorage).toHaveBeenCalledOnce())
+    await protocol.handleLeave('player')
+    await negotiate(protocol, 'player')
+    sent.length = 0
+    recovery.resolve(false)
+    await stalePing
+
+    expect(messagesOfType(sent, 'pong')).toEqual([])
+  })
+
+  it('caps repeated present heartbeat recovery at the global backoff schedule', async () => {
+    let timestamp = FIXED_NOW
+    const storage = degradedStorage()
+    const { state, protocol } = await createHarness({ now: () => timestamp }, storage)
+    await negotiate(protocol, 'player')
+    expect(state.isReadOnly).toBe(true)
+    storage.sceneGets.length = 0
+
+    for (let ping = 0; ping < 8; ping += 1) await protocol.handlePing({ seq: ping }, 'player')
+    expect(storage.sceneGets.filter((key) => key === DURABLE_MUTATION_JOURNAL_KEY)).toHaveLength(0)
+
+    let expectedAttempts = 0
+    for (const delay of [2_000, 4_000, 8_000, 16_000, 30_000, 30_000]) {
+      timestamp += delay
+      for (let ping = 0; ping < 8; ping += 1) {
+        await protocol.handlePing({ seq: expectedAttempts * 10 + ping }, 'player')
+      }
+      expectedAttempts += 1
+      expect(storage.sceneGets.filter((key) => key === DURABLE_MUTATION_JOURNAL_KEY)).toHaveLength(expectedAttempts * 3)
+    }
+  })
+
+  it('keeps degraded players in waking mode until a recovery probe restores authoritative play', async () => {
+    let timestamp = FIXED_NOW
+    const storage = degradedStorage()
+    const { state, sent, protocol } = await createHarness({ now: () => timestamp }, storage)
+    await protocol.handleEnter('player')
+    expect(protocol.resourceCounts().present).toBe(1)
+    expect(messagesOfType(sent, 'ready')).toEqual([])
+
+    await protocol.handleHello({ displayName: 'Player', isGuest: false, protocolVersion: PROTOCOL_VERSION }, 'player')
+    await protocol.handlePing({ seq: 1 }, 'player')
+    await protocol.handleNextCharade(nextCharadeRequest(), 'player')
+
+    expect(state.isReadOnly).toBe(true)
+    expect(messagesOfType(sent, 'ready')).toEqual([])
+    expect(messagesOfType(sent, 'showSchedule')).toEqual([])
+    expect(messagesOfType(sent, 'pong')).toEqual([])
+    expect(messagesOfType(sent, 'progress')).toEqual([])
+    expect(messagesOfType(sent, 'boards')).toEqual([])
+    expect(messagesOfType(sent, 'charade')).toEqual([])
+    expect(state.playerStats.size).toBe(0)
+
+    storage.getErrors.clear()
+    storage.getValuesErrors.clear()
+    timestamp += 2_000
+    sent.length = 0
+    await protocol.handleHello({ displayName: 'Player', isGuest: false, protocolVersion: PROTOCOL_VERSION }, 'player')
+
+    expect(state.isReadOnly).toBe(false)
+    expect(messagesOfType(sent, 'ready')).toHaveLength(1)
+    expect(messagesOfType(sent, 'showSchedule')).toHaveLength(1)
+    expect(messagesOfType(sent, 'progress')).toHaveLength(1)
+    expect(messagesOfType(sent, 'boards')).toHaveLength(1)
+    expect(messagesOfType(sent, 'error')).toEqual([])
+
+    sent.length = 0
+    await protocol.handleNextCharade(nextCharadeRequest(), 'player')
+    const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+    expect(served.isHouse).toBe(true)
+
+    const finalGuess = {
+      requestId: 'recovered-house-guess',
+      charadeId: served.id,
+      answerIndex: correctAnswerIndex(state, served)
+    }
+    sent.length = 0
+    await protocol.handleGuess(finalGuess, 'player')
+    const reveal = messagesOfType(sent, 'reveal').at(-1)!.data
+    await protocol.handleGuess(finalGuess, 'player')
+
+    expect(messagesOfType(sent, 'reveal').map((message) => message.data)).toEqual([reveal, reveal])
+    expect(messagesOfType(sent, 'error')).toEqual([])
+    expect(state.playerStats.get('player')).toMatchObject({ decoded: 1, correct: 1, revision: 1 })
+    expect(state.boards).toEqual({ decoders: [], hardest: [] })
   })
 
   it('bounds pre-hydration ping work and ignores pings from players who are not present', async () => {
@@ -2675,10 +2814,11 @@ describe('charade serving and guesses', () => {
     ])
   })
 
-  it('accepts the house fallback every time it is served without adding it to seen', async () => {
+  it('advances signed-in first-try House progression without changing global ranking surfaces', async () => {
     const { state, sent, protocol } = await createHarness()
     await negotiate(protocol, 'player')
     sent.length = 0
+    const houseGuessesBefore = HOUSE_CHARADES.map((charade) => ({ ...charade.guesses }))
 
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       await protocol.handleNextCharade(nextCharadeRequest(), 'player')
@@ -2697,8 +2837,127 @@ describe('charade serving and guesses', () => {
     }
 
     expect(messagesOfType(sent, 'reveal')).toHaveLength(2)
+    expect(messagesOfType(sent, 'roundWinner')).toEqual([])
     expect(messagesOfType(sent, 'error')).toEqual([])
-    expect(state.playerStats.get('player')).toMatchObject({ decoded: 0, correct: 0, seen: [] })
+    expect(state.playerStats.get('player')).toMatchObject({
+      decoded: 2,
+      correct: 2,
+      revision: 2,
+      seen: [],
+      daily: { decoded: 2 }
+    })
+    expect(HOUSE_CHARADES.map((charade) => charade.guesses)).toEqual(houseGuessesBefore)
+    expect(state.boards).toEqual({ decoders: [], hardest: [] })
+    expect(state.playerStats.size).toBe(1)
+  })
+
+  it.each([
+    { label: 'recovery', finalAnswer: 'correct' as const, finalCorrect: true },
+    { label: 'final miss', finalAnswer: 'wrong' as const, finalCorrect: false }
+  ])('counts a House $label as one decode and zero first-try correct solves', async ({ finalAnswer, finalCorrect }) => {
+    const { state, sent, protocol } = await createHarness()
+    await negotiate(protocol, 'player')
+    sent.length = 0
+    await protocol.handleNextCharade(nextCharadeRequest(), 'player')
+    const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+    const wrong = wrongAnswerIndexes(state, served)
+
+    await protocol.handleGuess(
+      { charadeId: served.id, answerIndex: wrong[0], requestId: 'house-outcome-first' },
+      'player'
+    )
+    await protocol.handleGuess(
+      {
+        charadeId: served.id,
+        answerIndex: finalAnswer === 'correct' ? correctAnswerIndex(state, served) : wrong[1],
+        requestId: 'house-outcome-final'
+      },
+      'player'
+    )
+
+    expect(messagesOfType(sent, 'reveal').at(-1)!.data).toMatchObject({
+      correct: finalCorrect,
+      attempt: 2
+    })
+    expect(state.playerStats.get('player')).toMatchObject({
+      decoded: 1,
+      correct: 0,
+      revision: 1,
+      seen: [],
+      daily: { decoded: 1 }
+    })
+    expect(state.boards).toEqual({ decoders: [], hardest: [] })
+  })
+
+  it('awards one saved daily stamp after three House decodes and one ordinary post without board entries', async () => {
+    const { storage, repository, state, sent, protocol } = await createHarness()
+    await negotiate(protocol, 'player')
+    sent.length = 0
+
+    for (let index = 0; index < 3; index += 1) {
+      await protocol.handleNextCharade(nextCharadeRequest(), 'player')
+      const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+      await protocol.handleGuess(
+        {
+          charadeId: served.id,
+          answerIndex: correctAnswerIndex(state, served),
+          requestId: `daily-house-${index}`
+        },
+        'player'
+      )
+      expect(messagesOfType(sent, 'reveal').at(-1)!.data).toMatchObject({ stampAwarded: false })
+    }
+
+    await protocol.handlePost(
+      { requestId: 'daily-house-post', phraseId: TEST_PHRASE.id, emotes: TEST_PERFORMANCE },
+      'player'
+    )
+    const posted = messagesOfType(sent, 'posted').at(-1)!.data
+
+    expect(posted).toMatchObject({ stampAwarded: true })
+    expect(state.playerStats.get('player')).toMatchObject({
+      decoded: 3,
+      correct: 3,
+      revision: 4,
+      daily: { decoded: 3, authored: 1, stamped: true },
+      stampedDays: ['2026-08-23']
+    })
+    expect(state.boards).toEqual({ decoders: [], hardest: [] })
+    await repository.flushNow()
+    expect(storage.readPlayerJSON<ReturnType<typeof makeStats>>('player', PLAYER_STATS_KEY)).toMatchObject({
+      decoded: 3,
+      correct: 3,
+      revision: 4,
+      daily: { decoded: 3, authored: 1, stamped: true },
+      stampedDays: ['2026-08-23']
+    })
+  })
+
+  it('keeps a guest House completion out of durable personal and global progression', async () => {
+    const snapshotLook = async (address: string) => ({ ...makeLook(address, 'Guest'), isGuest: true })
+    const { state, sent, protocol } = await createHarness({ snapshotLook })
+    await negotiate(protocol, 'guest-session')
+    sent.length = 0
+    await protocol.handleNextCharade(nextCharadeRequest(), 'guest-session')
+    const served = dataOf<CharadeMessage>(messagesOfType(sent, 'charade').at(-1)!)
+
+    await protocol.handleGuess(
+      {
+        requestId: 'guest-house-completion',
+        charadeId: served.id,
+        answerIndex: correctAnswerIndex(state, served)
+      },
+      'guest-session'
+    )
+
+    expect(state.playerStats.get('guest-session')).toMatchObject({
+      decoded: 0,
+      correct: 0,
+      revision: 0,
+      seen: [],
+      daily: { decoded: 0, stamped: false }
+    })
+    expect(state.boards).toEqual({ decoders: [], hardest: [] })
   })
 
   it('scores a five-ghost Show Set, prices Spotlight, and replays a guess without double-scoring', async () => {
@@ -2783,8 +3042,10 @@ describe('charade serving and guesses', () => {
       isFinale: true
     })
     expect(state.playerStats.get('player')).toMatchObject({
-      decoded: 0,
-      correct: 0,
+      decoded: 5,
+      correct: 3,
+      revision: 5,
+      daily: { decoded: 5 },
       seen: [],
       showSet: { round: 5, score: 300, streak: 1, bestStreak: 2, understood: 3 }
     })
@@ -3575,8 +3836,24 @@ describe('authoring protocol', () => {
 
     expect(messagesOfType(sent, 'posted')).toHaveLength(1)
     expect(messagesOfType(sent, 'error')).toEqual([])
-    expect(state.playerStats.get('alice')?.showSet).toMatchObject({ round: 1, score: 100, understood: 1 })
+    expect(state.playerStats.get('alice')).toMatchObject({
+      decoded: 1,
+      correct: 1,
+      revision: 1,
+      daily: { decoded: 1 },
+      showSet: { round: 1, score: 100, understood: 1 }
+    })
+    expect(state.boards).toEqual({ decoders: [], hardest: [] })
+    expect(storage.readJSON<{ active: DurableMutation | null }>(DURABLE_MUTATION_JOURNAL_KEY)?.active).toBeNull()
     expect(protocol.resourceCounts()).toMatchObject({ servedAnswers: 0, activeDecoders: 0 })
+    sent.length = 0
+
+    await protocol.handleGuess(firstGuess, 'alice')
+
+    expect(messagesOfType(sent, 'reveal')).toHaveLength(1)
+    expect(messagesOfType(sent, 'error')).toEqual([])
+    expect(state.playerStats.get('alice')).toMatchObject({ decoded: 1, correct: 1, revision: 1 })
+    expect(state.boards).toEqual({ decoders: [], hardest: [] })
     sent.length = 0
 
     await protocol.handleGuess({ ...firstGuess, requestId: 'second-house-guess' }, 'alice')
@@ -3590,7 +3867,13 @@ describe('authoring protocol', () => {
         to: ['alice']
       }
     ])
-    expect(state.playerStats.get('alice')?.showSet).toMatchObject({ round: 1, score: 100, understood: 1 })
+    expect(state.playerStats.get('alice')).toMatchObject({
+      decoded: 1,
+      correct: 1,
+      revision: 1,
+      showSet: { round: 1, score: 100, understood: 1 }
+    })
+    expect(state.boards).toEqual({ decoders: [], hardest: [] })
   })
 
   it('settles a recovered live-round winner exactly once during an unrelated mutation', async () => {

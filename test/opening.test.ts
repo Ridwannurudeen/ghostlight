@@ -23,41 +23,54 @@ function createOpeningHarness() {
 }
 
 describe('cold open', () => {
+  it('puts useful first-play guidance on screen immediately and reaches decode within four seconds', () => {
+    const { events, effects } = createOpeningHarness()
+    const controller = createOpeningController(effects)
+
+    expect(OPENING_DURATION_SECONDS).toBeLessThanOrEqual(4)
+    expect(controller.start('First Impressions')).toBe(true)
+    expect(events).toContain(`instruction:${OPENING_INSTRUCTION}`)
+
+    controller.tick(OPENING_DURATION_SECONDS)
+    expect(events.slice(-2)).toEqual(['decode', 'performer:enter'])
+  })
+
   it('runs every beat at its exact time and in order', () => {
     const { events, effects } = createOpeningHarness()
     const controller = createOpeningController(effects)
 
     expect(OPENING_TIMELINE.map(({ name, at }) => ({ name, at }))).toEqual([
       { name: 'foyer-camera', at: 0 },
-      { name: 'marquee', at: 1 },
-      { name: 'doors-open', at: 2.5 },
-      { name: 'stage-camera', at: 4.5 },
-      { name: 'performer-entrance', at: 6 },
-      { name: 'instruction', at: 8 },
-      { name: 'decode', at: 10 }
+      { name: 'instruction', at: 0 },
+      { name: 'marquee', at: 0.5 },
+      { name: 'doors-open', at: 1 },
+      { name: 'stage-camera', at: 1.75 },
+      { name: 'decode', at: 4 },
+      { name: 'performer-entrance', at: 4 }
     ])
 
     expect(controller.start('First Impressions')).toBe(true)
-    expect(events).toEqual(['camera:foyer'])
+    expect(events).toEqual(['camera:foyer', `instruction:${OPENING_INSTRUCTION}`])
 
-    let elapsed = 0
-    for (const beat of OPENING_TIMELINE.slice(1)) {
-      const beforeBeat = beat.at - elapsed - 0.001
-      controller.tick(beforeBeat)
-      expect(events).toHaveLength(OPENING_TIMELINE.indexOf(beat))
-      controller.tick(0.001)
-      elapsed = beat.at
-      expect(events).toHaveLength(OPENING_TIMELINE.indexOf(beat) + 1)
-    }
+    controller.tick(0.499)
+    expect(events).toHaveLength(2)
+    controller.tick(0.001)
+    expect(events).toHaveLength(3)
+    controller.tick(0.5)
+    expect(events).toHaveLength(4)
+    controller.tick(0.75)
+    expect(events).toHaveLength(5)
+    controller.tick(OPENING_DURATION_SECONDS - 1.75)
+    expect(events).toHaveLength(7)
 
     expect(events).toEqual([
       'camera:foyer',
+      `instruction:${OPENING_INSTRUCTION}`,
       "marquee:TONIGHT'S SHOW: First Impressions",
       'doors:open',
       'camera:stage',
-      'performer:enter',
-      `instruction:${OPENING_INSTRUCTION}`,
-      'decode'
+      'decode',
+      'performer:enter'
     ])
     expect(controller.isRunning()).toBe(false)
   })
@@ -72,12 +85,12 @@ describe('cold open', () => {
     expect(controller.skip()).toBe(true)
     expect(events).toEqual([
       'camera:foyer',
+      `instruction:${OPENING_INSTRUCTION}`,
       "marquee:TONIGHT'S SHOW: Main Character Energy",
       'doors:open',
       'camera:stage',
-      'performer:enter',
-      `instruction:${OPENING_INSTRUCTION}`,
-      'decode'
+      'decode',
+      'performer:enter'
     ])
     expect(controller.skip()).toBe(false)
     expect(controller.isRunning()).toBe(false)

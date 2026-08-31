@@ -35,6 +35,7 @@ vi.mock('@dcl/sdk/network', () => ({ isServer: vi.fn(() => harness.isServer) }))
 vi.mock('@dcl/sdk/src/players', () => ({ onLeaveScene: vi.fn() }))
 
 const flow = vi.hoisted(() => ({
+  requestOpeningCharade: vi.fn(),
   requestNextCharade: vi.fn(),
   startClientFlow: vi.fn()
 }))
@@ -48,6 +49,7 @@ vi.mock('../src/client/flow', () => ({
     subscribe: (listener: (state: typeof harness.state) => void) => {
       harness.listener = listener
     },
+    requestOpeningCharade: flow.requestOpeningCharade,
     requestNextCharade: flow.requestNextCharade
   },
   startClientFlow: flow.startClientFlow
@@ -99,7 +101,12 @@ vi.mock('../src/client/opening-scene', () => ({
   })
 }))
 
-const setup = vi.hoisted(() => ({ startClientSetup: vi.fn(), isPlayerInDecodeArea: vi.fn(() => true) }))
+const setup = vi.hoisted(() => ({
+  startClientSetup: vi.fn(),
+  isPlayerInDecodeArea: vi.fn(() => true),
+  switchTheaterCamera: vi.fn(),
+  releaseTheaterCamera: vi.fn()
+}))
 vi.mock('../src/client/setup', () => setup)
 const sound = vi.hoisted(() => ({ duckForReveal: vi.fn(), play: vi.fn(), restoreAfterReveal: vi.fn() }))
 const rewards = vi.hoisted(() => ({
@@ -182,6 +189,10 @@ describe('client presentation integration', () => {
       showStageReward: rewards.setStageRewardProp,
       clearStageReward: rewards.clearStageRewardProp
     })
+    harness.effects!.acquirePracticeCamera()
+    expect(setup.switchTheaterCamera).toHaveBeenCalledWith('stage')
+    harness.effects!.releasePracticeCamera()
+    expect(setup.releaseTheaterCamera).toHaveBeenCalledTimes(1)
     expect(setup.startClientSetup).toHaveBeenCalledTimes(1)
     expect(flow.startClientFlow).toHaveBeenCalledTimes(1)
     expect(engine.addSystem).toHaveBeenCalledTimes(1)
@@ -200,11 +211,9 @@ describe('client presentation integration', () => {
     harness.listener!(harness.state)
     const openingSystem = vi.mocked(engine.addSystem).mock.calls[0][0]
     openingSystem(0)
-    expect(opening.start).toHaveBeenCalledWith(
-      themeLabel(showPolicyForTimestamp(TEST_NOW)!.legacyTheme.id, 'en'),
-      'en'
-    )
-    expect(flow.requestNextCharade).toHaveBeenCalledTimes(1)
+    expect(opening.start).toHaveBeenCalledWith(themeLabel(showPolicyForTimestamp(TEST_NOW)!.legacyTheme.id, 'en'), 'en')
+    expect(flow.requestOpeningCharade).toHaveBeenCalledTimes(1)
+    expect(flow.requestNextCharade).not.toHaveBeenCalled()
 
     Object.assign(harness.state, { screen: 'posted', notices: [{ id: 'daily-1', kind: 'stamp' }] })
     harness.listener!(harness.state)
@@ -235,6 +244,7 @@ describe('client presentation integration', () => {
   it('starts the opening from the ready foyer before the player reaches the decode area', () => {
     vi.mocked(engine.addSystem).mockClear()
     opening.start.mockClear()
+    flow.requestOpeningCharade.mockClear()
     flow.requestNextCharade.mockClear()
     harness.openingPlayed = false
     harness.openingRunning = true
@@ -247,11 +257,37 @@ describe('client presentation integration', () => {
     expect(setup.isPlayerInDecodeArea()).toBe(false)
     openingSystem(0)
 
-    expect(opening.start).toHaveBeenCalledWith(
-      themeLabel(showPolicyForTimestamp(TEST_NOW)!.legacyTheme.id, 'en'),
-      'en'
-    )
-    expect(flow.requestNextCharade).toHaveBeenCalledTimes(1)
+    expect(opening.start).toHaveBeenCalledWith(themeLabel(showPolicyForTimestamp(TEST_NOW)!.legacyTheme.id, 'en'), 'en')
+    expect(flow.requestOpeningCharade).toHaveBeenCalledTimes(1)
+    expect(flow.requestNextCharade).not.toHaveBeenCalled()
+
+    Object.assign(harness.state, { pending: [{ kind: 'nextCharade' }] })
+    harness.showDecode!()
+    expect(flow.requestOpeningCharade).toHaveBeenCalledTimes(1)
+
+    Object.assign(harness.state, { pending: [] })
+    flow.requestOpeningCharade.mockClear()
+    harness.showDecode!()
+    expect(flow.requestOpeningCharade).toHaveBeenCalledTimes(1)
+    expect(flow.requestNextCharade).not.toHaveBeenCalled()
+  })
+
+  it('discards a staged opening performer when the opening is cancelled', () => {
+    ghosts.showPerformer.mockClear()
+    opening.cancel.mockClear()
+    harness.openingRunning = true
+
+    main()
+    const look = { address: '0xCancelled' }
+    const emotes = ['wave', 'clap', 'dab']
+    harness.effects!.showPerformer(look, emotes)
+    expect(ghosts.showPerformer).not.toHaveBeenCalled()
+
+    harness.effects!.cancelOpening()
+    harness.enterPerformer!()
+
+    expect(opening.cancel).toHaveBeenCalledTimes(1)
+    expect(ghosts.showPerformer).not.toHaveBeenCalled()
   })
 
   it('uses local weekly show names for the marquee and cold opening across language and same-theme week changes', () => {
@@ -259,6 +295,7 @@ describe('client presentation integration', () => {
     const second = SEASON_ZERO_WEEKS[1]
     vi.mocked(engine.addSystem).mockClear()
     opening.start.mockClear()
+    flow.requestOpeningCharade.mockClear()
     flow.requestNextCharade.mockClear()
     theater.setText.mockClear()
     rewards.setRewardProp.mockClear()
@@ -283,6 +320,7 @@ describe('client presentation integration', () => {
     const openingSystem = vi.mocked(engine.addSystem).mock.calls[0][0]
     openingSystem(0)
     expect(opening.start).not.toHaveBeenCalled()
+    expect(flow.requestOpeningCharade).not.toHaveBeenCalled()
     expect(flow.requestNextCharade).not.toHaveBeenCalled()
 
     Object.assign(harness.state, {
@@ -319,6 +357,7 @@ describe('client presentation integration', () => {
     vi.mocked(Date.now).mockReturnValue(boundary)
     vi.mocked(engine.addSystem).mockClear()
     opening.start.mockClear()
+    flow.requestOpeningCharade.mockClear()
     flow.requestNextCharade.mockClear()
     theater.setText.mockClear()
     harness.openingPlayed = false
@@ -341,6 +380,7 @@ describe('client presentation integration', () => {
     openingSystem(0)
 
     expect(opening.start).not.toHaveBeenCalled()
+    expect(flow.requestOpeningCharade).not.toHaveBeenCalled()
     expect(flow.requestNextCharade).not.toHaveBeenCalled()
     expect(theater.setText).toHaveBeenLastCalledWith(
       t('marquee.tonightShow', 'en', { theme: themeLabel(currentPolicy.legacyTheme.id, 'en') })

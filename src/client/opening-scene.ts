@@ -1,4 +1,5 @@
 import type { Language } from '../shared/i18n'
+import { hasPerformerCompletedSequence } from './ghosts'
 import { createOpeningController } from './opening'
 import { play } from './sound'
 import { releaseTheaterCamera, switchTheaterCamera } from './setup'
@@ -23,20 +24,35 @@ export function skipOpening() {
 }
 
 export function createSceneOpeningController(enterPerformer: () => void, showDecode: () => void) {
+  let cameraHeld = false
+  let waitingForPerformer = false
+
+  function releaseCamera() {
+    if (!cameraHeld) return
+    cameraHeld = false
+    waitingForPerformer = false
+    releaseTheaterCamera()
+  }
+
   const controller = createOpeningController({
-    switchCamera: (camera) => switchTheaterCamera(camera),
+    switchCamera: (camera) => {
+      cameraHeld = true
+      switchTheaterCamera(camera)
+    },
     setMarquee: (text) => marquee.setText(text),
     openDoors: () => {
       play('curtain')
       foyerDoors.open()
     },
-    enterPerformer,
+    enterPerformer: () => {
+      waitingForPerformer = true
+      enterPerformer()
+    },
     showInstruction: (instruction) => {
       openingView = { ...openingView, instruction }
     },
     showDecode: () => {
       openingView = { ...EMPTY_OPENING_VIEW }
-      releaseTheaterCamera()
       showDecode()
     }
   })
@@ -48,15 +64,17 @@ export function createSceneOpeningController(enterPerformer: () => void, showDec
       if (!started) openingView = { ...EMPTY_OPENING_VIEW }
       return started
     },
-    tick: controller.tick,
+    tick(deltaSeconds: number) {
+      controller.tick(deltaSeconds)
+      if (waitingForPerformer && hasPerformerCompletedSequence()) releaseCamera()
+    },
     skip: controller.skip,
     cancel() {
       const cancelled = controller.cancel()
-      if (cancelled) {
-        openingView = { ...EMPTY_OPENING_VIEW }
-        releaseTheaterCamera()
-      }
-      return cancelled
+      const hadSceneOwnership = cameraHeld || openingView.active
+      openingView = { ...EMPTY_OPENING_VIEW }
+      releaseCamera()
+      return cancelled || hadSceneOwnership
     },
     isRunning: controller.isRunning,
     hasPlayed: controller.hasPlayed

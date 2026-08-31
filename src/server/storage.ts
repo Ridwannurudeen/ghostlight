@@ -85,9 +85,12 @@ export class StorageCapacityError extends Error {
 
 const MAX_CONCURRENT_WRITES = 8
 const MAX_CONCURRENT_HOST_CALLS = 32
+const RECOVERY_HOST_CALL_RESERVE = 8
+const MAX_PRIMARY_HOST_CALLS = MAX_CONCURRENT_HOST_CALLS - RECOVERY_HOST_CALL_RESERVE
 const MAX_WAITING_HOST_CALLS = 128
 const MAX_READ_ATTEMPTS = 3
 const MAX_CHECKPOINT_ATTEMPTS = 3
+export const STORAGE_HOST_CALL_TIMEOUT_MILLISECONDS = 2_000
 export const MAX_STORAGE_VALUE_BYTES = 128 * 1024
 const MAX_DIRTY_BYTES = 512 * 1024
 const STORAGE_HEALTH_KEY = 'gc:v1:health'
@@ -116,94 +119,169 @@ export function createStorageRepository(storage: StoragePort = Storage) {
   let flushPromise: Promise<FlushResult> | null = null
   let flushTimer: ReturnType<typeof setInterval> | null = null
   let activeHostCalls = 0
-  const waitingHostCalls: Array<() => void> = []
-  let waitingHostCallOffset = 0
+  let timedOutHostCalls = 0
+  let waitingHostCallCount = 0
+  const waitingHostCalls: Array<{ reserveEligible: boolean; grant: () => boolean }> = []
 
-  function acquireHostCall(): Promise<void> | null {
-    if (activeHostCalls < MAX_CONCURRENT_HOST_CALLS) {
+  function hasHostCallCapacity(reserveEligible: boolean) {
+    return (
+      activeHostCalls < MAX_PRIMARY_HOST_CALLS ||
+      (reserveEligible && timedOutHostCalls >= MAX_PRIMARY_HOST_CALLS && activeHostCalls < MAX_CONCURRENT_HOST_CALLS)
+    )
+  }
+
+  function grantWaitingHostCalls() {
+    while (true) {
+      const index = waitingHostCalls.findIndex((waiting) => hasHostCallCapacity(waiting.reserveEligible))
+      if (index < 0) return
+      const [waiting] = waitingHostCalls.splice(index, 1)
+      if (!waiting.grant()) continue
+      activeHostCalls += 1
+    }
+  }
+
+  function acquireHostCall(reserveEligible: boolean): Promise<void> | null {
+    if (hasHostCallCapacity(reserveEligible)) {
       activeHostCalls += 1
       return null
     }
-    if (waitingHostCalls.length - waitingHostCallOffset >= MAX_WAITING_HOST_CALLS) {
+    if (waitingHostCallCount >= MAX_WAITING_HOST_CALLS) {
       throw new StorageUnavailableError(['host-call-queue'])
     }
-    return new Promise<void>((resolve) => waitingHostCalls.push(resolve))
-  }
-
-  function releaseHostCall() {
-    const next = waitingHostCalls[waitingHostCallOffset]
-    if (next) {
-      waitingHostCallOffset += 1
-      if (waitingHostCallOffset >= 64 && waitingHostCallOffset * 2 >= waitingHostCalls.length) {
-        waitingHostCalls.splice(0, waitingHostCallOffset)
-        waitingHostCallOffset = 0
+    return new Promise<void>((resolve, reject) => {
+      let active = true
+      waitingHostCallCount += 1
+      let timeout: ReturnType<typeof setTimeout>
+      const grant = () => {
+        if (!active) return false
+        active = false
+        waitingHostCallCount -= 1
+        clearTimeout(timeout)
+        resolve()
+        return true
       }
-      next()
-      return
-    }
+      timeout = setTimeout(() => {
+        if (!active) return
+        active = false
+        waitingHostCallCount -= 1
+        const waiting = waitingHostCalls.find((entry) => entry.grant === grant)
+        const index = waiting ? waitingHostCalls.indexOf(waiting) : -1
+        if (index >= 0) waitingHostCalls.splice(index, 1)
+        reject(new StorageUnavailableError(['host-call-timeout']))
+      }, STORAGE_HOST_CALL_TIMEOUT_MILLISECONDS)
+      waitingHostCalls.push({ reserveEligible, grant })
+    })
+  }
+
+  function releaseHostCall(timedOut: boolean) {
     activeHostCalls -= 1
-    if (waitingHostCallOffset > 0) {
-      waitingHostCalls.length = 0
-      waitingHostCallOffset = 0
-    }
+    if (timedOut) timedOutHostCalls -= 1
+    grantWaitingHostCalls()
   }
 
-  async function hostCall<T>(call: () => Promise<T>) {
-    const permit = acquireHostCall()
+  async function hostCall<T>(call: () => Promise<T>, reserveEligible: boolean) {
+    const permit = acquireHostCall(reserveEligible)
     if (permit) await permit
-    try {
-      return await call()
-    } finally {
-      releaseHostCall()
-    }
+    return await new Promise<T>((resolve, reject) => {
+      let settled = false
+      let timedOut = false
+      const timeout = setTimeout(() => {
+        if (settled) return
+        settled = true
+        timedOut = true
+        timedOutHostCalls += 1
+        grantWaitingHostCalls()
+        reject(new StorageUnavailableError(['host-call-timeout']))
+      }, STORAGE_HOST_CALL_TIMEOUT_MILLISECONDS)
+
+      let pending: Promise<T>
+      try {
+        pending = call()
+      } catch (error) {
+        settled = true
+        clearTimeout(timeout)
+        releaseHostCall(false)
+        reject(error)
+        return
+      }
+      pending.then(
+        (value) => {
+          releaseHostCall(timedOut)
+          if (settled) return
+          settled = true
+          clearTimeout(timeout)
+          resolve(value)
+        },
+        (error: unknown) => {
+          releaseHostCall(timedOut)
+          if (settled) return
+          settled = true
+          clearTimeout(timeout)
+          reject(error)
+        }
+      )
+    })
   }
 
-  async function confirmSceneValue(key: string) {
-    const result = await hostCall(() => storage.getValues({ prefix: key, limit: 2 }))
+  function scopedHostCall() {
+    const reserveEligible = timedOutHostCalls >= MAX_PRIMARY_HOST_CALLS
+    return <T>(call: () => Promise<T>) => hostCall(call, reserveEligible)
+  }
+
+  type ScopedHostCall = ReturnType<typeof scopedHostCall>
+
+  async function confirmSceneValue(key: string, callHost: ScopedHostCall) {
+    const result = await callHost(() => storage.getValues({ prefix: key, limit: 2 }))
     return result.data.find((entry) => entry.key === key)?.value ?? null
   }
 
-  async function confirmPlayerValue(address: string, key: string) {
-    const result = await hostCall(() => storage.player.getValues(address, { prefix: key, limit: 2 }))
+  async function confirmPlayerValue(address: string, key: string, callHost: ScopedHostCall) {
+    const result = await callHost(() => storage.player.getValues(address, { prefix: key, limit: 2 }))
     return result.data.find((entry) => entry.key === key)?.value ?? null
   }
 
-  async function confirmSceneReadsAvailable() {
-    const current = await hostCall(() => storage.get(STORAGE_HEALTH_KEY, { fresh: true }))
+  async function confirmSceneReadsAvailable(callHost: ScopedHostCall) {
+    const current = await callHost(() => storage.get(STORAGE_HEALTH_KEY, { fresh: true })).catch(() => null)
     if (current === STORAGE_HEALTH_VALUE) return true
-    const saved = await hostCall(() => storage.set(STORAGE_HEALTH_KEY, STORAGE_HEALTH_VALUE))
+    const saved = await callHost(() => storage.set(STORAGE_HEALTH_KEY, STORAGE_HEALTH_VALUE))
     if (!saved) return false
-    return (await hostCall(() => storage.get(STORAGE_HEALTH_KEY, { fresh: true }))) === STORAGE_HEALTH_VALUE
+    return (await callHost(() => storage.get(STORAGE_HEALTH_KEY, { fresh: true }))) === STORAGE_HEALTH_VALUE
   }
 
-  async function confirmPlayerReadsAvailable(address: string) {
-    const current = await hostCall(() => storage.player.get(address, STORAGE_HEALTH_KEY, { fresh: true }))
+  async function confirmPlayerReadsAvailable(address: string, callHost: ScopedHostCall) {
+    const current = await callHost(() => storage.player.get(address, STORAGE_HEALTH_KEY, { fresh: true })).catch(
+      () => null
+    )
     if (current === STORAGE_HEALTH_VALUE) return true
-    const saved = await hostCall(() => storage.player.set(address, STORAGE_HEALTH_KEY, STORAGE_HEALTH_VALUE))
+    const saved = await callHost(() => storage.player.set(address, STORAGE_HEALTH_KEY, STORAGE_HEALTH_VALUE))
     if (!saved) return false
     return (
-      (await hostCall(() => storage.player.get(address, STORAGE_HEALTH_KEY, { fresh: true }))) === STORAGE_HEALTH_VALUE
+      (await callHost(() => storage.player.get(address, STORAGE_HEALTH_KEY, { fresh: true }))) === STORAGE_HEALTH_VALUE
     )
   }
 
   async function readRaw(
     read: (fresh: boolean) => Promise<unknown | null>,
-    confirm: () => Promise<unknown | null>,
-    confirmReadsAvailable: () => Promise<boolean>
+    confirm: (callHost: ScopedHostCall) => Promise<unknown | null>,
+    confirmReadsAvailable: (callHost: ScopedHostCall) => Promise<boolean>
   ) {
+    const callHost = scopedHostCall()
     for (let attempt = 0; attempt < MAX_READ_ATTEMPTS; attempt += 1) {
       try {
-        const raw = await hostCall(() => read(attempt > 0))
+        const raw = await callHost(() => read(attempt > 0))
         if (raw !== null) return { status: 'found' as const, raw }
-      } catch {
+      } catch (error) {
+        if (error instanceof StorageUnavailableError && error.keys.includes('host-call-timeout')) break
         // A separate authoritative listing below decides missing versus unavailable.
       }
     }
 
     try {
-      const raw = await confirm()
+      const raw = await confirm(callHost)
       if (raw !== null) return { status: 'found' as const, raw }
-      return (await confirmReadsAvailable()) ? { status: 'missing' as const } : { status: 'unavailable' as const }
+      return (await confirmReadsAvailable(callHost))
+        ? { status: 'missing' as const }
+        : { status: 'unavailable' as const }
     } catch {
       return { status: 'unavailable' as const }
     }
@@ -230,7 +308,7 @@ export function createStorageRepository(storage: StoragePort = Storage) {
   async function loadJSON<T>(key: string, fallback: T): Promise<T> {
     const result = await readRaw(
       (fresh) => storage.get(key, fresh ? { fresh: true } : undefined),
-      () => confirmSceneValue(key),
+      (callHost) => confirmSceneValue(key, callHost),
       confirmSceneReadsAvailable
     )
     return parseRead(key, result, fallback)
@@ -239,8 +317,8 @@ export function createStorageRepository(storage: StoragePort = Storage) {
   async function loadPlayerJSON<T>(address: string, key: string, fallback: T): Promise<T> {
     const result = await readRaw(
       (fresh) => storage.player.get(address, key, fresh ? { fresh: true } : undefined),
-      () => confirmPlayerValue(address, key),
-      () => confirmPlayerReadsAvailable(address)
+      (callHost) => confirmPlayerValue(address, key, callHost),
+      (callHost) => confirmPlayerReadsAvailable(address, callHost)
     )
     return parseRead(`player:${address}:${key}`, result, fallback)
   }
@@ -300,9 +378,10 @@ export function createStorageRepository(storage: StoragePort = Storage) {
 
   async function saveJSONNow(key: string, value: unknown) {
     const { serialized } = serialize(value)
+    const callHost = scopedHostCall()
     for (let attempt = 0; attempt < MAX_CHECKPOINT_ATTEMPTS; attempt += 1) {
       try {
-        if (await hostCall(() => storage.set(key, serialized))) return
+        if (await callHost(() => storage.set(key, serialized))) return
       } catch {
         // Retry the bounded immediate write below.
       }
@@ -310,10 +389,10 @@ export function createStorageRepository(storage: StoragePort = Storage) {
     throw new StorageUnavailableError([`scene:${key}`])
   }
 
-  async function write(entry: DirtyWrite) {
+  async function write(entry: DirtyWrite, callHost: ScopedHostCall) {
     try {
-      if (entry.scope === 'scene') return await hostCall(() => storage.set(entry.key, entry.serialized))
-      return await hostCall(() => storage.player.set(entry.address, entry.key, entry.serialized))
+      if (entry.scope === 'scene') return await callHost(() => storage.set(entry.key, entry.serialized))
+      return await callHost(() => storage.player.set(entry.address, entry.key, entry.serialized))
     } catch {
       return false
     }
@@ -321,12 +400,13 @@ export function createStorageRepository(storage: StoragePort = Storage) {
 
   async function runFlush(): Promise<FlushResult> {
     const pending = [...dirty.entries()].slice(0, MAX_FLUSH_WRITES)
+    const callHost = scopedHostCall()
     let saved = 0
     let failed = 0
 
     for (let offset = 0; offset < pending.length; offset += MAX_CONCURRENT_WRITES) {
       const batch = pending.slice(offset, offset + MAX_CONCURRENT_WRITES)
-      const results = await Promise.all(batch.map(([, entry]) => write(entry)))
+      const results = await Promise.all(batch.map(([, entry]) => write(entry, callHost)))
 
       results.forEach((ok, index) => {
         const [dirtyKey, attempted] = batch[index]

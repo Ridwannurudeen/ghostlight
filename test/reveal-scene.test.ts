@@ -158,6 +158,40 @@ describe('scene reveal adapter', () => {
     expect(audio.restore).toHaveBeenCalledTimes(1)
   })
 
+  it('uses authoritative set round one to preserve the full first reveal of a new set', () => {
+    const audio = { play: vi.fn(), duck: vi.fn(), restore: vi.fn() }
+    const controller = createSceneRevealController(audio)
+    const reveal = {
+      charadeId: charade.id,
+      correct: true,
+      phrase: 'Flying a kite',
+      stats: { correct: 1, total: 1 },
+      yourScore: 1,
+      daily: { day: '2026-08-23', decoded: 1, authored: 0, stamped: false },
+      stampAwarded: false,
+      title: '' as const,
+      nextUnlock: {
+        nextTitle: 'Understudy' as const,
+        requirement: 'Post your first charade',
+        progress: 0
+      },
+      titleUnlocked: false
+    }
+
+    controller.begin(charade, 0)
+    controller.resolve(reveal, charade)
+    vi.advanceTimersByTime(8_000)
+
+    const setStart = { ...charade, id: 'charade-set-start', setRound: 1, setSize: 5 }
+    controller.begin(setStart, 0)
+    controller.resolve({ ...reveal, charadeId: setStart.id }, setStart)
+    vi.advanceTimersByTime(3_000)
+
+    expect(getRevealViewState().complete).toBe(false)
+    vi.advanceTimersByTime(5_000)
+    expect(getRevealViewState().complete).toBe(true)
+  })
+
   it('restores an authoritative completed reveal without replaying choreography, audio, or stats', () => {
     updateClientSettings({ reducedMotion: true })
     const audio = { play: vi.fn(), duck: vi.fn(), restore: vi.fn() }

@@ -20,7 +20,7 @@ import {
 } from './client/ghosts'
 import { createSceneOpeningController } from './client/opening-scene'
 import { createSceneRevealController } from './client/reveal-scene'
-import { startClientSetup } from './client/setup'
+import { releaseTheaterCamera, startClientSetup, switchTheaterCamera } from './client/setup'
 import { getClientSettings, subscribeClientSettings } from './client/settings'
 import { duckForReveal, play, restoreAfterReveal } from './client/sound'
 import {
@@ -83,7 +83,7 @@ export function main() {
         !state.charade &&
         !state.pending.some((request) => request.kind === 'nextCharade')
       ) {
-        clientFlow.requestNextCharade()
+        clientFlow.requestOpeningCharade()
       }
     }
   )
@@ -137,7 +137,14 @@ export function main() {
     canAdvanceReveal: reveal.canAdvance,
     skipReveal: reveal.skipToEnd,
     cancelReveal: reveal.cancel,
-    cancelOpening: opening.cancel
+    cancelOpening: () => {
+      stagedPerformer = null
+      stagedDuet = null
+      openingReadyForPerformer = false
+      return opening.cancel()
+    },
+    acquirePracticeCamera: () => switchTheaterCamera('stage'),
+    releasePracticeCamera: releaseTheaterCamera
   })
 
   let audience = clientFlow.getState().audience
@@ -216,7 +223,7 @@ export function main() {
         !opening.hasPlayed() &&
         opening.start(currentShowLabel(state, language, policy), language)
       ) {
-        clientFlow.requestNextCharade()
+        clientFlow.requestOpeningCharade()
       }
       opening.tick(deltaSeconds)
     },

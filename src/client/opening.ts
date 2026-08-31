@@ -1,6 +1,6 @@
 import { t, type Language } from '../shared/i18n'
 
-export const OPENING_DURATION_SECONDS = 10
+export const OPENING_DURATION_SECONDS = 4
 export const OPENING_INSTRUCTION = t('opening.instruction', 'en')
 
 export type OpeningCamera = 'foyer' | 'stage'
@@ -33,35 +33,35 @@ export const OPENING_TIMELINE: readonly OpeningBeat[] = [
     run: ({ effects }) => effects.switchCamera('foyer')
   },
   {
+    name: 'instruction',
+    at: 0,
+    run: ({ effects, language }) => effects.showInstruction(t('opening.instruction', language))
+  },
+  {
     name: 'marquee',
-    at: 1,
+    at: 0.5,
     run: ({ effects, themeLabel, language }) =>
       effects.setMarquee(t('marquee.tonightShow', language, { theme: themeLabel }))
   },
   {
     name: 'doors-open',
-    at: 2.5,
+    at: 1,
     run: ({ effects }) => effects.openDoors()
   },
   {
     name: 'stage-camera',
-    at: 4.5,
+    at: 1.75,
     run: ({ effects }) => effects.switchCamera('stage')
-  },
-  {
-    name: 'performer-entrance',
-    at: 6,
-    run: ({ effects }) => effects.enterPerformer()
-  },
-  {
-    name: 'instruction',
-    at: 8,
-    run: ({ effects, language }) => effects.showInstruction(t('opening.instruction', language))
   },
   {
     name: 'decode',
     at: OPENING_DURATION_SECONDS,
     run: ({ effects }) => effects.showDecode()
+  },
+  {
+    name: 'performer-entrance',
+    at: OPENING_DURATION_SECONDS,
+    run: ({ effects }) => effects.enterPerformer()
   }
 ] as const
 

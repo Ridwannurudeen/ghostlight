@@ -12,19 +12,23 @@ answers. The core loop uses performance instead of free-text input and does not 
 chat.
 
 When no eligible player performance exists, the server serves one of six clearly labelled `HOUSE GHOST`
-performances spanning all six themes. House content is excluded from player statistics, boards, and progression.
+performances spanning all six themes. Signed-in public House guesses advance personal decoded, first-try-correct,
+daily, and revision progression. House content remains excluded from charade statistics, boards, author
+notifications, and live winners; guest and Ghost Mail guesses remain excluded from progression.
 
 ## Game loop
 
-1. Enter the theater. A skippable ten-second cold open runs once per client session while the authoritative server
-   prepares the first performance.
+1. Enter the theater. A skippable four-second cold open runs once per client session while the authoritative server
+   prepares the first performance. Its overlay closes at four seconds; the stage camera remains through the first
+   complete 7.5-second performance, then returns control automatically.
 2. Watch a player-authored three-emote sequence, or the clearly labelled House fallback. If a player charade has
    an answer-back, both players perform on stage in alternating three-emote sequences.
 3. Watch all three ordered clues: `START` establishes who or where, `ACTION` shows what happens, and `REACTION`
    shows the result or feeling. The answer cards remain locked until the first complete sequence. Then choose one
    of three phrase cards; exactly one is the phrase assigned to the author. Replay restarts from `START`.
-4. The eight-second reveal locks the answers, pushes the camera toward the stage, changes the theater lighting,
-   reveals the verdict, cues the audience, and reports the aggregate result.
+4. A routine reveal takes three seconds. The first reveal of a visit or set, a finale, or a genuine milestone keeps
+   the full eight-second theatrical reveal: answers lock, the camera pushes toward the stage, the theater lighting
+   changes, the verdict appears, the audience reacts, and the aggregate result is reported.
 5. Answer back with a new performance of the same phrase, make a new charade from the fixed phrase deck, or send
    a private Ghost Mail to a recent real performer.
 6. Preview and post the ordered three-emote performance. An ordinary charade can explicitly opt into future
@@ -44,8 +48,14 @@ the same minimum delay only after sending the exact charade and any duet reply, 
 live round early. For a server-issued second chance, the normal client starts the position-specific replay while
 showing the two remaining cards; the server does not add another delay to that retry.
 
-With two or more players present, the Multiplayer Server serves a shared live round and accepts one first-correct
-winner. The winner moves directly into the author flow; solo visitors continue through the asynchronous loop.
+If authoritative readiness takes more than 12 seconds on a first visit, the waking screen offers Retry and a fixed
+local House Practice. Practice shows its assigned phrase before playback and uses the normal three beats and stage
+camera, but sends no gameplay request and changes no score, progress, boards, or saved state; Retry and Back remain
+available.
+
+With two or more players present, the Multiplayer Server serves a shared live round. Only a player-authored round
+accepts one first-correct winner, who moves directly into the author flow; House rounds reveal without a live
+winner. Solo visitors continue through the asynchronous loop.
 Players who are watching rather than actively decoding can press Laugh, Gasp, or Applause. The server rate-limits
 each address and relays the stamp to the other players present without changing the round state.
 
@@ -59,22 +69,22 @@ week and rotates two out and two in at every weekly boundary. Charade selection 
 back to any eligible player performance without requiring a redeploy. The selectable pool covers the most recent
 14 UTC days; genuine current-theme content must be renewed before it ages out during a release or judging window.
 
-The current theme drives the foyer marquee and UI accent. For a signed-in player, three real-player decodes plus
-one authored charade on the same UTC day awards one saved daily completion stamp. The playbill shows the six most
-recent player-authored performances. Among performances with at least three guesses, Crowd Pleaser ranks the one
-closest to a 60% solve rate, with audience size breaking ties; its author becomes Ghost of the Night on the foyer
-pedestal. If none qualifies, the pedestal has no winner.
+The current theme drives the foyer marquee and UI accent. For a signed-in player, three public decodes—
+player-authored or House—plus one authored charade on the same UTC day awards one saved daily completion stamp.
+The playbill shows the six most recent player-authored performances. Among performances with at least three
+guesses, Crowd Pleaser ranks the one closest to a 60% solve rate, with audience size breaking ties; its author
+becomes Ghost of the Night on the foyer pedestal. If none qualifies, the pedestal has no winner.
 
 ## Titles and reward props
 
 Titles come only from recorded participation. Signed-in player progress is stored by the Multiplayer Server and
 restored on reconnect.
 
-| Title | Requirement | Attached prop |
-| --- | --- | --- |
-| Understudy | Post the first charade | Top hat |
-| Scene Stealer | Reach 10 correct decodes or 5 posts | Mask |
-| Ghostlight Legend | Reach 25 correct decodes and 3 daily stamps | Trophy |
+| Title             | Requirement                                 | Attached prop |
+| ----------------- | ------------------------------------------- | ------------- |
+| Understudy        | Post the first charade                      | Top hat       |
+| Scene Stealer     | Reach 10 correct decodes or 5 posts         | Mask          |
+| Ghostlight Legend | Reach 25 correct decodes and 3 daily stamps | Trophy        |
 
 The client attaches each reward to the titled player's avatar address, so visible players receive the correct
 head or hand prop rather than a local-only costume.
@@ -110,7 +120,7 @@ or client-facing touring API exists yet, and the separate `api/` service is not 
 ## Languages and accessibility
 
 English is the default; Settings cycles English, Spanish, and Portuguese without text entry. The client bundle
-contains 213 interface strings and all 120 historical phrase texts in each language under stable IDs; 30 of those
+contains 220 interface strings and all 120 historical phrase texts in each language under stable IDs; 30 of those
 phrases are in the current playable deck. The server sends
 canonical phrase and answer IDs alongside compatibility fallback text, so authors and decoders can use different
 languages while retaining answer options from the same theme.
@@ -120,19 +130,19 @@ motion shortens the reveal to three seconds while retaining the verdict, sound, 
 
 ## Controls
 
-| Action | Mobile-first behavior |
-| --- | --- |
-| Move | Use the Decentraland movement joystick. Native action buttons are hidden after mobile platform detection. |
-| Start decoding | Follow the static `WALK TO THE STAGE` instruction, then tap `DECODE A GHOST` in the house or stage area. |
-| Guess | Watch the complete `START -> ACTION -> REACTION` sequence, then tap one of three 96 px source-layout answer buttons. Exactly one answer is true. Required UI stays inside Decentraland's interactable screen inset. |
-| Watch again | Tap `REPLAY` to restart the current solo performance or duet. |
-| Make a charade | Tap `MAKE YOUR OWN`, accept or shuffle the dealt phrase, then choose one of two validated emotes for each labelled beat. The third choice advances to confirmation; watch the full preview before Post becomes available. Ordinary posts include one off-by-default touring opt-in. |
-| Answer back | After an eligible reveal, tap `ANSWER BACK`, choose three emotes for the same phrase, preview, then send the reply. |
-| Send Ghost Mail | Tap `GHOST MAIL`, choose a recent real performer, then use the normal phrase, emote, preview, and send flow. No address or message entry is required. |
-| React in a live round | While watching an active round in the stage area, open `REACT`. Laugh, Gasp, and Applause replace the other actions, trigger one local emote and stamp, and relay once to the other players present. |
-| How to play | From the foyer, tap the top-right `HOW TO PLAY` control for five short instructions, then choose `SETTINGS` or `BACK`. |
-| Settings | Open `HOW TO PLAY` from the foyer, then switch language, sound level, reduced motion, or large text for the current visit. Settings links back to `HOW TO PLAY`. |
-| Invite | `COPY INVITE` copies a general World invitation configured in `src/shared/config.ts`; it does not route to a specific charade. |
+| Action                | Mobile-first behavior                                                                                                                                                                                                                                                               |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Move                  | Use the Decentraland movement joystick. Native action buttons are hidden after mobile platform detection.                                                                                                                                                                           |
+| Start decoding        | Follow the static `WALK TO THE STAGE` instruction, then tap `DECODE A GHOST` in the house or stage area.                                                                                                                                                                            |
+| Guess                 | Watch the complete `START -> ACTION -> REACTION` sequence, then tap one of three 96 px source-layout answer buttons. Exactly one answer is true. Required UI stays inside Decentraland's interactable screen inset.                                                                 |
+| Watch again           | Tap `REPLAY` to restart the current solo performance or duet.                                                                                                                                                                                                                       |
+| Make a charade        | Tap `MAKE YOUR OWN`, accept or shuffle the dealt phrase, then choose one of two validated emotes for each labelled beat. The third choice advances to confirmation; watch the full preview before Post becomes available. Ordinary posts include one off-by-default touring opt-in. |
+| Answer back           | After an eligible reveal, tap `ANSWER BACK`, choose three emotes for the same phrase, preview, then send the reply.                                                                                                                                                                 |
+| Send Ghost Mail       | Tap `GHOST MAIL`, choose a recent real performer, then use the normal phrase, emote, preview, and send flow. No address or message entry is required.                                                                                                                               |
+| React in a live round | While watching an active round in the stage area, open `REACT`. Laugh, Gasp, and Applause replace the other actions, trigger one local emote and stamp, and relay once to the other players present.                                                                                |
+| How to play           | From the foyer, tap the top-right `HOW TO PLAY` control for five short instructions, then choose `SETTINGS` or `BACK`.                                                                                                                                                              |
+| Settings              | Open `HOW TO PLAY` from the foyer, then switch language, sound level, reduced motion, or large text for the current visit. Settings links back to `HOW TO PLAY`.                                                                                                                    |
+| Invite                | `COPY INVITE` copies a general World invitation configured in `src/shared/config.ts`; it does not route to a specific charade.                                                                                                                                                      |
 
 Desktop preview uses the normal Decentraland movement controls and the same on-screen game UI.
 
@@ -188,12 +198,12 @@ authored triangles, within the two declared parcels' 400-entity and 20,000-trian
 All shipped models, sounds, and UI textures are generated in-repository and committed, so normal installation does
 not require Blender, Python imaging/audio packages, or FFmpeg.
 
-| Pipeline | Command | Source and output |
-| --- | --- | --- |
+| Pipeline                  | Command                 | Source and output                                                            |
+| ------------------------- | ----------------------- | ---------------------------------------------------------------------------- |
 | Theater and reward models | `npm run assets:models` | `tools/blender/build_assets.py` -> `assets/models/*.glb` and `manifest.json` |
-| Room tone and show cues | `npm run assets:sounds` | `tools/audio/build_sounds.py` -> `assets/sounds/*.mp3` and `manifest.json` |
-| Playbill UI textures | `npm run assets:ui` | `tools/ui/build_textures.py` -> `assets/ui/*.png` and `manifest.json` |
-| Everything | `npm run assets` | Runs the three pipelines in the order above |
+| Room tone and show cues   | `npm run assets:sounds` | `tools/audio/build_sounds.py` -> `assets/sounds/*.mp3` and `manifest.json`   |
+| Playbill UI textures      | `npm run assets:ui`     | `tools/ui/build_textures.py` -> `assets/ui/*.png` and `manifest.json`        |
+| Everything                | `npm run assets`        | Runs the three pipelines in the order above                                  |
 
 The model script is wired to Blender 5.1 at
 `C:\Program Files\Blender Foundation\Blender 5.1\blender.exe`. The current generator toolchain was verified with
@@ -223,10 +233,12 @@ npm run start
 ```
 
 The final command launches the local Decentraland preview. The generated assets are already committed. The
-Decentraland SDK and runtime are pinned to `7.27.1-33086747846.commit-824d240` as an auth-server compatibility
-candidate. It is not device-accepted or release-approved: release-branch merge and deployment remain blocked on the
-exact-commit SDK gate in [`docs/DEVICE-CHECKLIST.md`](docs/DEVICE-CHECKLIST.md). Any later pin change restarts that
-gate.
+Decentraland SDK and runtime are pinned to `7.27.1-33086747846.commit-824d240`. Baseline commit `95d4f7e` and the
+live World entity `bafkreihblrzvm6t3flfwgjbmyybi5gs3dyyhw345iix3qc4nkc3ohlmiyu` already use that exact pin. The
+current committed wake, House Practice, opening, adaptive-reveal, and House-progression continuation is not
+device-accepted or release-approved; its release and deployment remain blocked on the same-commit gate in
+[`docs/DEVICE-CHECKLIST.md`](docs/DEVICE-CHECKLIST.md). Any later SDK pin change restarts the SDK-compatibility
+portion of that gate.
 
 ### Verified phone-preview QR
 
@@ -266,12 +278,14 @@ release gate; follow
 [`docs/DEVICE-CHECKLIST.md`](docs/DEVICE-CHECKLIST.md) for cold start, safe areas, sound latency, camera behavior,
 solo persistence, two-client rounds, and measured performance.
 
-`scene.json` configures the candidate for `ghostlight.dcl.eth`. That World currently serves an older published
-SDK 7.26.1 build, so opening it from Decentraland search does not test this SDK 7.27.1 repair candidate. The current
-checkout remains undeployed and is not device-accepted. Deploying this candidate remains blocked until the owner
-completes the device checklist, publishes absolute public repository/licence URLs, and verifies that production
-Storage rehydrates at least three genuine recent current-theme performances and a real Answer-Back duet after
-server sleep.
+`scene.json` configures the candidate for `ghostlight.dcl.eth`. The live World currently serves baseline entity
+`bafkreihblrzvm6t3flfwgjbmyybi5gs3dyyhw345iix3qc4nkc3ohlmiyu` on exact SDK
+`7.27.1-33086747846.commit-824d240`, so opening it from Decentraland search tests that published baseline rather
+than the current committed wake, House Practice, opening, adaptive-reveal, and House-progression continuation.
+This continuation remains undeployed and is not device-accepted. Deploying it remains blocked until the owner
+completes the same-commit device checklist, publishes absolute public repository/licence URLs, and verifies that
+production Storage rehydrates at least three genuine recent current-theme performances and a real Answer-Back duet
+after server sleep.
 
 Guests can decode but cannot author persistent ordinary posts, Answer-Back replies, or Ghost Mail. Durable titles,
 return reports, and authored performances require a signed-in Decentraland profile.

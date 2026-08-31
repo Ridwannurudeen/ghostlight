@@ -738,6 +738,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
 
   async function withRequestAdmission(address: string, kind: string, data: unknown, run: () => Promise<void>) {
     const key = canonicalAddress(address)
+    const admittedGeneration = sessionGeneration(key)
     const outstandingKey = `${key}:${sessionGenerations.get(key) ?? 0}`
     if (!takeRequestToken(address)) return
     if (!validApplicationPayload(data)) {
@@ -749,6 +750,20 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     outstandingRequests.set(outstandingKey, outstanding + 1)
     try {
       await ready
+      if (options.state.isReadOnly && present.has(key) && (kind === 'hello' || kind === 'ping')) {
+        try {
+          if (await options.state.recoverStorage()) {
+            for (const pending of welcomePromises.values()) cancelledWelcomePromises.add(pending)
+            welcomePromises.clear()
+            pendingWelcomeLooks.clear()
+            welcomed.clear()
+          }
+        } catch (error) {
+          console.error('[storage] recovery failed', error)
+        }
+        if (options.state.isReadOnly) return
+      }
+      if (sessionGeneration(key) !== admittedGeneration) return
       await run()
     } finally {
       const remaining = (outstandingRequests.get(outstandingKey) ?? 1) - 1
@@ -1257,6 +1272,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       present.add(key)
       sessionGenerations.set(key, ++nextSessionGeneration)
     }
+    if (options.state.isReadOnly) return
     await sendTo(address, 'ready', readyPayload())
   }
 
@@ -1345,39 +1361,37 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     await ready
     const generation = sessionGeneration(address)
     if (generation === null) return
+    const key = canonicalAddress(address)
+    if (!negotiated.has(key)) return
     const timestamp = now()
-    if (negotiated.has(canonicalAddress(address)) && !(await rolloverOrError(address, generation, timestamp))) return
+    if (!(await rolloverOrError(address, generation, timestamp))) return
     if (!isCurrentSession(address, generation)) return
     await sendTo(address, 'pong', { seq: data.seq })
     if (!isCurrentSession(address, generation)) return
-    if (negotiated.has(canonicalAddress(address))) {
-      await sendTo(address, 'showSchedule', showSchedulePayload(timestamp))
+    await sendTo(address, 'showSchedule', showSchedulePayload(timestamp))
+    if (!isCurrentSession(address, generation)) return
+    const announcement = rounds.announcementFor(address)
+    if (announcement) {
+      const showKey = currentShow?.policy.showKey ?? ''
+      await sendTo(address, 'roundStart', {
+        instanceId,
+        roundId: announcement.roundId,
+        charadeId: announcement.charadeId,
+        showKey
+      })
       if (!isCurrentSession(address, generation)) return
-      const announcement = rounds.announcementFor(address)
-      if (announcement) {
-        const showKey = currentShow?.policy.showKey ?? ''
-        await sendTo(address, 'roundStart', {
+      if (announcement.winner) {
+        await sendTo(address, 'roundWinner', {
           instanceId,
           roundId: announcement.roundId,
           charadeId: announcement.charadeId,
+          address: announcement.winner.address,
+          name: announcement.winner.name,
           showKey
         })
-        if (!isCurrentSession(address, generation)) return
-        if (announcement.winner) {
-          await sendTo(address, 'roundWinner', {
-            instanceId,
-            roundId: announcement.roundId,
-            charadeId: announcement.charadeId,
-            address: announcement.winner.address,
-            name: announcement.winner.name,
-            showKey
-          })
-        }
       }
     }
-    if (negotiated.has(canonicalAddress(address)) && !welcomed.has(canonicalAddress(address))) {
-      await ensureWelcome(address, generation)
-    }
+    if (!welcomed.has(key)) await ensureWelcome(address, generation)
   }
 
   function prepareCharade(charade: Charade | null, show: ActiveShow): PreparedCharade | null {
@@ -1725,8 +1739,13 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       await sendError(address, 'invalid-charade', data.requestId)
       return
     }
-    const countable =
-      !charade.isHouse && charade.recipient === undefined && !(look?.isGuest ?? true) && !charade.author.isGuest
+    if (options.state.isReadOnly) {
+      await sendError(address, 'storage-unavailable', data.requestId)
+      return
+    }
+    const progresses =
+      charade.recipient === undefined && !(look?.isGuest ?? true) && (charade.isHouse || !charade.author.isGuest)
+    const rankable = progresses && !charade.isHouse
     const notifyAuthor = !charade.isHouse && !(look?.isGuest ?? true) && !charade.author.isGuest
     let stats: Awaited<ReturnType<GhostlightState['getOrCreateStats']>>
     try {
@@ -1858,7 +1877,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
       }
       if (!charade.isHouse && !statsAfter.seen.includes(charade.id)) statsAfter.seen.push(charade.id)
       let stampAwarded = false
-      if (countable) {
+      if (progresses) {
         statsAfter.decoded = Math.min(statsAfter.decoded + 1, WIRE_INT_MAX)
         statsAfter.correct = Math.min(statsAfter.correct + (understood ? 1 : 0), WIRE_INT_MAX)
         stampAwarded = options.state.recordDailyDecode(statsAfter)
@@ -1874,7 +1893,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
         options.state.getPlayerProgress(authorAfter)
       }
       const currentCharade = options.state.getCharade(charade.id) ?? charade
-      const updatedCharade = countable
+      const updatedCharade = rankable
         ? {
             ...currentCharade,
             guesses: {
@@ -1971,7 +1990,7 @@ export function createServerProtocol(options: ServerProtocolOptions) {
     if (!isCurrentSession(address, generation)) return
     await sendTo(address, 'reveal', committed.reveal)
     if (committed.titleUnlocked) await broadcastTitleUnlock(address, committed.title)
-    if (countable) await refreshBoards()
+    if (rankable) await refreshBoards()
   }
 
   async function handlePost(data: PostPayloadInput, address: string) {

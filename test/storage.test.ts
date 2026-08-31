@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FLUSH_SECONDS } from '../src/shared/config'
+import { GhostlightState } from '../src/server/state'
 import {
   MAX_CHECKPOINT_FLUSHES,
   MAX_DIRTY_ENTRIES,
@@ -99,12 +100,12 @@ describe('storage reads', () => {
     const reads = Array.from({ length: 41 }, (_, index) =>
       repository.loadPlayerJSON(`player-${index}`, PLAYER_STATS_KEY, null)
     )
-    await vi.waitFor(() => expect(storage.activeHostCalls).toBe(32))
-    expect(storage.maxActiveHostCalls).toBe(32)
+    await vi.waitFor(() => expect(storage.activeHostCalls).toBe(24))
+    expect(storage.maxActiveHostCalls).toBe(24)
     gate.resolve()
 
     await expect(Promise.all(reads)).resolves.toEqual(Array.from({ length: 41 }, () => null))
-    expect(storage.maxActiveHostCalls).toBe(32)
+    expect(storage.maxActiveHostCalls).toBe(24)
   })
 
   it('reserves a released permit for the awakened waiter before admitting a new arrival', async () => {
@@ -148,12 +149,12 @@ describe('storage reads', () => {
 
     calls[0].resolve(JSON.stringify({ v: 1 }))
     await vi.waitFor(() => expect(newcomer).not.toBeNull())
-    expect(maxActive).toBe(32)
+    expect(maxActive).toBe(24)
 
     releaseNewCalls = true
     calls.slice(1).forEach((call) => call.resolve(JSON.stringify({ v: 1 })))
     await expect(Promise.all([...initial, waiting, newcomer!])).resolves.toHaveLength(34)
-    expect(maxActive).toBe(32)
+    expect(maxActive).toBe(24)
   })
 
   it('fails closed when both point reads and authoritative listings are unavailable', async () => {
@@ -178,6 +179,172 @@ describe('storage reads', () => {
 
     await expect(repository.loadJSON('malformed', null)).rejects.toBeInstanceOf(StorageCorruptError)
     await expect(repository.loadJSON('oversized', null)).rejects.toBeInstanceOf(StorageCorruptError)
+  })
+
+  it('bounds scene and player reads when the host never settles', async () => {
+    vi.useFakeTimers()
+    try {
+      const storage = new FakeStorage()
+      const repository = createStorageRepository(storage)
+      storage.readGate = new Promise<void>(() => undefined)
+      const sceneRead = repository.loadJSON('hung-scene', null)
+      const playerRead = repository.loadPlayerJSON('player', 'hung-player', null)
+      const sceneFailure = expect(sceneRead).rejects.toBeInstanceOf(StorageUnavailableError)
+      const playerFailure = expect(playerRead).rejects.toBeInstanceOf(StorageUnavailableError)
+
+      await vi.advanceTimersByTimeAsync(10_000)
+
+      await sceneFailure
+      await playerFailure
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reserves bounded host capacity for recovery after primary host calls never settle', async () => {
+    vi.useFakeTimers()
+    try {
+      const storage = new FakeStorage()
+      const repository = createStorageRepository(storage)
+      storage.readGate = new Promise<void>(() => undefined)
+      const primary = Promise.allSettled(
+        Array.from({ length: 24 }, (_, index) => repository.loadJSON(`primary-stuck-${index}`, null))
+      )
+
+      await vi.advanceTimersByTimeAsync(4_001)
+
+      expect((await primary).every((result) => result.status === 'rejected')).toBe(true)
+      expect(storage.activeHostCalls).toBe(24)
+      expect(storage.maxActiveHostCalls).toBe(24)
+      storage.readGate = null
+      const restored = new GhostlightState(repository, () => 0)
+
+      await restored.hydrate()
+
+      expect(restored.isReadOnly).toBe(false)
+      expect(storage.activeHostCalls).toBe(24)
+      expect(storage.maxActiveHostCalls).toBe(32)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('fails closed at 32 unresolved host calls when the recovery reserve also saturates', async () => {
+    vi.useFakeTimers()
+    try {
+      let recover = false
+      let started = 0
+      let active = 0
+      let maxActive = 0
+      const hostRead = () => {
+        started += 1
+        active += 1
+        maxActive = Math.max(maxActive, active)
+        if (!recover) return new Promise<never>(() => undefined)
+        return Promise.resolve(JSON.stringify({ v: 1 })).finally(() => {
+          active -= 1
+        })
+      }
+      const storage: StoragePort = {
+        get: hostRead,
+        getValues: hostRead,
+        set: async () => true,
+        player: {
+          get: async () => null,
+          getValues: async () => ({ data: [], pagination: { offset: 0, total: 0 } }),
+          set: async () => true
+        }
+      }
+      const repository = createStorageRepository(storage)
+      const primary = Promise.allSettled(
+        Array.from({ length: 24 }, (_, index) => repository.loadJSON(`circuit-primary-${index}`, null))
+      )
+
+      await vi.advanceTimersByTimeAsync(4_001)
+      expect((await primary).every((result) => result.status === 'rejected')).toBe(true)
+      const reserve = Promise.allSettled(
+        Array.from({ length: 8 }, (_, index) => repository.loadJSON(`circuit-reserve-${index}`, null))
+      )
+      await vi.advanceTimersByTimeAsync(4_001)
+
+      expect((await reserve).every((result) => result.status === 'rejected')).toBe(true)
+      expect(started).toBe(32)
+      expect(maxActive).toBe(32)
+
+      recover = true
+      const blockedRecovery = repository.loadJSON('circuit-open', null)
+      const blockedFailure = expect(blockedRecovery).rejects.toBeInstanceOf(StorageUnavailableError)
+      await vi.advanceTimersByTimeAsync(4_001)
+      await blockedFailure
+      expect(started).toBe(32)
+      expect(maxActive).toBe(32)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('moves directly from a timed-out point read to authoritative listing', async () => {
+    vi.useFakeTimers()
+    try {
+      const pointRead = new Promise<never>(() => undefined)
+      const get = vi.fn(async () => pointRead)
+      const getValues = vi.fn(async () => ({
+        data: [{ key: 'listed-after-timeout', value: JSON.stringify({ v: 1 }) }],
+        pagination: { offset: 0, total: 1 }
+      }))
+      const storage: StoragePort = {
+        get,
+        getValues,
+        set: async () => true,
+        player: {
+          get: async () => null,
+          getValues: async () => ({ data: [], pagination: { offset: 0, total: 0 } }),
+          set: async () => true
+        }
+      }
+      const repository = createStorageRepository(storage)
+      const read = repository.loadJSON('listed-after-timeout', null)
+      const recovered = expect(read).resolves.toEqual({ v: 1 })
+
+      await vi.advanceTimersByTimeAsync(8_000)
+
+      await recovered
+      expect(get).toHaveBeenCalledOnce()
+      expect(getValues).toHaveBeenCalledOnce()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('recovers a missing read by write-probing health when the SDK health get remains in flight', async () => {
+    vi.useFakeTimers()
+    try {
+      const values = new Map<string, unknown>()
+      const pending = new Promise<never>(() => undefined)
+      const storage: StoragePort = {
+        get: async (key) => (values.has(key) ? values.get(key)! : pending),
+        getValues: async () => ({ data: [], pagination: { offset: 0, total: 0 } }),
+        set: async (key, value) => {
+          values.set(key, value)
+          return true
+        },
+        player: {
+          get: async () => null,
+          getValues: async () => ({ data: [], pagination: { offset: 0, total: 0 } }),
+          set: async () => true
+        }
+      }
+      const repository = createStorageRepository(storage)
+      const fallback = { v: 1 }
+      const read = repository.loadJSON('missing-after-stall', fallback)
+      const recovered = expect(read).resolves.toBe(fallback)
+
+      await vi.advanceTimersByTimeAsync(9_000)
+
+      await recovered
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
@@ -215,6 +382,24 @@ describe('immediate durable writes', () => {
       keys: ['scene:required-journal']
     })
     expect(storage.writes).toHaveLength(3)
+  })
+
+  it('bounds an immediate durable write when the host never settles', async () => {
+    vi.useFakeTimers()
+    try {
+      const storage = new FakeStorage()
+      const repository = createStorageRepository(storage)
+      storage.writeGate = new Promise<void>(() => undefined)
+      const write = repository.saveJSONNow('hung-journal', { v: 1 })
+      const failure = expect(write).rejects.toMatchObject({ keys: ['scene:hung-journal'] })
+
+      await vi.advanceTimersByTimeAsync(7_000)
+
+      await failure
+      expect(storage.writes).toHaveLength(3)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

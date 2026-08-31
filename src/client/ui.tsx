@@ -71,6 +71,7 @@ export const REVEAL_VERTICAL_BUDGET = {
   panelPadding: 48,
   header: 92,
   bodyPadding: 12,
+  setStatus: 28,
   content: 222,
   verdict: 84,
   actions: 108,
@@ -152,6 +153,14 @@ function hasCurrentShowSchedule(
   policy: ReturnType<typeof showPolicyForTimestamp> = currentShowPolicy(state)
 ) {
   return state.ready && acceptedShowPolicy(policy, state.showKey, state.season) !== null
+}
+
+function hasCompletedCoreExperience(state: ClientFlowState) {
+  return state.progress.title !== '' || state.progress.daily.authored > 0
+}
+
+function hasCompletedFirstReveal(state: ClientFlowState) {
+  return hasCompletedCoreExperience(state) || state.progress.daily.decoded > 0 || state.progressRevision > 0
 }
 
 function copy(key: CopyKey, values: Record<string, string | number> = {}) {
@@ -275,7 +284,7 @@ function hintFor(state: ClientFlowState) {
     case 'foyer':
       return copy(canDecodeInCurrentRegion() ? 'hint.foyerStage' : 'hint.foyerFar')
     case 'decode':
-      return copy(state.retry ? 'hint.retry' : 'hint.decode')
+      return copy(canDecodeInCurrentRegion() ? (state.retry ? 'hint.retry' : 'hint.decode') : 'common.walkToStage')
     case 'reveal':
       return copy('hint.reveal')
     case 'author':
@@ -343,6 +352,7 @@ function screenShell(sentence: string, body: ReactEcs.JSX.Element, state: Client
 }
 
 function wakingScreen(state: ClientFlowState) {
+  const connectionTimedOut = state.errorCode === 'connection_timeout'
   return screenShell(
     copy('waking.title'),
     <UiEntity uiTransform={{ width: '100%', flex: 1, justifyContent: 'center', flexDirection: 'column' }}>
@@ -352,6 +362,53 @@ function wakingScreen(state: ClientFlowState) {
         font="monospace"
         color={COLORS.muted}
       />
+      {connectionTimedOut
+        ? actionButton(copy('waking.retry'), () => clientFlow.retryConnection(), false, 'secondary')
+        : null}
+      {connectionTimedOut && state.instanceId === ''
+        ? actionButton(copy('practice.open'), () => clientFlow.beginPractice(), false, 'secondary')
+        : null}
+    </UiEntity>,
+    state
+  )
+}
+
+function practiceScreen(state: ClientFlowState) {
+  const practice = state.practice
+  if (!practice) return wakingScreen(state)
+  const phrase = phraseText(practice.phraseId, getClientSettings().language)!
+  const performerBeat = practice.playing ? getPerformerBeatIndex() : null
+  const activeBeat =
+    performerBeat === null ? null : `${copy(BEAT_COPY_KEYS[performerBeat])} · ${copy(BEAT_ROLE_KEYS[performerBeat])}`
+  return screenShell(
+    copy('practice.assigned', { phrase }),
+    <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', justifyContent: 'center' }}>
+      <Label
+        value={copy('practice.title')}
+        fontSize={uiFontSize(22)}
+        font="monospace"
+        color={COLORS.gold}
+        textAlign="middle-left"
+        uiTransform={{ width: '100%', height: 52 }}
+      />
+      {activeBeat ? (
+        <Label
+          value={activeBeat}
+          fontSize={uiFontSize(17)}
+          font="monospace"
+          color={COLORS.bone}
+          textAlign="middle-left"
+          uiTransform={{ width: '100%', height: 46 }}
+        />
+      ) : null}
+      {actionButton(
+        copy(practice.playing ? 'practice.replay' : 'practice.start'),
+        () => (practice.playing ? clientFlow.replayPractice() : clientFlow.startPractice()),
+        false,
+        'secondary'
+      )}
+      {actionButton(copy('waking.retry'), () => clientFlow.retryConnection(), false, 'secondary')}
+      {actionButton(copy('common.back'), () => clientFlow.backFromPractice(), false, 'secondary')}
     </UiEntity>,
     state
   )
@@ -361,13 +418,15 @@ function foyerScreen(state: ClientFlowState) {
   const canDecode = canDecodeInCurrentRegion()
   const policy = currentShowPolicy(state)
   const showReady = hasCurrentShowSchedule(state, policy)
-  const canReact = showReady && canSpectatorReact(state) && canDecode
+  const advancedActionsUnlocked = hasCompletedCoreExperience(state)
+  const makeUnlocked = hasCompletedFirstReveal(state)
+  const canReact = advancedActionsUnlocked && showReady && canSpectatorReact(state) && canDecode
   const language = getClientSettings().language
   const weeklyLabel = showReady ? seasonZeroShowLabel(state.season, language) : null
   const showLabel = weeklyLabel ?? themeLabel(policy?.legacyTheme.id ?? state.theme, language)
   return screenShell(
     copy('foyer.title'),
-    state.reactionMenuOpen && showReady ? (
+    state.reactionMenuOpen && advancedActionsUnlocked && showReady ? (
       reactionMenu()
     ) : (
       <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column', justifyContent: 'center' }}>
@@ -387,27 +446,31 @@ function foyerScreen(state: ClientFlowState) {
         {canDecode
           ? actionButton(copy('foyer.decode'), () => clientFlow.requestNextCharade(), !showReady)
           : stageInstruction()}
-        {actionButton(
-          copy('foyer.make'),
-          () => clientFlow.beginAuthoring(),
-          state.playerIsGuest || !showReady,
-          'secondary'
-        )}
-        <UiEntity uiTransform={{ width: '100%', flexDirection: 'row' }}>
-          <UiEntity uiTransform={{ width: '49%', margin: '0 2% 0 0' }}>
-            {actionButton(
-              copy('foyer.mail'),
-              () => clientFlow.showMail(),
-              !showReady || !canSendMail(state),
+        {makeUnlocked
+          ? actionButton(
+              copy('foyer.make'),
+              () => clientFlow.beginAuthoring(),
+              state.playerIsGuest || !showReady,
               'secondary'
-            )}
+            )
+          : null}
+        {advancedActionsUnlocked ? (
+          <UiEntity uiTransform={{ width: '100%', flexDirection: 'row' }}>
+            <UiEntity uiTransform={{ width: '49%', margin: '0 2% 0 0' }}>
+              {actionButton(
+                copy('foyer.mail'),
+                () => clientFlow.showMail(),
+                !showReady || !canSendMail(state),
+                'secondary'
+              )}
+            </UiEntity>
+            <UiEntity uiTransform={{ width: '49%' }}>
+              {canReact
+                ? actionButton(copy('decode.react'), () => clientFlow.toggleReactionMenu(), false, 'secondary')
+                : actionButton(copy('foyer.boards'), () => clientFlow.showBoards(), false, 'secondary')}
+            </UiEntity>
           </UiEntity>
-          <UiEntity uiTransform={{ width: '49%' }}>
-            {canReact
-              ? actionButton(copy('decode.react'), () => clientFlow.toggleReactionMenu(), false, 'secondary')
-              : actionButton(copy('foyer.boards'), () => clientFlow.showBoards(), false, 'secondary')}
-          </UiEntity>
-        </UiEntity>
+        ) : null}
       </UiEntity>
     ),
     state
@@ -483,7 +546,8 @@ function decodeScreen(state: ClientFlowState) {
     .filter(({ index }) => state.retry?.removedAnswerIndex !== index)
   const waiting = state.pending.some((request) => request.kind === 'guess' || request.kind === 'roundGuess')
   const controlsDisabled = waiting || !showReady
-  const answersDisabled = controlsDisabled || (!state.retry && !hasPerformerCompletedSequence())
+  const answersDisabled =
+    controlsDisabled || !canDecodeInCurrentRegion() || (!state.retry && !hasPerformerCompletedSequence())
   const question = copy(charade.reply ? 'decode.questionMany' : 'decode.questionOne', { performers })
   const sentence = state.retry
     ? copy('decode.secondChance')
@@ -506,6 +570,11 @@ function decodeScreen(state: ClientFlowState) {
   const spotlightLabel = state.retry
     ? copy(state.retry.spotlight ? 'spotlight.retryOn' : 'spotlight.retryOff')
     : copy('spotlight.toggle')
+  const advancedActionsUnlocked = hasCompletedCoreExperience(state)
+  const activeBeatMeaning =
+    !advancedActionsUnlocked && performerBeat !== null
+      ? `${copy(BEAT_COPY_KEYS[performerBeat])} · ${copy(BEAT_ROLE_KEYS[performerBeat])}`
+      : null
   return screenShell(
     sentence,
     <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column' }}>
@@ -519,39 +588,60 @@ function decodeScreen(state: ClientFlowState) {
           uiTransform={{ width: '100%', height: 28 }}
         />
       ) : null}
-      <UiEntity uiTransform={{ width: '100%', height: 42, flexDirection: 'row', justifyContent: 'space-between' }}>
+      {activeBeatMeaning ? (
         <Label
-          value={label}
-          fontSize={uiFontSize(16)}
+          value={activeBeatMeaning}
+          fontSize={uiFontSize(17)}
           font="monospace"
-          color={charade.isHouse ? COLORS.gold : COLORS.muted}
+          color={COLORS.gold}
           textAlign="middle-left"
-          uiTransform={{ width: '34%', height: 42 }}
+          uiTransform={{ width: '100%', height: 42 }}
         />
-        <UiEntity uiTransform={{ width: '64%', height: 42, flexDirection: 'row', justifyContent: 'space-between' }}>
-          {BEAT_COPY_KEYS.map((key, index) => beatChip(key, performerBeat === index))}
+      ) : (
+        <UiEntity uiTransform={{ width: '100%', height: 42, flexDirection: 'row', justifyContent: 'space-between' }}>
+          <Label
+            value={label}
+            fontSize={uiFontSize(16)}
+            font="monospace"
+            color={charade.isHouse ? COLORS.gold : COLORS.muted}
+            textAlign="middle-left"
+            uiTransform={{ width: '34%', height: 42 }}
+          />
+          <UiEntity uiTransform={{ width: '64%', height: 42, flexDirection: 'row', justifyContent: 'space-between' }}>
+            {BEAT_COPY_KEYS.map((key, index) => beatChip(key, performerBeat === index))}
+          </UiEntity>
         </UiEntity>
-      </UiEntity>
-      <UiEntity uiTransform={{ width: '100%', flexDirection: 'row', justifyContent: 'space-between' }}>
-        <UiEntity uiTransform={{ width: '49%' }}>
-          {actionButton(
-            spotlightLabel,
-            () => clientFlow.toggleSpotlight(),
-            controlsDisabled || state.retry !== null,
-            state.spotlightEnabled ? 'primary' : 'secondary',
-            DECODE_BUTTON
-          )}
+      )}
+      {advancedActionsUnlocked ? (
+        <UiEntity uiTransform={{ width: '100%', flexDirection: 'row', justifyContent: 'space-between' }}>
+          <UiEntity uiTransform={{ width: '49%' }}>
+            {actionButton(
+              spotlightLabel,
+              () => clientFlow.toggleSpotlight(),
+              controlsDisabled || state.retry !== null,
+              state.spotlightEnabled ? 'primary' : 'secondary',
+              DECODE_BUTTON
+            )}
+          </UiEntity>
+          <UiEntity uiTransform={{ width: '49%' }}>
+            {actionButton(
+              copy('decode.replay'),
+              () => clientFlow.replay(),
+              controlsDisabled,
+              'secondary',
+              DECODE_BUTTON
+            )}
+          </UiEntity>
         </UiEntity>
-        <UiEntity uiTransform={{ width: '49%' }}>
-          {actionButton(copy('decode.replay'), () => clientFlow.replay(), controlsDisabled, 'secondary', DECODE_BUTTON)}
-        </UiEntity>
-      </UiEntity>
-      {answerOptions.map(({ answer, index }, optionIndex) =>
+      ) : (
+        actionButton(copy('decode.replay'), () => clientFlow.replay(), controlsDisabled, 'secondary', DECODE_BUTTON)
+      )}
+      {answerOptions.map(({ answer, index }) =>
         actionButton(
           answer.toUpperCase(),
           () => clientFlow.guess(index),
           answersDisabled,
-          optionIndex === 0 ? 'primary' : 'secondary',
+          'secondary',
           DECODE_BUTTON,
           `${charade.id}:${index}`
         )
@@ -640,9 +730,13 @@ function revealScreen(state: ClientFlowState) {
       : copy('decode.theGhost')
   const canDecode = canDecodeInCurrentRegion()
   const showReady = hasCurrentShowSchedule(state)
-  const canReply = presentation.answerRevealed && showReady && clientFlow.canAnswerBack()
-  const canReact = presentation.answerRevealed && showReady && canSpectatorReact(state) && canDecode
-  const actionCount = 2 + (canReply ? 1 : 0) + (canReact ? 1 : 0)
+  const advancedActionsUnlocked = hasCompletedCoreExperience(state)
+  const nextGhostVisible = state.playerIsGuest || advancedActionsUnlocked
+  const makeVisible = !state.playerIsGuest
+  const canReply = advancedActionsUnlocked && presentation.answerRevealed && showReady && clientFlow.canAnswerBack()
+  const canReact =
+    advancedActionsUnlocked && presentation.answerRevealed && showReady && canSpectatorReact(state) && canDecode
+  const actionCount = (nextGhostVisible ? 1 : 0) + (makeVisible ? 1 : 0) + (canReply ? 1 : 0) + (canReact ? 1 : 0)
   const actionWidth = actionCount === 4 ? '23.5%' : actionCount === 3 ? '32%' : '49%'
   const phrase = reveal ? (phraseText(reveal.phraseId, getClientSettings().language) ?? reveal.phrase) : ''
   const answers = state.charade ? localizedAnswers(state.charade) : []
@@ -651,12 +745,44 @@ function revealScreen(state: ClientFlowState) {
       ? copy('reveal.authorMeant', { author, phrase })
       : copy('reveal.answer')
     : copy('reveal.wait')
-  if (state.reactionMenuOpen && presentation.answerRevealed && showReady) {
+  const setStatus =
+    reveal?.setRound !== undefined &&
+    reveal.setSize !== undefined &&
+    reveal.setStreak !== undefined &&
+    reveal.setScore !== undefined
+      ? copy('set.status', {
+          round: reveal.setRound,
+          total: reveal.setSize,
+          streak: reveal.setStreak,
+          score: reveal.setScore
+        })
+      : state.charade?.setRound !== undefined &&
+          state.charade.setSize !== undefined &&
+          state.charade.setStreak !== undefined &&
+          state.charade.setScore !== undefined
+        ? copy('set.status', {
+            round: state.charade.setRound,
+            total: state.charade.setSize,
+            streak: state.charade.setStreak,
+            score: state.charade.setScore
+          })
+        : ''
+  if (state.reactionMenuOpen && advancedActionsUnlocked && presentation.answerRevealed && showReady) {
     return screenShell(sentence, reactionMenu(), state)
   }
   return screenShell(
     sentence,
     <UiEntity uiTransform={{ width: '100%', flex: 1, flexDirection: 'column' }}>
+      {setStatus ? (
+        <Label
+          value={setStatus}
+          fontSize={uiFontSize(17)}
+          font="monospace"
+          color={COLORS.gold}
+          textAlign="middle-left"
+          uiTransform={{ width: '100%', height: 28 }}
+        />
+      ) : null}
       {presentation.stats && reveal ? (
         <UiEntity
           uiTransform={{ width: '100%', height: 222, flexDirection: 'column', justifyContent: 'center' }}
@@ -717,15 +843,17 @@ function revealScreen(state: ClientFlowState) {
         />
       </UiEntity>
       <UiEntity uiTransform={{ width: '100%', flexDirection: 'row', justifyContent: 'space-between' }}>
-        <UiEntity uiTransform={{ width: actionWidth }}>
-          {canDecode
-            ? actionButton(
-                copy('reveal.next'),
-                () => clientFlow.requestNextCharade(),
-                !presentation.answerRevealed || !showReady
-              )
-            : stageInstruction()}
-        </UiEntity>
+        {nextGhostVisible ? (
+          <UiEntity uiTransform={{ width: actionWidth }}>
+            {canDecode
+              ? actionButton(
+                  copy('reveal.next'),
+                  () => clientFlow.requestNextCharade(),
+                  !presentation.answerRevealed || !showReady
+                )
+              : stageInstruction()}
+          </UiEntity>
+        ) : null}
         {canReply ? (
           <UiEntity uiTransform={{ width: actionWidth }}>
             {actionButton(copy('reveal.answerBack'), () => clientFlow.beginAnswerBack(), false, 'secondary')}
@@ -736,14 +864,16 @@ function revealScreen(state: ClientFlowState) {
             {actionButton(copy('decode.react'), () => clientFlow.toggleReactionMenu(), false, 'secondary')}
           </UiEntity>
         ) : null}
-        <UiEntity uiTransform={{ width: actionWidth }}>
-          {actionButton(
-            copy('foyer.make'),
-            () => clientFlow.beginAuthoring(),
-            state.playerIsGuest || !presentation.answerRevealed || !showReady,
-            'secondary'
-          )}
-        </UiEntity>
+        {makeVisible ? (
+          <UiEntity uiTransform={{ width: actionWidth }}>
+            {actionButton(
+              copy('foyer.make'),
+              () => clientFlow.beginAuthoring(),
+              !presentation.answerRevealed || !showReady,
+              'secondary'
+            )}
+          </UiEntity>
+        ) : null}
       </UiEntity>
     </UiEntity>,
     state
@@ -824,7 +954,7 @@ function authorScreen(state: ClientFlowState) {
   const posting = state.pending.some((request) => request.kind === 'post')
   const replying = !!author.replyTo
   const mailing = !!author.recipient
-  const touringConsentVisible = canToggleTouringConsent(author)
+  const touringConsentVisible = hasCompletedCoreExperience(state) && canToggleTouringConsent(author)
   const phrase = phraseText(author.phrase.id, getClientSettings().language) ?? author.phrase.text
   const visibleEmotes = author.offeredEmotes
   const activeBeat = Math.min(author.selectedEmotes.length, 2)
@@ -1450,6 +1580,8 @@ function currentScreen(state: ClientFlowState) {
   switch (state.screen) {
     case 'waking':
       return wakingScreen(state)
+    case 'practice':
+      return practiceScreen(state)
     case 'foyer':
       return foyerScreen(state)
     case 'since':

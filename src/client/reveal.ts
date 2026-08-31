@@ -27,6 +27,7 @@ export type RevealAudienceReaction = 'clap' | 'shrug' | 'laugh'
 export type RevealStatus = 'idle' | 'running' | 'complete'
 export type RevealRunOptions = {
   isFinale?: boolean
+  isSetStart?: boolean
 }
 
 export type RevealStats = {
@@ -475,7 +476,8 @@ export function createRevealController(
 
     const reducedMotion = options.reducedMotion?.() === true
     sequence = reducedMotion ? REDUCED_MOTION_REVEAL_SEQUENCE : STANDARD_REVEAL_SEQUENCE
-    adaptiveOrdinary = !reducedMotion && !firstVerdictPending && runOptions.isFinale !== true
+    adaptiveOrdinary =
+      !reducedMotion && !firstVerdictPending && runOptions.isFinale !== true && runOptions.isSetStart !== true
 
     generation += 1
     const runGeneration = generation

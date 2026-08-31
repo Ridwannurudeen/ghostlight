@@ -104,8 +104,14 @@ import { DECK, PLAYABLE_DECK, canonicalPerformance } from '../src/shared/deck'
 import { SEASON_ZERO_END_AT, SEASON_ZERO_WEEKS } from '../src/shared/seasons'
 import { showPolicyForTimestamp } from '../src/shared/show-policy'
 import { createServerProtocol, type ProtocolSend } from '../src/server/server'
-import { GhostlightState } from '../src/server/state'
-import { PLAYER_STATS_KEY, createStorageRepository } from '../src/server/storage'
+import { GhostlightState, dayKey } from '../src/server/state'
+import {
+  PLAYER_STATS_KEY,
+  RECENT_VISITORS_KEY,
+  charadeKey,
+  createStorageRepository,
+  indexKey
+} from '../src/server/storage'
 import { FIXED_NOW, FakeStorage, deferred, makeCharade, makeLook, makeStats } from './test-helpers'
 
 type FlowRuntime = ReturnType<typeof createFlowRuntime>
@@ -342,6 +348,76 @@ function completeGhostSequence() {
 }
 
 describe('full experience integration', () => {
+  it('rehydrates transient house-only startup on a later heartbeat and refreshes persisted progress', async () => {
+    const playerAddress = '0xRecoveryPlayer'
+    let timestamp = FIXED_NOW
+    const storage = new FakeStorage()
+    const persisted = makeCharade('recovered-charade')
+    storage.putJSON(indexKey(dayKey(FIXED_NOW)), [persisted.id])
+    storage.putJSON(charadeKey(persisted.id), persisted)
+    storage.putPlayerJSON(
+      playerAddress.toLowerCase(),
+      PLAYER_STATS_KEY,
+      makeStats({ decoded: 7, correct: 5, daily: { day: '2026-08-23', decoded: 7, authored: 0, stamped: false } })
+    )
+    storage.getErrors.add(charadeKey(persisted.id))
+    storage.getValuesErrors.add(charadeKey(persisted.id))
+    const repository = createStorageRepository(storage)
+    const state = new GhostlightState(repository, () => timestamp)
+    await state.hydrate()
+    const writesAfterHydration = storage.writes.length
+
+    const room = new FakeRoom()
+    let transportReady = false
+    const runtime = createFlowRuntime({
+      send: room.senderFor(playerAddress),
+      now: () => FIXED_NOW,
+      createRequestId: () => 'recovery-request',
+      getProfile: () => ({ address: playerAddress, name: 'Recovery Player', isGuest: false }),
+      getLook: () => makeLook(playerAddress, 'Recovery Player'),
+      isTransportReady: () => transportReady
+    })
+    const protocol = createServerProtocol({
+      state,
+      send: room.sendFromServer,
+      snapshotLook: async (address) => makeLook(address, 'Recovery Player'),
+      flush: repository.flushNow,
+      now: () => FIXED_NOW,
+      instanceId: 'storage-recovery-server',
+      lookAttempts: 1,
+      lookRetryMilliseconds: 0
+    })
+    room.connectProtocol(protocol)
+    room.connectClient(playerAddress, runtime)
+    await protocol.handleEnter(playerAddress)
+    transportReady = true
+    runtime.tick(0)
+    await room.pumpClient(playerAddress)
+
+    expect(state.isReadOnly).toBe(true)
+    expect(state.getPool()).toEqual([])
+    expect(runtime.getState()).toMatchObject({ ready: false, screen: 'waking', progress: { daily: { decoded: 0 } } })
+    expect(storage.writes).toHaveLength(writesAfterHydration)
+
+    storage.getErrors.clear()
+    storage.getValuesErrors.clear()
+    timestamp += 2_000
+    runtime.tick(10)
+    await room.pumpClient(playerAddress)
+
+    expect(state.isReadOnly).toBe(false)
+    expect(state.getPool()).toEqual([persisted])
+    expect(runtime.getState()).toMatchObject({ ready: true, progress: { daily: { decoded: 7 } } })
+    const recoveryWrites = storage.writes.slice(writesAfterHydration).map(({ scope, key }) => ({ scope, key }))
+    expect(recoveryWrites).toHaveLength(2)
+    expect(recoveryWrites).toEqual(
+      expect.arrayContaining([
+        { scope: 'scene', key: RECENT_VISITORS_KEY },
+        { scope: 'player', key: PLAYER_STATS_KEY }
+      ])
+    )
+  })
+
   it('closes opening through answer-back and invite while preserving cold-start and avatar budgets', async () => {
     const playerAddress = '0xDecoder'
     const replierAddress = '0xReplier'
@@ -488,12 +564,12 @@ describe('full experience integration', () => {
     const theme = themeForTimestamp(timestamp)
     expect(openingEvents).toEqual([
       'camera:foyer',
+      `instruction:${OPENING_INSTRUCTION}`,
       `marquee:TONIGHT'S SHOW: ${theme.label}`,
       'doors:open',
       'camera:stage',
-      'performer:enter',
-      `instruction:${OPENING_INSTRUCTION}`,
-      'decode'
+      'decode',
+      'performer:enter'
     ])
     expect(opening.isRunning()).toBe(false)
 

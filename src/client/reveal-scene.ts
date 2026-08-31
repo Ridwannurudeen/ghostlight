@@ -248,7 +248,7 @@ export function createSceneRevealController(audio: RevealAudioPort, clock?: Reve
         answers:
           charade.answerIds?.map((id, index) => phraseText(id, language) ?? charade.answers[index]) ?? charade.answers
       }
-      controller.begin(runOptions)
+      controller.begin({ ...runOptions, isSetStart: charade.setRound === 1 })
     },
     resolve(reveal: RevealResult, charade: DecodeCharade) {
       const presentation = presentationFor(reveal, charade)

@@ -1,13 +1,22 @@
 import { describe, expect, it, vi } from 'vitest'
-import { DECK, EMOTE_VOCABULARY, PLAYABLE_DECK, authorBeatChoices, canonicalPerformance } from '../src/shared/deck'
+import {
+  DECK,
+  EMOTE_VOCABULARY,
+  HOUSE_CHARADE,
+  PLAYABLE_DECK,
+  authorBeatChoices,
+  canonicalPerformance
+} from '../src/shared/deck'
 import { showPolicyForTimestamp } from '../src/shared/show-policy'
 import { SEASON_ZERO_WEEKS } from '../src/shared/seasons'
 import {
   canSpectatorReact,
   canToggleTouringConsent,
+  clientFlow,
   createFlowRuntime,
   createInitialFlowState,
   flowReducer,
+  startClientFlow,
   type DecodeCharade,
   type OutboundMessage,
   type ServerMessage
@@ -24,6 +33,13 @@ const diagnostics = vi.hoisted(() => ({
   recordServerReady: vi.fn(),
   recordDisconnect: vi.fn(),
   recordRecovery: vi.fn()
+}))
+
+const network = vi.hoisted(() => ({
+  send: vi.fn(),
+  onMessage: vi.fn(),
+  onReady: vi.fn(),
+  isReady: vi.fn(() => false)
 }))
 
 vi.mock('../src/client/diagnostics', () => ({
@@ -52,14 +68,7 @@ vi.mock('@dcl/sdk/ecs', () => ({
   }
 }))
 
-vi.mock('@dcl/sdk/network', () => ({
-  registerMessages: () => ({
-    send: vi.fn(),
-    onMessage: vi.fn(),
-    onReady: vi.fn(),
-    isReady: () => false
-  })
-}))
+vi.mock('@dcl/sdk/network', () => ({ registerMessages: () => network }))
 
 vi.mock('@dcl/sdk/src/players', () => ({
   getPlayer: () => null
@@ -115,7 +124,9 @@ function createFlowHarness(
     canAdvanceReveal: vi.fn(() => true),
     skipReveal: vi.fn(() => true),
     cancelReveal: vi.fn(),
-    cancelOpening: vi.fn()
+    cancelOpening: vi.fn(),
+    acquirePracticeCamera: vi.fn(),
+    releasePracticeCamera: vi.fn()
   }
   const runtime = createFlowRuntime({
     send: (message) => {
@@ -144,6 +155,7 @@ function createFlowHarness(
     },
     setTransportReady(ready: boolean) {
       transportReady = ready
+      runtime.setTransportReady(ready)
     }
   }
 }
@@ -291,7 +303,7 @@ describe('flow reducer', () => {
     expect(flowReducer(state, { type: 'toggleReactionMenu' }).reactionMenuOpen).toBe(false)
   })
 
-  it('preserves the active screen through heartbeat loss and recovery', () => {
+  it('preserves the active screen through heartbeat loss until authoritative ready', () => {
     const charade = makeDecodeCharade()
     let state = flowReducer(createInitialFlowState(), {
       type: 'ready',
@@ -305,6 +317,9 @@ describe('flow reducer', () => {
     expect(state).toMatchObject({ ready: false, screen: 'waking', resumeScreen: 'decode' })
 
     state = flowReducer(state, { type: 'pong', now: FIXED_NOW + 1 })
+    expect(state).toMatchObject({ ready: false, screen: 'waking', resumeScreen: 'decode' })
+
+    state = flowReducer(state, { type: 'ready', instanceId: 'one', serverTime: FIXED_NOW + 2, now: FIXED_NOW + 2 })
     expect(state).toMatchObject({ ready: true, screen: 'decode', resumeScreen: null })
   })
 
@@ -1141,6 +1156,85 @@ describe('flow lifecycle', () => {
 })
 
 describe('heartbeats and request retries', () => {
+  it('cancels the cold opening once when its initial charade request fails', () => {
+    const { runtime, effects } = createFlowHarness()
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    receiveShowSchedule(runtime, FIXED_NOW)
+    effects.cancelOpening.mockClear()
+    expect(runtime.requestNextCharade()).toBe(true)
+    const requestId = runtime.getState().pending[0].requestId
+
+    runtime.receive({ type: 'requestError', data: { code: 'temporary-failure', requestId } })
+    runtime.receive({ type: 'requestError', data: { code: 'temporary-failure', requestId } })
+
+    expect(effects.cancelOpening).toHaveBeenCalledTimes(1)
+    expect(runtime.getState()).toMatchObject({ pending: [], errorCode: 'temporary-failure' })
+  })
+
+  it('cancels the cold opening once when its initial charade request exhausts retry', () => {
+    const { runtime, effects, advance } = createFlowHarness()
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    receiveShowSchedule(runtime, FIXED_NOW)
+    effects.cancelOpening.mockClear()
+    expect(runtime.requestNextCharade()).toBe(true)
+
+    advance(5_000)
+    advance(5_000)
+    advance(5_000)
+
+    expect(effects.cancelOpening).toHaveBeenCalledTimes(1)
+    expect(runtime.getState()).toMatchObject({ pending: [], errorCode: 'request_timeout' })
+  })
+
+  it('cancels the cold opening once when its initial charade response is malformed', () => {
+    const { runtime, effects } = createFlowHarness()
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    receiveShowSchedule(runtime, FIXED_NOW)
+    effects.cancelOpening.mockClear()
+    expect(runtime.requestNextCharade()).toBe(true)
+    const requestId = runtime.getState().pending[0].requestId
+    const malformed = { ...makeDecodeCharade(), emotes: ['wave', 'clap'] }
+
+    runtime.receive({ type: 'charade', data: { ...malformed, requestId } })
+    runtime.receive({ type: 'charade', data: { ...malformed, requestId } })
+
+    expect(effects.cancelOpening).toHaveBeenCalledTimes(1)
+    expect(effects.showPerformer).not.toHaveBeenCalled()
+    expect(runtime.getState()).toMatchObject({ charade: null, pending: [], errorCode: 'invalid_charade' })
+  })
+
+  it.each(['request error', 'retry exhaustion', 'malformed response'] as const)(
+    'does not cancel valid playback when a later charade request ends through %s',
+    (failure) => {
+      const { runtime, effects, advance } = createFlowHarness()
+      runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+      const charade = makeDecodeCharade('playing')
+      serveCharade(runtime, charade)
+      effects.cancelOpening.mockClear()
+      effects.cancelReveal.mockClear()
+      effects.clearPerformer.mockClear()
+      expect(runtime.requestNextCharade()).toBe(true)
+      const requestId = runtime.getState().pending[0].requestId
+
+      if (failure === 'request error') {
+        runtime.receive({ type: 'requestError', data: { code: 'temporary-failure', requestId } })
+      } else if (failure === 'retry exhaustion') {
+        advance(5_000)
+        advance(5_000)
+      } else {
+        runtime.receive({
+          type: 'charade',
+          data: { ...makeDecodeCharade('later-malformed'), emotes: ['wave', 'clap'], requestId }
+        })
+      }
+
+      expect(effects.cancelOpening).not.toHaveBeenCalled()
+      expect(effects.cancelReveal).not.toHaveBeenCalled()
+      expect(effects.clearPerformer).not.toHaveBeenCalled()
+      expect(runtime.getState()).toMatchObject({ screen: 'decode', charade: { id: 'playing' } })
+    }
+  )
+
   it('records only verified disconnect and recovery transitions after the first ready', () => {
     const { runtime } = createFlowHarness()
 
@@ -1152,7 +1246,9 @@ describe('heartbeats and request retries', () => {
     expect(diagnostics.recordDisconnect).toHaveBeenCalledTimes(1)
 
     runtime.receive({ type: 'pong', data: { seq: 1 } })
-    runtime.receive({ type: 'pong', data: { seq: 2 } })
+    expect(diagnostics.recordRecovery).not.toHaveBeenCalled()
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW + 1 } })
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW + 2 } })
     expect(diagnostics.recordRecovery).toHaveBeenCalledTimes(1)
   })
 
@@ -1262,7 +1358,7 @@ describe('heartbeats and request retries', () => {
     runtime.receive({ type: 'error', data: { code: 'protocol-required' } })
     expect(messagesOfType(sent, 'hello').at(-1)?.data.displayName).toBe('PLAYER')
   })
-  it('moves to waking after a heartbeat timeout and recovers the previous screen on pong', () => {
+  it('moves to waking after a heartbeat timeout and recovers only on authoritative ready', () => {
     const { runtime, sent, advance } = createFlowHarness()
     runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
     serveCharade(runtime, makeDecodeCharade())
@@ -1273,11 +1369,16 @@ describe('heartbeats and request retries', () => {
     expect(messagesOfType(sent, 'ping')).toHaveLength(1)
 
     runtime.receive({ type: 'pong', data: { seq: 1 } })
-    expect(runtime.getState()).toMatchObject({ ready: true, screen: 'decode', resumeScreen: null })
+    expect(runtime.getState()).toMatchObject({ ready: false, screen: 'waking', resumeScreen: 'decode' })
     expect(messagesOfType(sent, 'hello')).toHaveLength(1)
 
     runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
-    expect(runtime.getState()).toMatchObject({ ready: true, screen: 'decode', charade: { id: 'charade-1' } })
+    expect(runtime.getState()).toMatchObject({
+      ready: true,
+      screen: 'decode',
+      resumeScreen: null,
+      charade: { id: 'charade-1' }
+    })
   })
 
   it('fetches a round announced during heartbeat recovery after decode resumes', () => {
@@ -1291,8 +1392,8 @@ describe('heartbeats and request retries', () => {
     expect(messagesOfType(sent, 'nextCharade')).toHaveLength(0)
     runtime.receive({ type: 'pong', data: { seq: 1 } })
 
-    expect(runtime.getState()).toMatchObject({ screen: 'decode', roundCharadeId: 'live' })
-    expect(messagesOfType(sent, 'nextCharade')).toHaveLength(1)
+    expect(runtime.getState()).toMatchObject({ screen: 'waking', roundCharadeId: 'live' })
+    expect(messagesOfType(sent, 'nextCharade')).toHaveLength(0)
     runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
     expect(messagesOfType(sent, 'nextCharade')).toHaveLength(1)
   })
@@ -1335,6 +1436,253 @@ describe('heartbeats and request retries', () => {
 
     expect(messagesOfType(sent, 'hello')).toHaveLength(2)
     expect(messagesOfType(sent, 'ping')).toHaveLength(2)
+  })
+
+  it('surfaces a recoverable timeout when the transport connects but the server never becomes ready', () => {
+    const { runtime, sent, advance } = createFlowHarness()
+    const listener = vi.fn()
+    runtime.subscribe(listener)
+
+    runtime.tick(0)
+    advance(12_000, 12)
+
+    expect(runtime.getState()).toMatchObject({
+      ready: false,
+      transportReady: true,
+      screen: 'waking',
+      errorCode: 'connection_timeout'
+    })
+    const updatesAfterTimeout = listener.mock.calls.length
+    advance(1_000, 1)
+    expect(listener).toHaveBeenCalledTimes(updatesAfterTimeout)
+
+    const helloCount = messagesOfType(sent, 'hello').length
+    const pingCount = messagesOfType(sent, 'ping').length
+    expect(runtime.retryConnection()).toBe(true)
+    expect(runtime.getState().errorCode).toBe('')
+    expect(messagesOfType(sent, 'hello')).toHaveLength(helloCount + 1)
+    expect(messagesOfType(sent, 'ping')).toHaveLength(pingCount + 1)
+
+    advance(12_000, 12)
+    expect(runtime.getState().errorCode).toBe('connection_timeout')
+    runtime.receive({ type: 'ready', data: { instanceId: 'recovered', serverTime: FIXED_NOW + 25_000 } })
+    expect(runtime.getState()).toMatchObject({ ready: true, errorCode: '' })
+    expect(runtime.retryConnection()).toBe(false)
+  })
+
+  it('times out even when the initial transport never becomes ready', () => {
+    const { runtime, sent, advance } = createFlowHarness({ transportReady: false })
+
+    runtime.tick(0)
+    advance(12_000, 12)
+
+    expect(sent).toEqual([])
+    expect(runtime.getState()).toMatchObject({
+      ready: false,
+      transportReady: false,
+      screen: 'waking',
+      errorCode: 'connection_timeout'
+    })
+  })
+
+  it('times out when room readiness arrives directly but authoritative ready never does', () => {
+    const { runtime, sent, advance, setTransportReady } = createFlowHarness({ transportReady: false })
+
+    setTransportReady(true)
+    expect(messagesOfType(sent, 'hello')).toHaveLength(1)
+    expect(messagesOfType(sent, 'ping')).toHaveLength(1)
+    advance(12_000, 12)
+
+    expect(runtime.getState()).toMatchObject({
+      ready: false,
+      transportReady: true,
+      screen: 'waking',
+      errorCode: 'connection_timeout'
+    })
+  })
+
+  it('starts a fresh authoritative-ready timeout across transport loss and reconnect', () => {
+    const { runtime, advance, setTransportReady } = createFlowHarness()
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+
+    setTransportReady(false)
+    advance(12_000, 12)
+    expect(runtime.getState()).toMatchObject({
+      ready: false,
+      transportReady: false,
+      screen: 'waking',
+      errorCode: 'connection_timeout'
+    })
+
+    setTransportReady(true)
+    expect(runtime.getState()).toMatchObject({ ready: false, transportReady: true, errorCode: '' })
+    advance(12_000, 12)
+    expect(runtime.getState()).toMatchObject({ ready: false, errorCode: 'connection_timeout' })
+  })
+
+  it('never accepts pong as authoritative readiness before ready or while transport is down', () => {
+    const { runtime, advance, setTransportReady } = createFlowHarness()
+
+    runtime.receive({ type: 'pong', data: { seq: 1 } })
+    expect(runtime.getState()).toMatchObject({ ready: false, screen: 'waking', lastHeartbeatAt: 0 })
+
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    setTransportReady(false)
+    runtime.receive({ type: 'pong', data: { seq: 2 } })
+    expect(runtime.getState()).toMatchObject({ ready: false, transportReady: false, screen: 'waking' })
+
+    advance(12_000, 12)
+    expect(runtime.getState().errorCode).toBe('connection_timeout')
+  })
+
+  it('cancels and clears an active cold opening as soon as transport drops', () => {
+    const { runtime, effects, setTransportReady } = createFlowHarness()
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    receiveShowSchedule(runtime, FIXED_NOW)
+    effects.cancelOpening.mockReturnValueOnce(true)
+    effects.cancelOpening.mockClear()
+    effects.clearPerformer.mockClear()
+    effects.clearStageReward.mockClear()
+    expect(runtime.requestOpeningCharade()).toBe(true)
+    const pending = runtime.getState().pending[0]
+
+    setTransportReady(false)
+
+    expect(runtime.getState()).toMatchObject({ ready: false, screen: 'waking', pending: [pending] })
+    expect(effects.cancelOpening).toHaveBeenCalledTimes(1)
+    expect(effects.clearPerformer).toHaveBeenCalledTimes(1)
+    expect(effects.clearStageReward).toHaveBeenCalledTimes(1)
+  })
+
+  it('cleans a pending reveal on transport loss and restarts it once after same-instance ready', () => {
+    const { runtime, effects, setTransportReady } = createFlowHarness()
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    receiveShowSchedule(runtime, FIXED_NOW)
+    const charade = makeDecodeCharade('resume-reveal')
+    serveCharade(runtime, charade)
+    expect(runtime.guess(1)).toBe(true)
+    const pending = runtime.getState().pending.find((request) => request.kind === 'guess')!
+    expect(effects.beginReveal).toHaveBeenCalledTimes(1)
+    effects.cancelReveal.mockClear()
+    effects.clearPerformer.mockClear()
+    effects.clearStageReward.mockClear()
+
+    setTransportReady(false)
+
+    expect(runtime.getState()).toMatchObject({ ready: false, screen: 'waking', pending: [pending] })
+    expect(effects.cancelReveal).toHaveBeenCalledTimes(1)
+    expect(effects.clearPerformer).toHaveBeenCalledTimes(1)
+    expect(effects.clearStageReward).toHaveBeenCalledTimes(1)
+
+    effects.showPerformer.mockClear()
+    effects.showStageReward.mockClear()
+    effects.beginReveal.mockClear()
+    setTransportReady(true)
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+
+    expect(runtime.getState()).toMatchObject({ ready: true, screen: 'decode', pending: [pending] })
+    expect(effects.showPerformer).toHaveBeenCalledWith(charade.look, charade.emotes)
+    expect(effects.showStageReward).toHaveBeenCalledWith(charade.authorAddress, charade.authorTitle)
+    expect(effects.beginReveal).toHaveBeenCalledWith(charade, 1)
+
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    expect(effects.beginReveal).toHaveBeenCalledTimes(1)
+  })
+
+  it('runs fixed House practice after timeout without gameplay requests or progression', () => {
+    const { runtime, sent, effects, advance } = createFlowHarness({ transportReady: false })
+    expect(runtime.beginPractice()).toBe(false)
+
+    runtime.tick(0)
+    advance(12_000, 12)
+    const authoritativeBefore = structuredClone({
+      progress: runtime.getState().progress,
+      progressRevision: runtime.getState().progressRevision,
+      notices: runtime.getState().notices,
+      charade: runtime.getState().charade,
+      reveal: runtime.getState().reveal,
+      pending: runtime.getState().pending,
+      boards: runtime.getState().boards,
+      ghostOfNight: runtime.getState().ghostOfNight
+    })
+    sent.length = 0
+    expect(runtime.beginPractice()).toBe(true)
+    expect(runtime.getState()).toMatchObject({
+      ready: false,
+      screen: 'practice',
+      practice: { phraseId: HOUSE_CHARADE.phraseId, emotes: HOUSE_CHARADE.emotes, playing: false }
+    })
+    expect(effects.showPerformer).not.toHaveBeenCalled()
+
+    expect(runtime.startPractice()).toBe(true)
+    expect(effects.acquirePracticeCamera).toHaveBeenCalledTimes(1)
+    expect(effects.showPerformer).toHaveBeenCalledWith(HOUSE_CHARADE.author, HOUSE_CHARADE.emotes)
+    expect(effects.acquirePracticeCamera.mock.invocationCallOrder[0]).toBeLessThan(
+      effects.showPerformer.mock.invocationCallOrder[0]
+    )
+    expect(sent).toEqual([])
+
+    expect(runtime.replayPractice()).toBe(true)
+    expect(effects.replayPerformer).toHaveBeenCalledTimes(1)
+    expect(runtime.backFromPractice()).toBe(true)
+    expect(effects.releasePracticeCamera).toHaveBeenCalledTimes(1)
+    expect(effects.clearPerformer).toHaveBeenCalledTimes(1)
+    expect(runtime.getState()).toMatchObject({ screen: 'waking', practice: null, errorCode: 'connection_timeout' })
+    expect({
+      progress: runtime.getState().progress,
+      progressRevision: runtime.getState().progressRevision,
+      notices: runtime.getState().notices,
+      charade: runtime.getState().charade,
+      reveal: runtime.getState().reveal,
+      pending: runtime.getState().pending,
+      boards: runtime.getState().boards,
+      ghostOfNight: runtime.getState().ghostOfNight
+    }).toEqual(authoritativeBefore)
+    expect(sent).toEqual([])
+  })
+
+  it('retries authority from practice with handshake traffic only', () => {
+    const { runtime, sent, advance } = createFlowHarness()
+    runtime.tick(0)
+    advance(12_000, 12)
+    expect(runtime.beginPractice()).toBe(true)
+    sent.length = 0
+
+    expect(runtime.retryConnection()).toBe(true)
+
+    expect(sent.map((message) => message.type)).toEqual(['hello', 'ping'])
+    expect(runtime.getState()).toMatchObject({ ready: false, screen: 'practice', errorCode: '' })
+  })
+
+  it('clears local practice and its performer when authoritative ready arrives', () => {
+    const { runtime, effects, advance } = createFlowHarness()
+    runtime.tick(0)
+    advance(12_000, 12)
+    expect(runtime.beginPractice()).toBe(true)
+    expect(runtime.startPractice()).toBe(true)
+    effects.clearPerformer.mockClear()
+
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+
+    expect(runtime.getState()).toMatchObject({ ready: true, screen: 'foyer', practice: null })
+    expect(effects.releasePracticeCamera).toHaveBeenCalledTimes(1)
+    expect(effects.clearPerformer).toHaveBeenCalledTimes(1)
+  })
+
+  it('clears local practice and releases its camera when transport drops mid-practice', () => {
+    const { runtime, effects, advance, setTransportReady } = createFlowHarness()
+    runtime.tick(0)
+    advance(12_000, 12)
+    expect(runtime.beginPractice()).toBe(true)
+    expect(runtime.startPractice()).toBe(true)
+    effects.clearPerformer.mockClear()
+    effects.releasePracticeCamera.mockClear()
+
+    setTransportReady(false)
+
+    expect(runtime.getState()).toMatchObject({ ready: false, screen: 'waking', practice: null })
+    expect(effects.releasePracticeCamera).toHaveBeenCalledTimes(1)
+    expect(effects.clearPerformer).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -2119,6 +2467,29 @@ describe('author controls and request guards', () => {
     serveCharade(runtime, makeDecodeCharade())
     inDecodeArea = false
     expect(runtime.guess(0)).toBe(false)
+  })
+
+  it('lets only the opening fetch outside the decode area while keeping its answers locked', () => {
+    let inDecodeArea = false
+    const { runtime, sent, effects } = createFlowHarness({ canDecode: () => inDecodeArea })
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
+    receiveShowSchedule(runtime, FIXED_NOW)
+    effects.cancelOpening.mockClear()
+
+    expect(runtime.requestNextCharade()).toBe(false)
+    expect(runtime.requestOpeningCharade()).toBe(true)
+    expect(runtime.requestOpeningCharade()).toBe(false)
+    expect(messagesOfType(sent, 'nextCharade')).toHaveLength(1)
+    serveCharade(runtime, makeDecodeCharade('opening-outside'))
+
+    expect(effects.showPerformer).toHaveBeenCalledTimes(1)
+    expect(runtime.getState()).toMatchObject({ screen: 'decode', charade: { id: 'opening-outside' } })
+    expect(runtime.requestOpeningCharade()).toBe(false)
+    expect(runtime.guess(0)).toBe(false)
+    expect(runtime.getState().pending).toEqual([])
+
+    inDecodeArea = true
+    expect(runtime.guess(0)).toBe(true)
   })
 
   it('waits for the full three-beat performance before the first guess but permits the retry', () => {
@@ -3204,13 +3575,16 @@ describe('second-chance client flow', () => {
     expect(messagesOfType(sent, 'nextCharade').at(-1)?.data.exclude).toEqual(['charade-1'])
   })
 
-  it('preserves retry across a heartbeat-only timeout and pong', () => {
+  it('preserves retry across a heartbeat-only timeout until authoritative ready', () => {
     const harness = createFlowHarness()
     const { runtime } = harness
     enterRetry(harness, 0, 1)
 
     runtime.dispatch({ type: 'heartbeatTimeout' })
     runtime.receive({ type: 'pong', data: { seq: 1 } })
+
+    expect(runtime.getState()).toMatchObject({ screen: 'waking', ready: false, retry: { charadeId: 'charade-1' } })
+    runtime.receive({ type: 'ready', data: { instanceId: 'server', serverTime: FIXED_NOW } })
 
     expect(runtime.getState()).toMatchObject({
       screen: 'decode',
@@ -3242,5 +3616,19 @@ describe('second-chance client flow', () => {
       roundCharadeId: 'new-live-charade'
     })
     expect(messagesOfType(sent, 'nextCharade')).toHaveLength(nextRequestsBefore)
+  })
+})
+
+describe('room transport boundary', () => {
+  it('routes direct room readiness through the watchdog-aware runtime entry point', () => {
+    startClientFlow()
+    const onReady = network.onReady.mock.calls[0]?.[0] as ((ready: boolean) => void) | undefined
+    expect(onReady).toBeTypeOf('function')
+
+    onReady?.(true)
+    expect(clientFlow.getState()).toMatchObject({ ready: false, transportReady: true, screen: 'waking' })
+
+    onReady?.(false)
+    expect(clientFlow.getState()).toMatchObject({ ready: false, transportReady: false, screen: 'waking' })
   })
 })

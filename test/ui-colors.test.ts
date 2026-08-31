@@ -30,6 +30,11 @@ const uiActions = vi.hoisted(() => ({
   beginGhostMail: vi.fn(),
   beginAuthoring: vi.fn(),
   requestNextCharade: vi.fn(),
+  retryConnection: vi.fn(),
+  beginPractice: vi.fn(),
+  startPractice: vi.fn(),
+  replayPractice: vi.fn(),
+  backFromPractice: vi.fn(),
   toggleSpotlight: vi.fn(),
   toggleTouringConsent: vi.fn(),
   backFromAuthor: vi.fn(),
@@ -100,6 +105,11 @@ vi.mock('../src/client/flow', () => ({
     postAuthor: vi.fn(),
     toggleReactionMenu: vi.fn(),
     requestNextCharade: uiActions.requestNextCharade,
+    retryConnection: uiActions.retryConnection,
+    beginPractice: uiActions.beginPractice,
+    startPractice: uiActions.startPractice,
+    replayPractice: uiActions.replayPractice,
+    backFromPractice: uiActions.backFromPractice,
     showBoards: vi.fn(),
     showFoyer: uiActions.showFoyer,
     showInvite: uiActions.showInvite,
@@ -130,7 +140,7 @@ import {
 } from '../src/client/ui'
 import { DEFAULT_CLIENT_SETTINGS, getClientSettings, updateClientSettings } from '../src/client/settings'
 import { EMOTE_VOCABULARY } from '../src/shared/deck'
-import { COPY, LANGUAGES, emoteLabel, t, themeLabel } from '../src/shared/i18n'
+import { COPY, LANGUAGES, emoteLabel, phraseText, t, themeLabel } from '../src/shared/i18n'
 import { SEASON_ZERO_WEEKS, type SeasonWeek } from '../src/shared/seasons'
 import { showPolicyForTimestamp } from '../src/shared/show-policy'
 
@@ -301,9 +311,18 @@ function stateFor(screen: 'decode' | 'reveal' | 'posted') {
             correct: false,
             phrase: 'Answer one',
             stats: { total: 1, correct: 0 },
-            yourScore: 0
+            yourScore: 0,
+            setRound: 2,
+            setSize: 5,
+            setScore: 350,
+            setStreak: 2
           }
         : null,
+    progress: {
+      daily: { stamped: false },
+      title: 'Understudy',
+      nextUnlock: { nextTitle: 'Scene Stealer', requirement: '10 correct decodes or 5 posts', progress: 0.2 }
+    },
     pending: screen === 'decode' ? [{ requestId: 'request-1', kind: 'guess', sentAt: 0, retries: 0 }] : [],
     roundCharadeId: '',
     reactionMenuOpen: false,
@@ -319,7 +338,11 @@ function foyerState() {
     screen: 'foyer',
     theme: 'food',
     themeLabel: 'Kitchen Capers',
-    progress: { daily: { stamped: false } },
+    progress: {
+      daily: { stamped: false },
+      title: 'Understudy',
+      nextUnlock: { nextTitle: 'Scene Stealer', requirement: '10 correct decodes or 5 posts', progress: 0.2 }
+    },
     playerIsGuest: false,
     boards: { topDecoders: [], hardestGhosts: [], playbill: [], ghostOfNightId: '' }
   }
@@ -431,6 +454,113 @@ describe('UI colors', () => {
   })
 })
 
+describe('connection recovery', () => {
+  it('shows Retry and local House Practice only after the initial connection times out', () => {
+    uiTest.state = {
+      ...foyerState(),
+      ready: false,
+      screen: 'waking',
+      instanceId: '',
+      errorCode: 'connection_timeout'
+    }
+
+    let component = uiComponent()
+    for (const language of LANGUAGES) {
+      updateClientSettings({ language, largeText: true })
+      component = uiComponent()
+      expect(collectButtons(component), language).toEqual([
+        { value: COPY[language]['waking.retry'], disabled: false },
+        { value: COPY[language]['practice.open'], disabled: false }
+      ])
+      for (const { value } of collectButtons(component)) {
+        expect(findButton(component, value)?.uiTransform, `${language}:${value}`).toMatchObject({
+          minHeight: 96,
+          height: 96
+        })
+      }
+    }
+
+    updateClientSettings(DEFAULT_CLIENT_SETTINGS)
+    component = uiComponent()
+    ;(findButton(component, 'RETRY CONNECTION')?.onMouseDown as (() => void) | undefined)?.()
+    ;(findButton(component, 'HOUSE PRACTICE')?.onMouseDown as (() => void) | undefined)?.()
+    expect(uiActions.retryConnection).toHaveBeenCalledTimes(1)
+    expect(uiActions.beginPractice).toHaveBeenCalledTimes(1)
+
+    uiTest.state = { ...uiTest.state, errorCode: '' }
+    component = uiComponent()
+    expect(collectButtons(component)).toEqual([])
+  })
+
+  it('shows an assigned phrase before local playback and keeps practice within four controls', () => {
+    uiTest.state = {
+      ...foyerState(),
+      ready: false,
+      transportReady: false,
+      screen: 'practice',
+      instanceId: '',
+      errorCode: 'connection_timeout',
+      practice: {
+        phraseId: 'everyday-dodge-the-rain',
+        emotes: ['raiseHand', 'tektonik', 'handsair'],
+        playing: false
+      }
+    }
+
+    for (const language of LANGUAGES) {
+      uiTest.state = {
+        ...uiTest.state,
+        practice: { ...(uiTest.state.practice as Record<string, unknown>), playing: false }
+      }
+      uiTest.performerBeat = null
+      updateClientSettings({ language, largeText: true })
+      let component = uiComponent()
+      const assigned = t('practice.assigned', language, {
+        phrase: phraseText('everyday-dodge-the-rain', language)!
+      })
+      expect(collectStaticText(component), language).toEqual(
+        expect.arrayContaining([COPY[language]['practice.title'], assigned])
+      )
+      expect(
+        staticTextPath(component, assigned)?.some((props) => {
+          const transform = props.uiTransform as Record<string, unknown> | undefined
+          return transform?.maxWidth === '72%' && transform.height === 672 && transform.overflow === 'hidden'
+        }),
+        `${language}:narrow-tall-panel`
+      ).toBe(true)
+      expect(collectButtons(component), language).toEqual([
+        { value: COPY[language]['practice.start'], disabled: false },
+        { value: COPY[language]['waking.retry'], disabled: false },
+        { value: COPY[language]['common.back'], disabled: false }
+      ])
+      for (const { value } of collectButtons(component)) {
+        expect(findButton(component, value)?.uiTransform, `${language}:${value}`).toMatchObject({
+          minHeight: 96,
+          height: 96
+        })
+      }
+
+      ;(findButton(component, COPY[language]['practice.start'])?.onMouseDown as (() => void) | undefined)?.()
+      expect(uiActions.startPractice).toHaveBeenCalled()
+
+      uiTest.state = {
+        ...uiTest.state,
+        practice: { ...(uiTest.state.practice as Record<string, unknown>), playing: true }
+      }
+      uiTest.performerBeat = 1
+      component = uiComponent()
+      expect(collectStaticText(component), language).toContain(
+        `${COPY[language]['beat.action']} · ${COPY[language]['beat.actionRole']}`
+      )
+      expect(collectButtons(component), language).toEqual([
+        { value: COPY[language]['practice.replay'], disabled: false },
+        { value: COPY[language]['waking.retry'], disabled: false },
+        { value: COPY[language]['common.back'], disabled: false }
+      ])
+    }
+  })
+})
+
 describe('mobile control budget', () => {
   it('renders beat structure as non-interactive chips and highlights the performing beat', () => {
     uiTest.state = authorState(['wave'])
@@ -494,6 +624,51 @@ describe('mobile control budget', () => {
     buttons = collectButtons(uiComponent())
     for (const answer of ['ONE', 'TWO', 'THREE']) {
       expect(buttons.find(({ value }) => value === answer)).toEqual({ value: answer, disabled: false })
+    }
+  })
+
+  it('keeps completed first and retry answers locked outside the decode area and enables them at the stage', () => {
+    uiTest.performanceComplete = true
+    uiTest.state = { ...stateFor('decode'), pending: [] }
+
+    uiTest.region = 'outside'
+    expect(hintText(uiComponent())).toBe(COPY.en['common.walkToStage'])
+    for (const answer of ['ONE', 'TWO', 'THREE']) {
+      expect(findButton(uiComponent(), answer), `outside:first:${answer}`).toMatchObject({ disabled: true })
+    }
+
+    uiTest.region = 'stage'
+    expect(hintText(uiComponent())).toBe(COPY.en['hint.decode'])
+    for (const answer of ['ONE', 'TWO', 'THREE']) {
+      expect(findButton(uiComponent(), answer), `stage:first:${answer}`).toMatchObject({ disabled: false })
+    }
+
+    uiTest.state = {
+      ...uiTest.state,
+      retry: {
+        charadeId: 'charade-1',
+        removedAnswerIndex: 1,
+        replayBeatIndex: 2,
+        spotlight: false
+      }
+    }
+    uiTest.region = 'outside'
+    expect(hintText(uiComponent())).toBe(COPY.en['common.walkToStage'])
+    expect(findButton(uiComponent(), 'ONE')).toMatchObject({ disabled: true })
+    expect(findButton(uiComponent(), 'THREE')).toMatchObject({ disabled: true })
+
+    uiTest.region = 'stage'
+    expect(hintText(uiComponent())).toBe(COPY.en['hint.retry'])
+    expect(findButton(uiComponent(), 'ONE')).toMatchObject({ disabled: false })
+    expect(findButton(uiComponent(), 'THREE')).toMatchObject({ disabled: false })
+  })
+
+  it('presents every shuffled answer with the same neutral styling', () => {
+    uiTest.state = { ...stateFor('decode'), pending: [] }
+    const component = uiComponent()
+
+    for (const answer of ['ONE', 'TWO', 'THREE']) {
+      expect(findButton(component, answer)?.variant, answer).toBe('secondary')
     }
   })
 
@@ -743,7 +918,11 @@ describe('mobile control budget', () => {
       ...stateFor('decode'),
       screen: 'foyer',
       theme: 'food',
-      progress: { daily: { stamped: false } },
+      progress: {
+        daily: { stamped: false },
+        title: 'Understudy',
+        nextUnlock: { nextTitle: 'Scene Stealer', requirement: '10 correct decodes or 5 posts', progress: 0.2 }
+      },
       playerIsGuest: true,
       boards: { playbill: [] },
       roundCharadeId: 'charade-1',
@@ -779,6 +958,149 @@ describe('mobile control budget', () => {
 
     uiTest.state = { ...uiTest.state, spotlightEnabled: true }
     expect(findButton(uiComponent(), 'SPOTLIGHT ×2')?.variant).toBe('primary')
+  })
+
+  it('shows newcomers the localized meaning of the active beat during playback', () => {
+    uiTest.state = {
+      ...stateFor('decode'),
+      progress: {
+        daily: { decoded: 0, authored: 0, stamped: false },
+        title: '',
+        nextUnlock: { nextTitle: 'Understudy', requirement: 'Post your first charade', progress: 0 }
+      },
+      pending: []
+    }
+    const beatKeys = ['beat.setup', 'beat.action', 'beat.punchline'] as const
+    const roleKeys = ['beat.setupRole', 'beat.actionRole', 'beat.punchlineRole'] as const
+
+    for (const language of LANGUAGES) {
+      updateClientSettings({ language, largeText: true })
+      for (const beat of [0, 1, 2] as const) {
+        uiTest.performerBeat = beat
+        const label = `${COPY[language][beatKeys[beat]]} · ${COPY[language][roleKeys[beat]]}`
+        expect(findStaticText(uiComponent(), label), `${language}:${beat}`).toMatchObject({ fontSize: uiFontSize(17) })
+      }
+    }
+  })
+
+  it('shows only the core first-session route until authoritative progress proves experience', () => {
+    uiTest.mailRecipients = [
+      { address: `0x${'1'.repeat(40)}`, name: 'ALICE', isGuest: false, title: '', performedAt: TEST_NOW }
+    ]
+    uiTest.state = {
+      ...foyerState(),
+      progress: {
+        daily: { stamped: false },
+        title: '',
+        nextUnlock: { nextTitle: 'Understudy', requirement: 'Post your first charade', progress: 0 }
+      },
+      roundCharadeId: 'charade-1',
+      reactionMenuOpen: true
+    }
+
+    expect(collectButtons(uiComponent()).map(({ value }) => value)).toEqual(['DECODE A GHOST', 'HOW TO PLAY'])
+
+    uiTest.state = {
+      ...stateFor('decode'),
+      progress: uiTest.state.progress,
+      pending: [],
+      spotlightEnabled: true
+    }
+    expect(collectButtons(uiComponent()).map(({ value }) => value)).toEqual(['REPLAY', 'ONE', 'TWO', 'THREE'])
+
+    uiTest.canReply = true
+    uiTest.state = {
+      ...stateFor('reveal'),
+      progress: uiTest.state.progress,
+      roundCharadeId: 'charade-1'
+    }
+    const reveal = uiComponent()
+    expect(collectButtons(reveal).map(({ value }) => value)).toEqual(['MAKE YOUR OWN'])
+    expect(collectStaticText(reveal)).toContain('GHOST 2/5 · STREAK 2 · SCORE 350')
+
+    uiTest.state = { ...uiTest.state, playerIsGuest: true }
+    expect(collectButtons(uiComponent()).map(({ value }) => value)).toEqual(['NEXT GHOST'])
+
+    uiTest.state = {
+      ...foyerState(),
+      progress: {
+        daily: { decoded: 1, authored: 0, stamped: false },
+        title: '',
+        nextUnlock: { nextTitle: 'Understudy', requirement: 'Post your first charade', progress: 0 }
+      }
+    }
+    expect(collectButtons(uiComponent()).map(({ value }) => value)).toEqual([
+      'DECODE A GHOST',
+      'MAKE YOUR OWN',
+      'HOW TO PLAY'
+    ])
+
+    uiTest.state = {
+      ...foyerState(),
+      progress: {
+        daily: { authored: 0, stamped: false },
+        title: 'Scene Stealer',
+        nextUnlock: {
+          nextTitle: 'Ghostlight Legend',
+          requirement: '3 daily stamps and 25 correct decodes',
+          progress: 0
+        }
+      }
+    }
+    expect(collectButtons(uiComponent()).map(({ value }) => value)).toEqual([
+      'DECODE A GHOST',
+      'MAKE YOUR OWN',
+      'GHOST MAIL',
+      'BOARDS',
+      'HOW TO PLAY'
+    ])
+
+    uiTest.state = foyerState()
+    expect(collectButtons(uiComponent()).map(({ value }) => value)).toEqual([
+      'DECODE A GHOST',
+      'MAKE YOUR OWN',
+      'GHOST MAIL',
+      'BOARDS',
+      'HOW TO PLAY'
+    ])
+  })
+
+  it('keeps Make Your Own available to a returning decoder after daily progress resets', () => {
+    uiTest.state = {
+      ...foyerState(),
+      progressRevision: 4,
+      progress: {
+        daily: { decoded: 0, authored: 0, stamped: false },
+        title: '',
+        nextUnlock: { nextTitle: 'Understudy', requirement: 'Post your first charade', progress: 0 }
+      }
+    }
+
+    expect(collectButtons(uiComponent()).map(({ value }) => value)).toEqual([
+      'DECODE A GHOST',
+      'MAKE YOUR OWN',
+      'HOW TO PLAY'
+    ])
+  })
+
+  it('hides touring consent until the signed-in player completes the core experience', () => {
+    const fresh = authorState(['wave', 'clap', 'dab'])
+    uiTest.state = {
+      ...fresh,
+      playerIsGuest: false,
+      progress: {
+        daily: { decoded: 1, authored: 0, stamped: false },
+        title: '',
+        nextUnlock: { nextTitle: 'Understudy', requirement: 'Post your first charade', progress: 0 }
+      }
+    }
+
+    expect(collectButtons(uiComponent()).map(({ value }) => value)).toEqual([
+      'PREVIEW',
+      'POST',
+      'CHANGE EMOTES',
+      'BACK'
+    ])
   })
 
   it('does not invent Show Set status for a legacy charade without authoritative fields', () => {
@@ -925,7 +1247,11 @@ describe('mobile control budget', () => {
       screen: 'foyer',
       theme: 'food',
       themeLabel: 'Kitchen Capers',
-      progress: { daily: { stamped: false } },
+      progress: {
+        daily: { stamped: false },
+        title: 'Understudy',
+        nextUnlock: { nextTitle: 'Scene Stealer', requirement: '10 correct decodes or 5 posts', progress: 0.2 }
+      },
       playerIsGuest: true,
       boards: { playbill: [] }
     }
@@ -1312,14 +1638,14 @@ describe('localized answer rendering', () => {
 })
 
 describe('cold-open overlay', () => {
-  it('hides decode controls behind one clear skip action', () => {
+  it('hides decode controls behind one clear start action', () => {
     uiTest.region = 'house'
     uiTest.opening = { active: true, instruction: "Guess what they're saying" }
     uiTest.state = stateFor('decode')
 
     const buttons = collectButtons(uiComponent())
 
-    expect(buttons).toEqual([{ value: 'SKIP INTRO', disabled: false }])
+    expect(buttons).toEqual([{ value: 'START NOW', disabled: false }])
   })
 
   it('fits every localized opening instruction and its 96px action with large text', () => {
@@ -1340,7 +1666,7 @@ describe('cold-open overlay', () => {
       expect(
         path?.some((props) => {
           const transform = props.uiTransform as Record<string, unknown> | undefined
-          return transform?.height === 320 && transform.padding === 24
+          return transform?.maxWidth === '72%' && transform.height === 320 && transform.padding === 24
         }),
         `${language}:panel`
       ).toBe(true)
