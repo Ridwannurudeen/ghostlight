@@ -11,7 +11,7 @@ phrase, and ordered emote sequence; later visitors watch that ghost on a theater
 answers. The core loop uses performance instead of free-text input and does not depend on DMs, voice, or scene
 chat.
 
-When no eligible player performance exists, the server serves one of 11 clearly labelled `HOUSE GHOST`
+When no eligible player performance exists, the server serves one of six clearly labelled `HOUSE GHOST`
 performances spanning all six themes. House content is excluded from player statistics, boards, and progression.
 
 ## Game loop
@@ -20,7 +20,9 @@ performances spanning all six themes. House content is excluded from player stat
    prepares the first performance.
 2. Watch a player-authored three-emote sequence, or the clearly labelled House fallback. If a player charade has
    an answer-back, both players perform on stage in alternating three-emote sequences.
-3. Choose one of three phrase cards. Replay restarts the performance from its first emote.
+3. Watch all three ordered clues: `START` establishes who or where, `ACTION` shows what happens, and `REACTION`
+   shows the result or feeling. The answer cards remain locked until the first complete sequence. Then choose one
+   of three phrase cards; exactly one is the phrase assigned to the author. Replay restarts from `START`.
 4. The eight-second reveal locks the answers, pushes the camera toward the stage, changes the theater lighting,
    reveals the verdict, cues the audience, and reports the aggregate result.
 5. Answer back with a new performance of the same phrase, make a new charade from the fixed phrase deck, or send
@@ -32,6 +34,16 @@ performances spanning all six themes. House content is excluded from player stat
 7. Return later to see how many people understood your ghosts, whether anyone answered back, and how much Ghost Mail
    is waiting.
 
+The answer is never chosen at random. The server records the author's assigned phrase, creates two constrained
+same-theme decoys, and checks the selected card against that stored phrase. A wrong first choice gets one
+position-specific replay and a two-card second chance; a recovery awards 50 points but does not count as a
+first-try "understood" result in the author's solve statistics.
+
+The normal client locks first guesses through the complete 7.5-second performance. The authoritative server applies
+the same minimum delay only after sending the exact charade and any duet reply, so a modified client cannot win a
+live round early. For a server-issued second chance, the normal client starts the position-specific replay while
+showing the two remaining cards; the server does not add another delay to that retry.
+
 With two or more players present, the Multiplayer Server serves a shared live round and accepts one first-correct
 winner. The winner moves directly into the author flow; solo visitors continue through the asynchronous loop.
 Players who are watching rather than actively decoding can press Laugh, Gasp, or Applause. The server rate-limits
@@ -40,10 +52,12 @@ each address and relays the stamp to the other players present without changing 
 ## Tonight's Show
 
 The server rotates one of six themes at UTC midnight: Everyday Escapades, Big Feelings, Kitchen Capers,
-Decentraland Life, Pop Spectacles, and Awkward Moments. Each theme owns 20 of the 120 built-in phrases. Charade
-selection prefers the current theme and falls back to any eligible player performance without requiring a
-redeploy. The selectable pool covers the most recent 14 UTC days; genuine current-theme content must be renewed
-before it ages out during a release or judging window.
+Decentraland Life, Pop Spectacles, and Awkward Moments. The repository retains 120 historical phrase IDs and
+translations, while the playable release deck is a deliberately constrained set of 30 phrases: five per theme,
+each with two validated choices for each of the three ordered beats. Season Zero schedules 28 of those 30 each
+week and rotates two out and two in at every weekly boundary. Charade selection prefers the current theme and falls
+back to any eligible player performance without requiring a redeploy. The selectable pool covers the most recent
+14 UTC days; genuine current-theme content must be renewed before it ages out during a release or judging window.
 
 The current theme drives the foyer marquee and UI accent. For a signed-in player, three real-player decodes plus
 one authored charade on the same UTC day awards one saved daily completion stamp. The playbill shows the six most
@@ -68,9 +82,10 @@ head or hand prop rather than a local-only costume.
 ## Answer-back duets
 
 After revealing an eligible real-player charade, the decoder can choose `ANSWER BACK`. The reply keeps the
-original phrase, offers five verified Decentraland emotes, and records a new ordered sequence of three. A charade
-accepts only its first reply. Future visitors see the original performer and replier alternate complete sequences,
-and the original author receives a persisted return notification.
+original phrase, offers two phrase-specific choices at each labelled beat, and records a new ordered sequence of
+three. The author cannot repeat an emote, choose outside the current beat, or post before watching the complete
+preview. A charade accepts only its first reply. Future visitors see the original performer and replier alternate
+complete sequences, and the original author receives a persisted return notification.
 
 Self-replies, House replies, replies before a completed guess, phrase changes, and second replies are rejected by
 the server.
@@ -95,7 +110,8 @@ or client-facing touring API exists yet, and the separate `api/` service is not 
 ## Languages and accessibility
 
 English is the default; Settings cycles English, Spanish, and Portuguese without text entry. The client bundle
-contains 206 interface strings and all 120 phrase texts in each language under stable IDs. The server sends
+contains 213 interface strings and all 120 historical phrase texts in each language under stable IDs; 30 of those
+phrases are in the current playable deck. The server sends
 canonical phrase and answer IDs alongside compatibility fallback text, so authors and decoders can use different
 languages while retaining answer options from the same theme.
 
@@ -108,9 +124,9 @@ motion shortens the reveal to three seconds while retaining the verdict, sound, 
 | --- | --- |
 | Move | Use the Decentraland movement joystick. Native action buttons are hidden after mobile platform detection. |
 | Start decoding | Follow the static `WALK TO THE STAGE` instruction, then tap `DECODE A GHOST` in the house or stage area. |
-| Guess | Tap one of three 96 px answer buttons. Required UI stays inside Decentraland's interactable screen inset. |
+| Guess | Watch the complete `START -> ACTION -> REACTION` sequence, then tap one of three 96 px source-layout answer buttons. Exactly one answer is true. Required UI stays inside Decentraland's interactable screen inset. |
 | Watch again | Tap `REPLAY` to restart the current solo performance or duet. |
-| Make a charade | Tap `MAKE YOUR OWN`, accept or shuffle the dealt phrase, continue to five-emote selection, then choose three in order. The third choice advances to a separate Preview/Post confirmation with one off-by-default touring opt-in. |
+| Make a charade | Tap `MAKE YOUR OWN`, accept or shuffle the dealt phrase, then choose one of two validated emotes for each labelled beat. The third choice advances to confirmation; watch the full preview before Post becomes available. Ordinary posts include one off-by-default touring opt-in. |
 | Answer back | After an eligible reveal, tap `ANSWER BACK`, choose three emotes for the same phrase, preview, then send the reply. |
 | Send Ghost Mail | Tap `GHOST MAIL`, choose a recent real performer, then use the normal phrase, emote, preview, and send flow. No address or message entry is required. |
 | React in a live round | While watching an active round in the stage area, open `REACT`. Laugh, Gasp, and Applause replace the other actions, trigger one local emote and stamp, and relay once to the other players present. |
@@ -150,8 +166,11 @@ client's touring-consent field.
 The client sends intents such as guess, post, and react. It never supplies the avatar look used for a stored
 performance; the server snapshots Decentraland's player ECS data. All persisted values are serialized JSON, and
 charade and player-stat records carry a schema version. Storage writes pass through a dirty queue, retry when the
-host returns `false`, and run in batches of at most eight. Requests that can mutate state carry IDs so a network
-retry does not double-count a guess or post.
+host returns `false`, and run in batches of at most eight. Final guesses and every post shape journal the exact
+request fingerprint, after-images, and response before applying their state changes. On restart, the server reapplies
+an active journal entry before accepting players; a same-show client then resends the exact request and receives the
+original reveal or post acknowledgement without duplicate scoring, progression, or content. A first wrong guess is
+not a persistent mutation, so a restart replaces that unfinished round with a fresh charade.
 
 Localized copy stays in the client bundle. The server includes canonical phrase and answer IDs alongside the
 existing fallback fields, and each decoder renders those IDs in the language selected on that client.
@@ -209,6 +228,35 @@ candidate. It is not device-accepted or release-approved: release-branch merge a
 exact-commit SDK gate in [`docs/DEVICE-CHECKLIST.md`](docs/DEVICE-CHECKLIST.md). Any later pin change restarts that
 gate.
 
+### Verified phone-preview QR
+
+SDK Commands 7.27 has no host-selection flag for `start --mobile`; it uses the first external IPv4 address, which
+can be a VPN or virtual adapter. Start one preview without the SDK-generated mobile QR, using the pinned
+authoritative-server package required by the device gate:
+
+```powershell
+$env:DCL_SERVER_ENGINE = 'bevy'
+$env:DCL_SERVER_PACKAGE = '@dcl-regenesislabs/bevy-headless-server@0.1.0-32423386171.commit-d18de13'
+npm run start -- --no-browser --no-client -p 8000
+```
+
+In a second terminal, generate the QR from the running preview:
+
+```powershell
+node tools/mobile-preview.mjs
+```
+
+The helper rejects loopback, link-local, and known VPN, tunnel, WSL, Hyper-V, and virtual adapters. It automatically
+selects a host only when exactly one eligible, recognized physical LAN IPv4 exists. Multiple candidates make it exit
+with their addresses and require `--host <IPv4>`; a sole adapter whose name is not recognized also requires explicit
+verification and `--host`. It verifies the selected `http://<IPv4>:8000/about` response before printing the exact
+`decentraland://open?preview=...` payload and terminal QR.
+
+Before counting a device pass, confirm the printed host belongs to the Wi-Fi or Ethernet network shared with the
+phone, open that exact `/about` URL on the phone, and verify `healthy: true`. Then scan the QR and record the
+Decentraland app reaching Ghostlight's ready state. A successful laptop endpoint check or a rendered QR alone is
+not phone evidence.
+
 ## Device testing and release state
 
 Automated tests cover the loop, reveal timing, duet pairing, Ghost Mail privacy, title thresholds, live rounds,
@@ -218,13 +266,15 @@ release gate; follow
 [`docs/DEVICE-CHECKLIST.md`](docs/DEVICE-CHECKLIST.md) for cold start, safe areas, sound latency, camera behavior,
 solo persistence, two-client rounds, and measured performance.
 
-`scene.json` configures the candidate for `ghostlight.dcl.eth`. Deployment remains blocked until the owner
-proves control of that NAME, completes the device checklist, publishes absolute public repository/licence URLs,
-and verifies that production Storage rehydrates at least three genuine recent current-theme performances and a
-real Answer-Back duet after server sleep. This repository does not claim a live deployment.
+`scene.json` configures the candidate for `ghostlight.dcl.eth`. That World currently serves an older published
+SDK 7.26.1 build, so opening it from Decentraland search does not test this SDK 7.27.1 repair candidate. The current
+checkout remains undeployed and is not device-accepted. Deploying this candidate remains blocked until the owner
+completes the device checklist, publishes absolute public repository/licence URLs, and verifies that production
+Storage rehydrates at least three genuine recent current-theme performances and a real Answer-Back duet after
+server sleep.
 
-Guest progress remains in server memory rather than player-scoped Storage. A guest-authored charade can still enter
-the shared scene pool, but durable personal title and return progress requires a signed-in Decentraland profile.
+Guests can decode but cannot author persistent ordinary posts, Answer-Back replies, or Ghost Mail. Durable titles,
+return reports, and authored performances require a signed-in Decentraland profile.
 
 ## Project layout
 
@@ -235,6 +285,7 @@ src/
   shared/   Message schemas, fixed phrase deck, localisation, themes, progression constants, selection logic
 test/       Vitest coverage for client, server, protocol, persistence, and asset budgets
 tools/
+  mobile-preview.mjs  Verified LAN-host deep-link and terminal QR generator
   blender/  Procedural GLB generator
   audio/    Deterministic synthesized MP3 generator
   ui/       Procedural PNG generator

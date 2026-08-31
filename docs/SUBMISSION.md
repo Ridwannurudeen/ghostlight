@@ -27,6 +27,10 @@ This section is for submission preparation; the paste-ready project copy begins 
   charades and duet instead of a House-only venue. Record the authors, themes, UTC ages, and duet status.
 - Check the deployed pool daily through judging and renew genuine current-theme content before the 14-day serving
   window expires. House is the honest failure floor, not a release-ready seed.
+- For every local phone run, start one preview with `--no-client`, generate the deep link with
+  `node tools/mobile-preview.mjs`, verify the printed host is the phone-reachable physical LAN adapter, open its
+  `/about` URL on the phone, and record the Decentraland app reaching `ready`. The SDK's automatic QR, a laptop-only
+  endpoint check, or a rendered QR is not real-phone evidence.
 - Complete every unchecked item in `docs/DEVICE-CHECKLIST.md` on the exact deployed commit before final media or
   submission approval.
 
@@ -44,9 +48,12 @@ then leave a performance for the next visitor.
 ### Project description
 
 Ghostlight is a mobile-first, voice-free social World built around communication through avatar
-performance. A visitor watches a previous player's saved Decentraland avatar act out a phrase, chooses between
-three answers, and sees an eight-second theatrical reveal. The visitor can then choose a phrase from the curated
-deck and post a three-emote performance for whoever arrives next. One of 11 clearly labelled House ghosts keeps
+performance. A visitor watches a previous player's saved Decentraland avatar act out three ordered clues—START,
+ACTION, and REACTION—for one assigned phrase. The three answer cards remain locked through the first complete
+sequence, and exactly one is true. The authoritative server independently rejects a first guess before the
+7.5-second sequence deadline, including in a live race. The visitor can then choose a phrase from the curated
+30-phrase playable deck, select one of two validated emotes for each beat, watch a complete preview, and post it for
+whoever arrives next. One of six clearly labelled House ghosts keeps
 the solo loop playable before real performances exist and is excluded from player statistics and boards.
 
 Tonight's Show changes by UTC day across six themes and prioritizes matching charades without blocking the
@@ -57,16 +64,19 @@ checklist requires genuine current-theme content to be renewed throughout judgin
 
 Signed-in players can also choose a real recent performer and send a persisted Ghost Mail that stays outside the
 public queue and boards and is served only when its recipient returns. English, Spanish, and Portuguese clients
-render the same canonical phrase and answer IDs in their own language, including the complete 120-phrase deck.
+render the same canonical phrase and answer IDs in their own language. The release gameplay deck contains 30
+curated phrases; all 120 historical phrase IDs and translations remain available for stored-content compatibility.
 
 ### How it was designed and optimized for mobile
 
-Every game action is an on-screen button with a minimum 96 px touch target. The UI renders inside the mobile
-client's interactable safe area on a fixed 1600 × 720 virtual canvas. Ghostlight hides the client's native
-action buttons because the scene does not use them, keeps the movement joystick available, and never requires a
-tap on a 3D object. Answers, verdicts, progress, and errors use explicit text; sound and stage colour reinforce
+Every custom game action is an on-screen button with a minimum 96 px source-layout target. The UI renders inside
+the mobile client's interactable safe area on a fixed 1600 × 720 virtual canvas; the real-device gate separately
+checks physical scaling and thumb reach. Ghostlight hides the client's native action buttons because the scene does
+not use them, keeps the movement joystick available, and never requires a tap on a 3D object. Answers, verdicts,
+progress, and errors use explicit text; sound and stage colour reinforce
 the result instead of carrying it alone. No screen exposes more than five game buttons: authoring separates phrase,
-five-emote selection, and confirmation, while live reactions replace secondary actions when opened.
+START/ACTION/REACTION selection, and confirmation, keeps Post unavailable until the complete preview finishes, and
+replaces secondary actions with live reactions when opened. Starting preview playback alone does not unlock Post.
 
 A five-control Settings panel offers English, Spanish, Portuguese, full/quiet/off sound, reduced motion, and 20%
 larger text without typing. Reduced motion replaces the eight-second camera- and tween-heavy reveal with a
@@ -114,9 +124,9 @@ charade. No engagement, visitor, guess, or board entry is fabricated.
 
 ### The mechanic in five lines
 
-1. Watch a previous player's Decentraland avatar perform a three-emote charade.
-2. Choose the phrase from three answer cards and watch the eight-second stage verdict.
-3. Take a dealt phrase, select three emotes in order, preview them, and post your ghost.
+1. Watch a previous player's Decentraland avatar perform START, ACTION, and REACTION for one secret phrase.
+2. After all three clues, choose the one true phrase from three answer cards and watch the stage verdict.
+3. Take a dealt phrase, choose one validated emote per beat, watch the full preview, and post your ghost.
 4. Answer back after a reveal, or send a private Ghost Mail to a recent real performer.
 5. If another player is present, race for first correct while spectators send server-relayed reaction stamps.
 
@@ -163,8 +173,9 @@ do not use desktop preview/editor footage, synthetic activity, or unearned progr
 - **0:13–0:21 — Decode:** show all three emotes, the three answer cards, and one deliberate answer tap.
 - **0:21–0:29 — Reveal:** keep the complete eight-second verdict on screen: locked answers, camera push, lighting,
   sound, audience reaction, bow, and progress.
-- **0:29–0:39 — Leave a ghost:** show the dealt phrase, three ordered emote taps, Preview, and Post on the phone.
-- **0:39–0:46 — Share:** show the posted confirmation and Copy Invite success state.
+- **0:29–0:41 — Leave a ghost:** show the dealt phrase, three ordered emote taps, the uninterrupted complete Preview,
+  and Post unlocking only after the final beat on the phone.
+- **0:41–0:46 — Share:** show the posted confirmation and Copy Invite success state.
 - **0:46–0:54 — Answer back:** cut to a real replied charade and hold on both avatars alternating their
   performances.
 - **0:54–1:00 — Return reason:** finish on the real playbill/boards and an earned stamp, title, or return report;

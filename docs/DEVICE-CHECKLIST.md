@@ -39,6 +39,28 @@ until every item below is checked on the same commit.
 Any failure blocks the merge and retains the prior release pin. Any later pin change restarts this gate. Merge
 approval does not authorize deployment.
 
+## Verified local phone-preview QR gate
+
+SDK Commands 7.27 offers `--mobile` but no host-selection flag. Its generated link uses the first external IPv4,
+which may belong to a VPN or virtual adapter. Use this workflow for every local phone run; do not count the SDK's
+automatic QR as evidence.
+
+- [ ] Start exactly one preview from the candidate checkout with the pinned `DCL_SERVER_ENGINE` and
+      `DCL_SERVER_PACKAGE` values above, plus `npm run start -- --no-browser --no-client -p 8000`. Wait for the
+      preview and authoritative server to become ready. Do not start a second preview to generate a QR.
+- [ ] In a second terminal, run `node tools/mobile-preview.mjs`. If it reports multiple eligible LAN addresses,
+      identify the physical Wi-Fi or Ethernet adapter shared with the phone and rerun with `--host <IPv4>`; never
+      choose a VPN, tunnel, link-local, WSL, Hyper-V, or other virtual address.
+- [ ] Read the printed payload before scanning. Its `preview=http://<IPv4>:8000` host must exactly match the selected
+      physical adapter, and the printed position must match the candidate's `scene.json` base parcel. Save the
+      unchanged payload in the run record.
+- [ ] On the phone, while connected to the same local network, open the printed `http://<IPv4>:8000/about` URL in a
+      browser and record a successful response with `healthy: true`. A laptop-only `/about` check does not satisfy
+      this step.
+- [ ] Scan the generated QR in the installed Decentraland app and record entry through Ghostlight's ready state.
+      Keep this app recording with the commit, adapter name, IPv4, phone network, and app version. QR generation,
+      browser reachability, and actual Decentraland connection are three separate checks.
+
 ## Hard pre-deploy gates
 
 Do not deploy, record final media, or submit until every item in this section is checked. The House ghost is an
@@ -58,6 +80,12 @@ fabricated to satisfy these gates.
       real-player content rather than only House content.
 - [ ] Record each seeded performance's author, phrase/theme, UTC creation time, and duet status. Check this ledger
       daily through judging and renew genuine content before it reaches the 14-day serving boundary.
+- [ ] Run the uncoached comprehension gate with five fresh testers who have not watched the owner or another tester.
+      Before making a first guess, each tester must independently explain all four facts: a prior player received
+      one secret phrase; that player left three ordered clues; the clues are START, ACTION, and REACTION; and exactly
+      one answer card is true. Every tester must then complete decode -> fair authoring -> full preview -> post.
+      The answer cards must remain unavailable until the first complete three-beat sequence. Record explanations,
+      completion, and any coaching separately. Correct-answer rate alone does not satisfy this gate.
 
 ## Evidence for every run
 
@@ -67,7 +95,8 @@ fabricated to satisfy these gates.
       close-up clips for the reveal timeline, two-phone race, title prop, portraits, and invite handoff.
 - [ ] For every timing check, record the observed value from video frames; do not write only “looks good.”
 - [ ] Run `npm run build` and `npm test` on the recorded commit before opening the candidate.
-- [ ] Use the owner's existing QR preview or deployed World. Do not start another preview server.
+- [ ] Use the owner's one verified QR preview or deployed World. For local runs, attach the payload, phone `/about`
+      check, and Decentraland connection evidence from the QR gate above. Do not start another preview server.
 
 ## Devices and accounts
 
@@ -103,7 +132,8 @@ the same commit.
       the opening begins on its own; it neither starts during the waking state nor waits for stage entry.
 - [ ] On the first entry of the app session, the opening follows this order: foyer camera at 0.0 s, daily marquee
       by 1.0 s, foyer doors and curtain sound at about 2.5 s, stage camera at about 4.5 s, performer entrance at
-      about 6.0 s, “Guess what they're saying” at about 8.0 s, and decode at about 10.0 s.
+      about 6.0 s, the prior-player / one-secret-phrase / three-ordered-clues / exactly-one-answer instruction at
+      about 8.0 s, and decode at about 10.0 s.
 - [ ] Record each observed beat time. Pass when the order is exact, no beat is skipped or duplicated, and every beat
       lands within 0.35 s of its target after the scene has loaded.
 - [ ] Tap SKIP INTRO once before 10 s. It lands cleanly on decode, does not leave the foyer camera or closed doors,
@@ -114,7 +144,9 @@ the same commit.
       stage, chandelier, footlights, spotlight, and pedestal with no primitive theater geometry in view.
 - [ ] Across ten fresh entries, every randomized spawn lands inside the clear foyer area rather than outside the
       venue or inside a model. Answer controls cannot submit until the player reaches the physical decode area and
-      become unavailable again after walking away.
+      become unavailable again after walking away. On entry, they also remain unavailable until the performer has
+      completed START, ACTION, and REACTION once; the second-chance answer remains available after its single-beat
+      replay.
 - [ ] Walk the foyer, theater entrance, front row, and stage edge. There is no collision trap or camera snap.
 
 Evidence: one full opening recording, one skipped opening recording, and wide screenshots from the foyer, house,
@@ -152,7 +184,8 @@ clock, unchanged commit, and both theme labels.
 - [ ] At about 6.0 s, aggregate stats and title progress appear. At about 7.5 s, stage camera, house lights, performer
       playback, room-tone volume, faded cards, and floating text reset cleanly.
 - [ ] When stats replace the answer cards, the single exit row remains fully visible. MAKE YOUR OWN and any eligible
-      ANSWER BACK action keep their complete 96 px targets; no lower action is clipped or hidden behind another row.
+      ANSWER BACK action keep their complete 96 px source-layout targets; no lower action is clipped or hidden behind
+      another row.
 - [ ] NEXT GHOST during a running reveal skips to the same clean end state once. No late timer changes the next
       ghost's camera, lights, UI, or sound.
 - [ ] While a guess is awaiting its authoritative result, MAKE YOUR OWN cannot open authoring. A delayed round
@@ -172,8 +205,13 @@ one interrupted clip, and the covered-screen result.
 
 ## Author, progression, stamps, and remote props
 
-- [ ] Authoring deals a phrase, allows no more than two shuffles, offers five distinct emotes, preserves the selected
-      order as 1–2–3, previews the named player's current look, and enables POST only after three selections.
+- [ ] Authoring deals a phrase and allows no more than two shuffles. It labels the three beats START, ACTION, and
+      REACTION; offers exactly two phrase-specific choices for the current beat; rejects repeated or off-beat
+      emotes; preserves the chosen 1–2–3 order; and previews the named player's current look. POST remains disabled
+      after three selections and becomes available only after the complete preview has played.
+- [ ] Immediately after tapping PREVIEW, repeatedly tap the disabled POST position through START and ACTION. No post
+      request is sent. POST becomes available only after REACTION completes. Then change or undo an emote, preview
+      again, and confirm the old completion cannot authorize the revised sequence.
 - [ ] From both regular and Answer-Back authoring, tap BACK before preview. The exact prior solo performer or duet
       and its earned stage reward return; no performer disappears and no stale preview remains.
 - [ ] On a fresh named account, the first successful post shows the Understudy unlock card and unlock sound. The
@@ -207,8 +245,8 @@ Evidence: one boards screenshot containing a named portrait and guest placeholde
 - [ ] Account A posts a charade and opens COPY INVITE. Account B follows the general World invite, then continues
       until the server serves A's charade. B sees ANSWER BACK only after the reveal; A, the House ghost, and an
       already-replied charade cannot reply to themselves.
-- [ ] In answer-back authoring, the phrase stays fixed, SAME PHRASE is disabled as a shuffle, three emotes keep their
-      chosen order, preview uses B's look, and SEND REPLY produces the answer-back confirmation.
+- [ ] In answer-back authoring, the fixed phrase remains visible and no shuffle control is exposed. Three emotes
+      keep their chosen order, preview uses B's look, and SEND REPLY produces the answer-back confirmation.
 - [ ] Re-enter as A after B replies. “Since you left” includes the answered-back count exactly once.
 - [ ] Serve the replied charade to an eligible account that has not seen it. Both performer names appear, the author
       and replier occupy distinct stage positions, and their three-emote sequences alternate author first, then
@@ -225,7 +263,7 @@ Evidence: one continuous A-post → B-decode → B-answer-back recording, A's re
       account is announced as winner and enters authoring; the other remains responsive on the resolved reveal.
 - [ ] Repeat with the opposite phone deliberately tapping first. The winning account changes accordingly; no client
       posts, guesses, or authors twice.
-- [ ] LAUGH, CONFUSED, and GENIUS trigger the sender's local emote and a visible remote audience reaction.
+- [ ] LAUGH, GASP, and APPLAUSE trigger the sender's local emote and a visible remote audience reaction.
 - [ ] When one phone leaves, the round ends and the remaining phone returns to stable solo behavior.
 
 Evidence: side-by-side video of both races and one reaction from each phone.
@@ -234,20 +272,22 @@ Evidence: side-by-side video of both races and one reaction from each phone.
 
 - [ ] The movement joystick remains usable and every native action/gamepad button is hidden on Android and iOS.
 - [ ] From the foyer, tap the top-right HOW TO PLAY control. It shows exactly five readable lines covering the walk,
-      three-emote performance, three-choice guess, own charade, and real previous player. Verify all five in English,
-      Spanish, and Portuguese at normal arm's length; use SETTINGS and its HOW TO PLAY link to change languages, and
-      confirm BACK returns to the foyer.
+      prior player, one secret phrase, START/ACTION/REACTION order, exactly one true answer, own charade, and real
+      previous player. Verify all five in English, Spanish, and Portuguese at normal arm's length; use SETTINGS and
+      its HOW TO PLAY link to change languages, and confirm BACK returns to the foyer.
 - [ ] Without reopening the guide, the persistent one-line hint changes across foyer away from the stage, foyer at
       the stage, decode, reveal, author with fewer than three emotes, author with three emotes, and posted. Each hint
       remains readable and follows the selected language.
-- [ ] Outside the house or stage area, WALK TO THE STAGE is a clear, non-clickable 96 px instruction rather than a
-      disabled button. Tapping it does nothing; walking into the decode area replaces it with active DECODE A GHOST.
+- [ ] Outside the house or stage area, WALK TO THE STAGE is a clear, non-clickable 96 px source-layout instruction
+      rather than a disabled button. Tapping it does nothing; walking into the decode area replaces it with active
+      DECODE A GHOST.
 - [ ] In foyer, decode, reveal, author, posted, boards, invite, and notice overlays, no required control intersects the
       notch/Dynamic Island, home indicator, interactable inset, or bottom-right joystick area.
 - [ ] No screen exposes more than five game buttons at once. Author selection advances to confirmation after the
       third emote, and opening the REACTIONS menu replaces the other secondary controls instead of stacking a row.
-- [ ] Every action target is comfortably thumb-selectable, every answer is legible without zoom, and rapid taps do
-      not activate an adjacent control.
+- [ ] Every required action renders with a source-layout target at least 96 px tall, remains comfortably
+      thumb-selectable on both devices, and does not activate an adjacent control during rapid taps. Record any
+      platform scaling observed rather than treating source-layout pixels as a physical measurement.
 - [ ] Camera transitions do not steal touch input or leave either client locked to the foyer, stage, or reveal camera.
 
 Evidence: Android and iOS screenshots of foyer away from and at the stage, HOW TO PLAY in all three languages,
@@ -282,7 +322,8 @@ re-entry clip.
 ## What device evidence cannot prove
 
 The physical-device run validates behavior, timing, readability, controls, cross-client visibility, and measured
-performance. The automated suite must separately prove the exact pre-`ready` outbound message list, the eight-slot
-`AvatarShape` ceiling under simultaneous replier/pedestal allocation, the 16-player reward cap plus stage slot,
-the 79-entity/16,492-triangle conservative peak, asset triangle/material/size budgets, UTC selection logic, and
+performance. The automated suite must separately prove the exact pre-`ready` outbound message list, the server's
+7,500 ms post-send first-guess deadline and immediate retry exemption, the eight-slot `AvatarShape` ceiling under
+simultaneous replier/pedestal allocation, the 16-player reward cap plus stage slot, the
+79-entity/16,492-triangle conservative peak, asset triangle/material/size budgets, UTC selection logic, and
 persistence writes. A release needs both forms of evidence from the same commit.
