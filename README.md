@@ -283,10 +283,10 @@ solo persistence, two-client rounds, and measured performance.
 `bafkreihblrzvm6t3flfwgjbmyybi5gs3dyyhw345iix3qc4nkc3ohlmiyu` on exact SDK
 `7.27.1-33086747846.commit-824d240`, so opening it from Decentraland search tests that published baseline rather
 than the current committed wake, House Practice, opening, adaptive-reveal, and House-progression continuation.
-This continuation remains undeployed and is not device-accepted. Deploying it remains blocked until the owner
-completes the same-commit device checklist, publishes absolute public repository/licence URLs, and verifies that
-production Storage rehydrates at least three genuine recent current-theme performances and a real Answer-Back duet
-after server sleep.
+This continuation remains undeployed and is not device-accepted. The repository and its MIT `LICENSE` were
+published on 2026-09-02, so that gate is closed. Deploying the continuation remains blocked until the owner
+completes the same-commit device checklist and verifies that production Storage rehydrates at least three genuine
+recent current-theme performances and a real Answer-Back duet after server sleep.
 
 Guests can decode but cannot author persistent ordinary posts, Answer-Back replies, or Ghost Mail. Durable titles,
 return reports, and authored performances require a signed-in Decentraland profile.
