@@ -46,6 +46,10 @@ High-profile Performance measurement at line 143, and the on-device trailer.
 - Complete every unchecked item in `docs/DEVICE-CHECKLIST.md` on the exact deployed commit before final media or
   submission approval.
 
+The paste-ready copy below carries no “Measured mobile result” section: no High-profile Performance score,
+device model, OS version, or diagnostics frame proxy was recorded on 2026-09-02. Reinstate that section only from a
+real `COPY DIAGNOSTICS` block and the app's own Performance percentage; do not paste an estimate.
+
 ## DoraHacks submission copy
 
 ### Project title
@@ -141,14 +145,6 @@ charade. No engagement, visitor, guess, or board entry is fabricated.
 3. Take a dealt phrase, choose one validated emote per beat, watch the full preview, and post your ghost.
 4. Answer back after a reveal, or send a private Ghost Mail to a recent real performer.
 5. If another player is present, race for first correct while spectators send server-relayed reaction stamps.
-
-### Measured mobile result
-
-`<MEASURED: owner-recorded High-profile Performance score, device model, OS version, and UTC test date; COPY DIAGNOSTICS frame proxy>`
-
-Use `frame.avg_ms` from the unchanged diagnostics block for the frame proxy, with `frame.approx_fps` beside it and
-`frame.worst_ms` as supporting worst-frame evidence. These diagnostics fields are not the Decentraland client's
-native Performance percentage; the owner must record that High-profile score, device model, OS version, and date.
 
 ### Links
 
