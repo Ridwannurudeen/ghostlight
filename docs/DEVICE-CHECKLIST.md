@@ -6,28 +6,28 @@ run note names the failure and the owner explicitly accepts it.
 
 ## Release decision, recorded 2026-09-02
 
-The build submitted for Friendzone judging is the deployed World, tagged `release/friendzone-judging`
-(`c0abf00`). Verified this date against the live realm and the deployed entity: `ghostlight.dcl.eth` is healthy
-and accepting users on entity `bafkreihblrzvm6t3flfwgjbmyybi5gs3dyyhw345iix3qc4nkc3ohlmiyu`, deployed
-2026-08-31T03:16:59Z, with `authoritativeMultiplayer: true`, no `fixedAdapter`, no `placesConfig`, and parcels
-`0,0` and `1,0`. `c0abf00..95d4f7e` changes nothing under `src/`, `assets/`, or `scene.json`, so the deployed
-build is scene-identical to the `95d4f7e` baseline named below.
+**Revised the same day.** The first decision, taken at 14:00 UTC, was to ship the already-deployed baseline
+(`c0abf00`, entity `bafkreihblrzvm6t3flfwgjbmyybi5gs3dyyhw345iix3qc4nkc3ohlmiyu`, tag `release/friendzone-judging`) and hold
+candidate `c49bf1d` because it had no same-commit device acceptance. That afternoon the owner, playing the live
+World, could not follow its HOW TO PLAY text - the comprehension defect `c49bf1d` was written to fix. Because a
+real-device pass was about to run either way, the owner chose to deploy the candidate first so the pass produces
+evidence on the judged build, with the baseline held as a ten-minute rollback.
 
-The deployed bundle itself confirms this. `bin/index.js`
-(`bafybeiegqf2nnyekizcua2j27c34girpqia5wajapgi2wzeyhb5cjgfk2a`) contains the strings `2fc5124` introduced -
-`UNDO LAST BEAT`, `ONE SECRET PHRASE`, `CONNECTION LOST`, `FIRST CONNECTION` - and none that `c49bf1d` introduced:
-`HOUSE PRACTICE`, `RETRY CONNECTION`, and `practice.open` are all absent. That brackets the live build to
-`2fc5124..95d4f7e`.
+**Deployed 2026-09-02T16:53:18Z** from `main` at `c905fe0` (scene code `c49bf1d`), tag `release/2026-09-02`.
+Live entity `bafkreihydi7utkj5quq5y6tzpf7sw7neurw7lvcnjqqoyyne2bhqscanhy`, bundle `bafybeiakworhgfildiwndehxohcfx4cbatp2wmqsv5rx5idu2qf4yoouyi`.
+Verified after upload: `ghostlight.dcl.eth` healthy and accepting users; `authoritativeMultiplayer: true`, no
+`fixedAdapter`, no `placesConfig`, parcels `0,0` and `1,0`; the deployed `bin/index.js` contains `HOUSE PRACTICE`
+and `RETRY CONNECTION`, which the previous build did not. `npm run preflight` on the candidate: 18 pass, 0 fail.
+
+**Rollback** is `release/friendzone-judging`: `STORAGE_SCHEMA_VERSION` (3), `PROTOCOL_VERSION` (6) and
+`src/shared/types.ts` are unchanged between the two builds and the candidate adds no storage keys, so redeploying
+the baseline does not cross a schema boundary. The device pass below is the gate that decides whether the rollback
+is used. Sep 3-11 is a deploy freeze.
 
 CI is red at `c0abf00` and green on `main`. The failure is lockfile completeness, not a product defect: `npm ci`
 rejected `package-lock.json` for missing the `@esbuild/*` platform packages, and `6303e56` added them in a
 516-line lockfile-only change alongside `api/vitest.config.mts`. Neither `6303e56` nor `6dfd9b8` touches `src/`,
-`assets/`, `scene.json`, or `package.json`, so the shipped scene is unaffected. The tag stays on the exact commit
-whose build is deployed rather than moving to a greener neighbour.
-
-Candidate `c49bf1d` is held, not released. On 2026-09-02 it passes `npm run build`, 677 scene tests, and 172 API
-tests, but the gate below is unchecked, so it has no same-commit device acceptance. It stays a post-judging
-change, and the Sep 5-11 judging window is a deploy freeze.
+`assets/`, `scene.json`, or `package.json`.
 
 ## First device step - capture diagnostics
 
@@ -40,11 +40,11 @@ change, and the Sep 5-11 judging window is a deploy freeze.
 
 ## SDK 7.27 same-commit device acceptance gate
 
-Baseline commit `95d4f7e` and live World entity
-`bafkreihblrzvm6t3flfwgjbmyybi5gs3dyyhw345iix3qc4nkc3ohlmiyu` already use the exact
-`7.27.1-33086747846.commit-824d240` SDK/runtime pin. The current committed wake, House Practice, opening,
-adaptive-reveal, and House-progression continuation is a new release candidate. Do not release or deploy it until
-every item below is checked on the same commit.
+The live World entity `bafkreihydi7utkj5quq5y6tzpf7sw7neurw7lvcnjqqoyyne2bhqscanhy` (tag `release/2026-09-02`,
+scene code `c49bf1d`) was deployed on 2026-09-02 on the exact `7.27.1-33086747846.commit-824d240` SDK/runtime pin
+before this gate was run; the owner accepted that ordering so the pass produces evidence on the judged build. Check
+every item below on that deployed commit. If any item fails, redeploy `release/friendzone-judging` (`c0abf00`,
+entity `bafkreihblrzvm6t3flfwgjbmyybi5gs3dyyhw345iix3qc4nkc3ohlmiyu`) before judging opens.
 
 - [ ] From a clean checkout, run `npm ci`, `npm ls @dcl/sdk @dcl/js-runtime --depth=0`, `npm run build`, and
       `npm test`. Both Decentraland packages must resolve to the exact pinned version.

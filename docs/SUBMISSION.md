@@ -16,15 +16,16 @@ This section is for submission preparation; the paste-ready project copy begins 
 
 ## Hard release gates - do not deploy or submit
 
-**Gate status recorded 2026-09-02.** The submitted build is the deployed World, tagged
-`release/friendzone-judging` (`c0abf00`); candidate `c49bf1d` is held without device acceptance, and Sep 5-11 is a
-deploy freeze. Closed with evidence: the scene-configuration gate below, verified against the live entity
-`bafkreihblrzvm6t3flfwgjbmyybi5gs3dyyhw345iix3qc4nkc3ohlmiyu` (`authoritativeMultiplayer: true`, no
-`fixedAdapter`, no `placesConfig`), and control of `ghostlight.dcl.eth`, evidenced by that deployment being served
-under the NAME. The repository was published the same day; the absolute repository and licence URLs in the Links
-section below were confirmed to return HTTP 200, as was the World link. Still open and owner-only: the
-genuine-content and cold-rehydration gates, daily pool renewal through judging, `docs/DEVICE-CHECKLIST.md`, the
-recorded High-profile Performance measurement at line 143, and the on-device trailer.
+**Gate status recorded 2026-09-02, revised after the afternoon deploy.** The submitted build is the deployed World,
+tagged `release/2026-09-02` (`c905fe0`, scene code `c49bf1d`), deployed 2026-09-02T16:53:18Z as entity
+`bafkreihydi7utkj5quq5y6tzpf7sw7neurw7lvcnjqqoyyne2bhqscanhy`; the previous build, `release/friendzone-judging`
+(`c0abf00`), is the rollback target, and Sep 3-11 is a deploy freeze. Closed with evidence: the scene-configuration
+gate below, verified against that entity after upload (`authoritativeMultiplayer: true`, no `fixedAdapter`, no
+`placesConfig`); control of `ghostlight.dcl.eth`, evidenced by the deployment being accepted under the NAME by the
+owner's wallet; and repository publication, with the absolute repository, licence and World links in the Links
+section below confirmed to return HTTP 200. Still open and owner-only: the genuine-content and cold-rehydration
+gates, daily pool renewal through judging, `docs/DEVICE-CHECKLIST.md` on the deployed build, the recorded
+High-profile Performance measurement at line 143, and the on-device trailer.
 
 - Confirm ownership of `ghostlight.dcl.eth`; verify the exact release candidate retains
   `worldConfiguration.name: "ghostlight.dcl.eth"`, `authoritativeMultiplayer: true`, and no `fixedAdapter` or

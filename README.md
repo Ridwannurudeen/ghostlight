@@ -48,11 +48,10 @@ the same minimum delay only after sending the exact charade and any duet reply, 
 live round early. For a server-issued second chance, the normal client starts the position-specific replay while
 showing the two remaining cards; the server does not add another delay to that retry.
 
-The committed continuation, which is not deployed, adds waking-screen recovery: if authoritative readiness takes
-more than 12 seconds on a first visit, the screen offers Retry and a fixed local House Practice. Practice shows its
-assigned phrase before playback and uses the normal three beats and stage camera, but sends no gameplay request and
-changes no score, progress, boards, or saved state; Retry and Back remain available. The live World serves the
-baseline waking screen without Retry or Practice - see the deployment note below.
+If authoritative readiness takes more than 12 seconds on a first visit, the waking screen offers Retry and a fixed
+local House Practice. Practice shows its assigned phrase before playback and uses the normal three beats and stage
+camera, but sends no gameplay request and changes no score, progress, boards, or saved state; Retry and Back remain
+available. This shipped to the live World on 2026-09-02 - see the deployment note below.
 
 With two or more players present, the Multiplayer Server serves a shared live round. Only a player-authored round
 accepts one first-correct winner, who moves directly into the author flow; House rounds reveal without a live
@@ -234,12 +233,13 @@ npm run start
 ```
 
 The final command launches the local Decentraland preview. The generated assets are already committed. The
-Decentraland SDK and runtime are pinned to `7.27.1-33086747846.commit-824d240`. Baseline commit `95d4f7e` and the
-live World entity `bafkreihblrzvm6t3flfwgjbmyybi5gs3dyyhw345iix3qc4nkc3ohlmiyu` already use that exact pin. The
-current committed wake, House Practice, opening, adaptive-reveal, and House-progression continuation is not
-device-accepted or release-approved; its release and deployment remain blocked on the same-commit gate in
-[`docs/DEVICE-CHECKLIST.md`](docs/DEVICE-CHECKLIST.md). Any later SDK pin change restarts the SDK-compatibility
-portion of that gate.
+Decentraland SDK and runtime are pinned to `7.27.1-33086747846.commit-824d240`. The live World entity
+`bafkreihydi7utkj5quq5y6tzpf7sw7neurw7lvcnjqqoyyne2bhqscanhy` was deployed on 2026-09-02 from tag `release/2026-09-02`
+on that exact pin, and includes the wake recovery, House Practice, guided opening, adaptive reveal, and House
+progression. The previous entity `bafkreihblrzvm6t3flfwgjbmyybi5gs3dyyhw345iix3qc4nkc3ohlmiyu` (tag
+`release/friendzone-judging`, commit `c0abf00`) is retained as the rollback target. Real-device acceptance of the
+deployed build is recorded in [`docs/DEVICE-CHECKLIST.md`](docs/DEVICE-CHECKLIST.md). Any later SDK pin change
+restarts the SDK-compatibility portion of that gate.
 
 ### Verified phone-preview QR
 
@@ -279,14 +279,15 @@ release gate; follow
 [`docs/DEVICE-CHECKLIST.md`](docs/DEVICE-CHECKLIST.md) for cold start, safe areas, sound latency, camera behavior,
 solo persistence, two-client rounds, and measured performance.
 
-`scene.json` configures the candidate for `ghostlight.dcl.eth`. The live World currently serves baseline entity
-`bafkreihblrzvm6t3flfwgjbmyybi5gs3dyyhw345iix3qc4nkc3ohlmiyu` on exact SDK
-`7.27.1-33086747846.commit-824d240`, so opening it from Decentraland search tests that published baseline rather
-than the current committed wake, House Practice, opening, adaptive-reveal, and House-progression continuation.
-This continuation remains undeployed and is not device-accepted. The repository and its MIT `LICENSE` were
-published on 2026-09-02, so that gate is closed. Deploying the continuation remains blocked until the owner
-completes the same-commit device checklist and verifies that production Storage rehydrates at least three genuine
-recent current-theme performances and a real Answer-Back duet after server sleep.
+`scene.json` configures the World as `ghostlight.dcl.eth`. The live World serves entity
+`bafkreihydi7utkj5quq5y6tzpf7sw7neurw7lvcnjqqoyyne2bhqscanhy` on exact SDK
+`7.27.1-33086747846.commit-824d240`, deployed 2026-09-02 from tag `release/2026-09-02` (scene code `c49bf1d`), so
+opening it from Decentraland search tests the wake recovery, House Practice, guided opening, adaptive reveal, and
+House progression. The previous entity `bafkreihblrzvm6t3flfwgjbmyybi5gs3dyyhw345iix3qc4nkc3ohlmiyu`
+(`release/friendzone-judging`, `c0abf00`) remains the rollback target. The repository and its MIT `LICENSE` were
+published on 2026-09-02. The remaining release gates are the same-commit device checklist on the deployed build and
+verifying that production Storage rehydrates at least three genuine recent performances and a real Answer-Back duet
+after server sleep.
 
 Guests can decode but cannot author persistent ordinary posts, Answer-Back replies, or Ghost Mail. Durable titles,
 return reports, and authored performances require a signed-in Decentraland profile.
