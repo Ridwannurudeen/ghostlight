@@ -16,6 +16,14 @@ This section is for submission preparation; the paste-ready project copy begins 
 
 ## Hard release gates - do not deploy or submit
 
+**Gate status recorded 2026-09-02.** The submitted build is the deployed World, tagged
+`release/friendzone-judging` (`c0abf00`); candidate `c49bf1d` is held without device acceptance, and Sep 5-11 is a
+deploy freeze. Closed with evidence: the scene-configuration gate below, verified against the live entity
+`bafkreihblrzvm6t3flfwgjbmyybi5gs3dyyhw345iix3qc4nkc3ohlmiyu` (`authoritativeMultiplayer: true`, no
+`fixedAdapter`, no `placesConfig`), and control of `ghostlight.dcl.eth`, evidenced by that deployment being served
+under the NAME. Still open and owner-only: publishing the repository, the genuine-content and cold-rehydration
+gates, daily pool renewal through judging, `docs/DEVICE-CHECKLIST.md`, and the on-device trailer.
+
 - Confirm ownership of `ghostlight.dcl.eth`; verify the exact release candidate retains
   `worldConfiguration.name: "ghostlight.dcl.eth"`, `authoritativeMultiplayer: true`, and no `fixedAdapter` or
   `placesConfig.optOut`.

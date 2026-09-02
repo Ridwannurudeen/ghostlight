@@ -4,6 +4,19 @@ Run this checklist in the released Decentraland mobile clients on the exact depl
 preview and automated tests do not count as device evidence. Any unchecked item is a release blocker unless the
 run note names the failure and the owner explicitly accepts it.
 
+## Release decision, recorded 2026-09-02
+
+The build submitted for Friendzone judging is the deployed World, tagged `release/friendzone-judging`
+(`c0abf00`). Verified this date against the live realm and the deployed entity: `ghostlight.dcl.eth` is healthy
+and accepting users on entity `bafkreihblrzvm6t3flfwgjbmyybi5gs3dyyhw345iix3qc4nkc3ohlmiyu`, deployed
+2026-08-31T03:16:59Z, with `authoritativeMultiplayer: true`, no `fixedAdapter`, no `placesConfig`, and parcels
+`0,0` and `1,0`. `c0abf00..95d4f7e` changes nothing under `src/`, `assets/`, or `scene.json`, so the deployed
+build is scene-identical to the `95d4f7e` baseline named below.
+
+Candidate `c49bf1d` is held, not released. On 2026-09-02 it passes `npm run build`, 677 scene tests, and 172 API
+tests, but the gate below is unchecked, so it has no same-commit device acceptance. It stays a post-judging
+change, and the Sep 5-11 judging window is a deploy freeze.
+
 ## First device step - capture diagnostics
 
 - [ ] In the foyer, open `HOW TO PLAY` -> `SETTINGS`, tap `DIAGNOSTICS: OFF` to enable the owner view, return to the
