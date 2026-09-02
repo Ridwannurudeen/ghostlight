@@ -24,9 +24,16 @@ watch their own duet, the replier has already seen it, and a third account is re
 cannot author, reply, or appear on boards.
 
 **Today's theme.** `themeForTimestamp` (`src/shared/config.ts:38-41`) rotates six themes by UTC day. The server
-filters the eligible pool to the current show's phrase set before selection
-(`src/server/server.ts:1550-1556`), so **a charade whose phrase is off-theme is not served at all** - it is not
-merely deprioritised. Seed with phrases the authoring screen offers under the current theme.
+filters the eligible pool to the current show's phrase set before selection (`src/server/server.ts:1567`), but
+until Season Zero opens that set is every phrase: `seasonWeekForTimestamp` returns `null` before
+`SEASON_ZERO_START_AT`, which is `2026-09-13T00:00:00Z`, so `dailyPolicy` applies and `primaryPhraseIds` is
+`ALL_PHRASE_IDS` (`src/shared/show-policy.ts:68-77`). **Through the whole judging window the theme only changes
+sort order, not eligibility** - a charade seeded on any theme stays servable every day until its 14-day window
+closes. From 13 September the season policy narrows `primaryPhraseIds` to that week's approved references and the
+filter becomes real; seeding on-theme matters then, not now.
+
+Seeding on the current theme is still worth doing, because `chooseCharadeFor` sorts theme matches first - it just
+is not a hard gate before 13 September.
 
 | UTC date | Tonight's Show |
 |---|---|
