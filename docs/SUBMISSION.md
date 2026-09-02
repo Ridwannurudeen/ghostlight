@@ -16,6 +16,9 @@ This section is for submission preparation; the paste-ready project copy begins 
 
 ## Hard release gates - do not deploy or submit
 
+**SUBMITTED to DoraHacks on 2026-09-02 19:32 UTC (owner-confirmed).** Submitted without a demo video and without the
+measured mobile result; the World link, repository, licence and the description text below were used as written.
+
 **Gate status recorded 2026-09-02, revised after the afternoon deploy.** The submitted build is the deployed World,
 tagged `release/2026-09-02` (`c905fe0`, scene code `c49bf1d`), deployed 2026-09-02T16:53:18Z as entity
 `bafkreihydi7utkj5quq5y6tzpf7sw7neurw7lvcnjqqoyyne2bhqscanhy`; the previous build, `release/friendzone-judging`
