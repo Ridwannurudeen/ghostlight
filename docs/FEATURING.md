@@ -2,7 +2,7 @@
 
 **Ghostlight**
 
-World: `<WORLD LINK>`
+World: https://decentraland.org/jump/?realm=ghostlight.dcl.eth
 
 **Short description**
 
@@ -60,7 +60,7 @@ exist for the submitted commit.
 
 **iOS curation request — Ghostlight**
 
-World: `<WORLD LINK>`
+World: https://decentraland.org/jump/?realm=ghostlight.dcl.eth
 
 Ghostlight is a mobile-first, asynchronous avatar-charades World. Watch a three-emote ghost performance,
 choose what it means from three large answer cards, then author your own for the next visitor. Signed-in

@@ -19,6 +19,12 @@ The deployed bundle itself confirms this. `bin/index.js`
 `HOUSE PRACTICE`, `RETRY CONNECTION`, and `practice.open` are all absent. That brackets the live build to
 `2fc5124..95d4f7e`.
 
+CI is red at `c0abf00` and green on `main`. The failure is lockfile completeness, not a product defect: `npm ci`
+rejected `package-lock.json` for missing the `@esbuild/*` platform packages, and `6303e56` added them in a
+516-line lockfile-only change alongside `api/vitest.config.mts`. Neither `6303e56` nor `6dfd9b8` touches `src/`,
+`assets/`, `scene.json`, or `package.json`, so the shipped scene is unaffected. The tag stays on the exact commit
+whose build is deployed rather than moving to a greener neighbour.
+
 Candidate `c49bf1d` is held, not released. On 2026-09-02 it passes `npm run build`, 677 scene tests, and 172 API
 tests, but the gate below is unchecked, so it has no same-commit device acceptance. It stays a post-judging
 change, and the Sep 5-11 judging window is a deploy freeze.

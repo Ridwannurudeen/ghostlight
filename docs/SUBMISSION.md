@@ -21,14 +21,17 @@ This section is for submission preparation; the paste-ready project copy begins 
 deploy freeze. Closed with evidence: the scene-configuration gate below, verified against the live entity
 `bafkreihblrzvm6t3flfwgjbmyybi5gs3dyyhw345iix3qc4nkc3ohlmiyu` (`authoritativeMultiplayer: true`, no
 `fixedAdapter`, no `placesConfig`), and control of `ghostlight.dcl.eth`, evidenced by that deployment being served
-under the NAME. Still open and owner-only: publishing the repository, the genuine-content and cold-rehydration
-gates, daily pool renewal through judging, `docs/DEVICE-CHECKLIST.md`, and the on-device trailer.
+under the NAME. The repository was published the same day; the absolute repository and licence URLs in the Links
+section below were confirmed to return HTTP 200, as was the World link. Still open and owner-only: the
+genuine-content and cold-rehydration gates, daily pool renewal through judging, `docs/DEVICE-CHECKLIST.md`, the
+recorded High-profile Performance measurement at line 143, and the on-device trailer.
 
 - Confirm ownership of `ghostlight.dcl.eth`; verify the exact release candidate retains
   `worldConfiguration.name: "ghostlight.dcl.eth"`, `authoritativeMultiplayer: true`, and no `fixedAdapter` or
   `placesConfig.optOut`.
 - Publish the repository first. Replace the repository/licence preparation note below with working absolute public
-  HTTPS URLs to the repository and `LICENSE`; relative links are prohibited in the submitted copy.
+  HTTPS URLs to the repository and `LICENSE`; relative links are prohibited in the submitted copy. Done
+  2026-09-02: the repository is public and the Links section carries verified absolute URLs.
 - In production, use genuine accounts to create at least three distinct current-theme charades less than 14 days
   old and at least one genuine Answer-Back duet. Never synthesize a visitor, guess, reply, performance, or board.
 - After a real server sleep, use a fresh named account to prove the production store rehydrates and serves the real
@@ -148,9 +151,9 @@ native Performance percentage; the owner must record that High-profile score, de
 
 ### Links
 
-- World: `<WORLD LINK>`
-- Repository and licence: intentionally omitted from this draft until publication. Before submission, replace
-  this note with absolute public HTTPS links to the repository and its `LICENSE`; do not use relative links.
+- World: https://decentraland.org/jump/?realm=ghostlight.dcl.eth
+- Repository: https://github.com/Ridwannurudeen/ghostlight
+- Licence: https://github.com/Ridwannurudeen/ghostlight/blob/main/LICENSE (MIT)
 
 ### Team
 
