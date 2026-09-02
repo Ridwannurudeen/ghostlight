@@ -237,9 +237,11 @@ Decentraland SDK and runtime are pinned to `7.27.1-33086747846.commit-824d240`. 
 `bafkreihydi7utkj5quq5y6tzpf7sw7neurw7lvcnjqqoyyne2bhqscanhy` was deployed on 2026-09-02 from tag `release/2026-09-02`
 on that exact pin, and includes the wake recovery, House Practice, guided opening, adaptive reveal, and House
 progression. The previous entity `bafkreihblrzvm6t3flfwgjbmyybi5gs3dyyhw345iix3qc4nkc3ohlmiyu` (tag
-`release/friendzone-judging`, commit `c0abf00`) is retained as the rollback target. Real-device acceptance of the
-deployed build is recorded in [`docs/DEVICE-CHECKLIST.md`](docs/DEVICE-CHECKLIST.md). Any later SDK pin change
-restarts the SDK-compatibility portion of that gate.
+`release/friendzone-judging`, commit `c0abf00`) is retained as the rollback target. On 2026-09-02 the owner played
+the deployed build on a phone with a named account and completed decode, reveal, the title notice, and three posts;
+no screen recording was made, so the formal same-commit checklist in
+[`docs/DEVICE-CHECKLIST.md`](docs/DEVICE-CHECKLIST.md) remains to be recorded. Any later SDK pin change restarts
+the SDK-compatibility portion of that gate.
 
 ### Verified phone-preview QR
 

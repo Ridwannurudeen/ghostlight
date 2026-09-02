@@ -29,6 +29,16 @@ rejected `package-lock.json` for missing the `@esbuild/*` platform packages, and
 516-line lockfile-only change alongside `api/vitest.config.mts`. Neither `6303e56` nor `6dfd9b8` touches `src/`,
 `assets/`, `scene.json`, or `package.json`.
 
+### Run note - 2026-09-02, owner session on the deployed candidate
+
+Not a checklist run; no boxes below are ticked by it. One phone, one named account, device model and OS not
+recorded, no screen recording. Observed on entity `bafkreihydi7utkj5quq5y6tzpf7sw7neurw7lvcnjqqoyyne2bhqscanhy`:
+entry through the foyer, one decode with a first-guess reveal, the title notice dismissed with `TAKE A BOW` and a
+board placement, return to the foyer hint, then three `MAKE YOUR OWN` posts. Two working-as-designed states read
+as stuck to the owner and are wording findings for after judging: the single-button title notice, and `PREVIEW` and
+`POST` both unavailable until the full three-beat preview had run. No connection loss, no `RETRY CONNECTION`, no
+error copy was seen. The pool now holds three genuine owner-authored performances and no duet.
+
 ## First device step - capture diagnostics
 
 - [ ] In the foyer, open `HOW TO PLAY` -> `SETTINGS`, tap `DIAGNOSTICS: OFF` to enable the owner view, return to the
