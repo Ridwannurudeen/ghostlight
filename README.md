@@ -48,10 +48,11 @@ the same minimum delay only after sending the exact charade and any duet reply, 
 live round early. For a server-issued second chance, the normal client starts the position-specific replay while
 showing the two remaining cards; the server does not add another delay to that retry.
 
-If authoritative readiness takes more than 12 seconds on a first visit, the waking screen offers Retry and a fixed
-local House Practice. Practice shows its assigned phrase before playback and uses the normal three beats and stage
-camera, but sends no gameplay request and changes no score, progress, boards, or saved state; Retry and Back remain
-available.
+The committed continuation, which is not deployed, adds waking-screen recovery: if authoritative readiness takes
+more than 12 seconds on a first visit, the screen offers Retry and a fixed local House Practice. Practice shows its
+assigned phrase before playback and uses the normal three beats and stage camera, but sends no gameplay request and
+changes no score, progress, boards, or saved state; Retry and Back remain available. The live World serves the
+baseline waking screen without Retry or Practice - see the deployment note below.
 
 With two or more players present, the Multiplayer Server serves a shared live round. Only a player-authored round
 accepts one first-correct winner, who moves directly into the author flow; House rounds reveal without a live

@@ -13,6 +13,12 @@ and accepting users on entity `bafkreihblrzvm6t3flfwgjbmyybi5gs3dyyhw345iix3qc4n
 `0,0` and `1,0`. `c0abf00..95d4f7e` changes nothing under `src/`, `assets/`, or `scene.json`, so the deployed
 build is scene-identical to the `95d4f7e` baseline named below.
 
+The deployed bundle itself confirms this. `bin/index.js`
+(`bafybeiegqf2nnyekizcua2j27c34girpqia5wajapgi2wzeyhb5cjgfk2a`) contains the strings `2fc5124` introduced -
+`UNDO LAST BEAT`, `ONE SECRET PHRASE`, `CONNECTION LOST`, `FIRST CONNECTION` - and none that `c49bf1d` introduced:
+`HOUSE PRACTICE`, `RETRY CONNECTION`, and `practice.open` are all absent. That brackets the live build to
+`2fc5124..95d4f7e`.
+
 Candidate `c49bf1d` is held, not released. On 2026-09-02 it passes `npm run build`, 677 scene tests, and 172 API
 tests, but the gate below is unchecked, so it has no same-commit device acceptance. It stays a post-judging
 change, and the Sep 5-11 judging window is a deploy freeze.
